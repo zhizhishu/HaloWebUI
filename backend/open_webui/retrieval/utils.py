@@ -183,7 +183,18 @@ def query_doc_with_hybrid_search(
         return result
     except Exception as e:
         log.exception(f"Error querying doc {collection_name} with hybrid search: {e}")
-        raise e
+        log.warning(
+            "Falling back to vector search for collection %s after hybrid search failed.",
+            collection_name,
+        )
+        fallback = query_doc(
+            collection_name=collection_name,
+            query_embedding=embedding_function(query, RAG_EMBEDDING_QUERY_PREFIX),
+            k=k,
+        )
+        if fallback is None:
+            raise e
+        return fallback.model_dump()
 
 
 def merge_get_results(get_results: list[dict]) -> dict:
@@ -361,8 +372,14 @@ def query_collection_with_hybrid_search(
             results.append(result)
 
     if error and not results:
-        raise Exception(
-            "Hybrid search failed for all collections. Using Non-hybrid search as fallback."
+        log.warning(
+            "Hybrid search failed for all collections; falling back to non-hybrid retrieval."
+        )
+        return query_collection(
+            collection_names=collection_names,
+            queries=queries,
+            embedding_function=embedding_function,
+            k=k,
         )
 
     return merge_and_sort_query_results(results, k=k)

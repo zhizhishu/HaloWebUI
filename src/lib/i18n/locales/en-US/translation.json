@@ -1126,6 +1126,8 @@
 	"Request changes to reply...": "",
 	"Request Mode": "",
 	"Reranking Model": "",
+	"Reranking Engine": "",
+	"Reranking API URL required.": "",
 	"Reranking model disabled": "",
 	"Reranking model set to \"{{reranking_model}}\"": "",
 	"Requesting {{model}}...": "Requesting {{model}}...",

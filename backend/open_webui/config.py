@@ -79,6 +79,35 @@ def preset_env(name: str, default: str) -> str:
     return os.getenv(name, LITE_PRESET_DEFAULTS.get(LITE_PRESET, {}).get(name, default))
 
 
+def _get_reranking_api_base_url_default() -> str:
+    return (
+        os.getenv("RAG_RERANKING_API_BASE_URL")
+        or get_config_value("rag.external_reranker_url")
+        or os.getenv("RAG_EXTERNAL_RERANKER_URL", "")
+        or LITE_PRESET_DEFAULTS.get(LITE_PRESET, {}).get("RAG_RERANKING_API_BASE_URL", "")
+    )
+
+
+def _get_reranking_api_key_default() -> str:
+    return (
+        os.getenv("RAG_RERANKING_API_KEY")
+        or get_config_value("rag.external_reranker_api_key")
+        or os.getenv("RAG_EXTERNAL_RERANKER_API_KEY", "")
+        or LITE_PRESET_DEFAULTS.get(LITE_PRESET, {}).get(
+            "RAG_RERANKING_API_KEY",
+            os.getenv("JINA_API_KEY", ""),
+        )
+    )
+
+
+def _get_reranking_timeout_default() -> str:
+    return (
+        os.getenv("RAG_RERANKING_TIMEOUT")
+        or get_config_value("rag.external_reranker_timeout")
+        or os.getenv("RAG_EXTERNAL_RERANKER_TIMEOUT", "")
+    )
+
+
 def _get_default_file_processing_mode() -> str:
     configured = normalize_file_processing_mode(
         os.getenv("FILE_PROCESSING_DEFAULT_MODE")
@@ -2490,19 +2519,19 @@ RAG_RERANKING_ENGINE = PersistentConfig(
 RAG_RERANKING_API_BASE_URL = PersistentConfig(
     "RAG_RERANKING_API_BASE_URL",
     "rag.reranking_api_base_url",
-    preset_env("RAG_RERANKING_API_BASE_URL", ""),
+    _get_reranking_api_base_url_default(),
 )
 
 RAG_RERANKING_API_KEY = PersistentConfig(
     "RAG_RERANKING_API_KEY",
     "rag.reranking_api_key",
-    os.getenv(
-        "RAG_RERANKING_API_KEY",
-        LITE_PRESET_DEFAULTS.get(LITE_PRESET, {}).get(
-            "RAG_RERANKING_API_KEY",
-            os.getenv("JINA_API_KEY", ""),
-        ),
-    ),
+    _get_reranking_api_key_default(),
+)
+
+RAG_RERANKING_TIMEOUT = PersistentConfig(
+    "RAG_RERANKING_TIMEOUT",
+    "rag.reranking_timeout",
+    _get_reranking_timeout_default(),
 )
 
 RAG_RERANKING_MODEL_AUTO_UPDATE = (

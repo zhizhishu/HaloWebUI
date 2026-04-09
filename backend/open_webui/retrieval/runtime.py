@@ -1,4 +1,5 @@
 import importlib
+import logging
 from typing import Any, Optional
 
 from open_webui.constants import ERROR_MESSAGES
@@ -14,6 +15,9 @@ from open_webui.config import (
     RAG_RERANKING_MODEL_AUTO_UPDATE,
     RAG_RERANKING_MODEL_TRUST_REMOTE_CODE,
 )
+
+
+log = logging.getLogger(__name__)
 
 
 def _module_available(module_name: str) -> bool:
@@ -120,9 +124,11 @@ def get_rf(
     reranking_model: Optional[str] = None,
     api_base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    timeout: Optional[str] = None,
     auto_update: bool = False,
 ):
     rf = None
+    timeout_value = int(timeout) if str(timeout or "").strip() else 60
     if reranking_model:
         if reranking_engine == "jina":
             if not api_base_url:
@@ -135,6 +141,20 @@ def get_rf(
                 model=reranking_model,
                 api_base_url=api_base_url,
                 api_key=api_key,
+                timeout=timeout_value,
+            )
+        elif reranking_engine == "external":
+            if not api_base_url:
+                raise ValueError(
+                    "RAG_RERANKING_API_BASE_URL is required when RAG_RERANKING_ENGINE=external."
+                )
+            from open_webui.retrieval.models.external import ExternalReranker
+
+            rf = ExternalReranker(
+                model=reranking_model,
+                api_url=api_base_url,
+                api_key=api_key,
+                timeout=timeout_value,
             )
         elif reranking_engine in ["", "local"] and any(
             model in reranking_model for model in ["jinaai/jina-colbert-v2"]
@@ -224,7 +244,20 @@ def ensure_reranking_runtime(app):
             app.state.config.RAG_RERANKING_MODEL,
             app.state.config.RAG_RERANKING_API_BASE_URL,
             app.state.config.RAG_RERANKING_API_KEY,
+            app.state.config.RAG_RERANKING_TIMEOUT,
             RAG_RERANKING_MODEL_AUTO_UPDATE,
         )
 
     return app.state.rf
+
+
+def get_safe_reranking_runtime(app):
+    try:
+        return ensure_reranking_runtime(app)
+    except Exception as exc:
+        app.state.rf = None
+        log.warning(
+            "Failed to initialize reranking runtime; falling back to retrieval without reranker: %s",
+            exc,
+        )
+        return None

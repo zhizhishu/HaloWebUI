@@ -71,7 +71,7 @@ from open_webui.models.functions import Functions
 from open_webui.models.models import Models
 
 from open_webui.retrieval.utils import get_sources_from_files
-from open_webui.retrieval.runtime import ensure_reranking_runtime
+from open_webui.retrieval.runtime import get_safe_reranking_runtime
 from open_webui.retrieval.document_processing import (
     FILE_PROCESSING_MODE_FULL_CONTEXT,
     FILE_PROCESSING_MODE_NATIVE_FILE,
@@ -80,6 +80,7 @@ from open_webui.retrieval.document_processing import (
     get_requested_processing_mode_for_file_item,
     normalize_file_processing_mode,
 )
+from open_webui.storage.provider import Storage
 
 
 from open_webui.utils.chat import generate_chat_completion
@@ -2391,7 +2392,7 @@ async def chat_completion_files_handler(
                             query, prefix=prefix, user=user
                         ),
                         k=request.app.state.config.TOP_K,
-                        reranking_function=ensure_reranking_runtime(request.app)
+                        reranking_function=get_safe_reranking_runtime(request.app)
                         if request.app.state.config.ENABLE_RAG_HYBRID_SEARCH
                         else None,
                         k_reranker=request.app.state.config.TOP_K_RERANKER,

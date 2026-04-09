@@ -1472,6 +1472,8 @@
 	"Require user input": "需要用户输入",
 	"Required for some official features (e.g. Files API).": "某些官方功能需要此设置（如 Files API）。",
 	"Reranking Model": "重排模型",
+	"Reranking Engine": "重排引擎",
+	"Reranking API URL required.": "需要填写重排 API 地址。",
 	"Reranking model disabled": "重排模型已禁用",
 	"Reranking model set to \"{{reranking_model}}\"": "重排模型设置为 \"{{reranking_model}}\"",
 	"Requesting {{model}}...": "正在请求 {{model}}...",

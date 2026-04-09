@@ -89,6 +89,8 @@
 	let embeddingBatchSize = 1;
 	let rerankingModel = '';
 	let rerankingEngine = 'local';
+	let rerankingApiUrl = '';
+	let rerankingApiKey = '';
 	let initialSnapshot = null;
 	let autoSyncBaseline = false;
 	let baselineSyncTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -113,6 +115,38 @@
 
 	let OllamaUrl = '';
 	let OllamaKey = '';
+
+	const normalizeRerankingEngine = (engine?: string | null) =>
+		['', 'local', null, undefined].includes(engine as string | null) ? 'local' : engine!;
+
+	const getRerankingModelPlaceholder = () => {
+		if (rerankingEngine === 'jina') {
+			return 'jina-reranker-m0';
+		}
+
+		if (rerankingEngine === 'external') {
+			return 'reranker';
+		}
+
+		return 'BAAI/bge-reranker-v2-m3';
+	};
+
+	const getRerankingApiUrlPlaceholder = () =>
+		rerankingEngine === 'jina' ? 'https://api.jina.ai/v1' : 'https://example.com/v1/rerank';
+
+	const applyRerankingEnginePreset = (engine: string) => {
+		rerankingEngine = normalizeRerankingEngine(engine);
+		if (rerankingEngine === 'jina') {
+			if (!rerankingModel) {
+				rerankingModel = 'jina-reranker-m0';
+			}
+			if (!rerankingApiUrl) {
+				rerankingApiUrl = 'https://api.jina.ai/v1';
+			}
+		} else if (rerankingEngine === 'local' && !rerankingModel) {
+			rerankingModel = 'BAAI/bge-reranker-v2-m3';
+		}
+	};
 
 	const defaultDocumentProviderConfigs = {
 		local_default: {},
@@ -237,7 +271,10 @@
 			RELEVANCE_THRESHOLD: RAGConfig?.RELEVANCE_THRESHOLD,
 			RAG_SYSTEM_CONTEXT: RAGConfig?.RAG_SYSTEM_CONTEXT,
 			RAG_TEMPLATE: RAGConfig?.RAG_TEMPLATE,
-			rerankingModel
+			rerankingModel,
+			rerankingEngine,
+			rerankingApiUrl,
+			rerankingApiKey
 		}
 	});
 
@@ -251,6 +288,9 @@
 		OllamaUrl,
 		OllamaKey,
 		rerankingModel,
+		rerankingEngine,
+		rerankingApiUrl,
+		rerankingApiKey,
 		buildSnapshot()
 	);
 	$: dirtySections = initialSnapshot
@@ -303,6 +343,12 @@
 			for (const f of Object.keys(snap.retrieval)) {
 				if (f === 'rerankingModel') {
 					rerankingModel = snap.retrieval.rerankingModel;
+				} else if (f === 'rerankingEngine') {
+					rerankingEngine = snap.retrieval.rerankingEngine;
+				} else if (f === 'rerankingApiUrl') {
+					rerankingApiUrl = snap.retrieval.rerankingApiUrl;
+				} else if (f === 'rerankingApiKey') {
+					rerankingApiKey = snap.retrieval.rerankingApiKey;
 				} else {
 					RAGConfig[f] = snap.retrieval[f];
 				}
@@ -322,7 +368,7 @@
 	$: localEmbeddingUnavailable =
 		embeddingEngine === '' && !runtimeCapabilities.local_embedding_available;
 	$: localRerankingUnavailable =
-		['', 'local'].includes(rerankingEngine) &&
+		rerankingEngine === 'local' &&
 		rerankingModel !== '' &&
 		(isColbertRerankingModel(rerankingModel)
 			? !runtimeCapabilities.colbert_reranking_available
@@ -399,9 +445,18 @@
 			toast.error(getLocalRerankingMessage());
 			return false;
 		}
+		if (['jina', 'external'].includes(rerankingEngine) && rerankingModel !== '' && rerankingApiUrl === '') {
+			toast.error($i18n.t('Reranking API URL required.'));
+			return false;
+		}
 		updateRerankingModelLoading = true;
 		const res = await updateRerankingConfig(localStorage.token, {
-			reranking_model: rerankingModel
+			reranking_engine: rerankingEngine,
+			reranking_model: rerankingModel,
+			api_config: {
+				url: rerankingApiUrl,
+				key: rerankingApiKey
+			}
 		}).catch(async (error) => {
 			toast.error(`${error}`);
 			await setRerankingConfig();
@@ -514,7 +569,9 @@
 
 		if (rerankingConfig) {
 			rerankingModel = rerankingConfig.reranking_model;
-			rerankingEngine = rerankingConfig.reranking_engine ?? 'local';
+			rerankingEngine = normalizeRerankingEngine(rerankingConfig.reranking_engine);
+			rerankingApiUrl = rerankingConfig.api_config?.url ?? '';
+			rerankingApiKey = rerankingConfig.api_config?.key ?? '';
 		}
 	};
 
@@ -1195,41 +1252,85 @@
 									</div>
 
 									{#if RAGConfig.ENABLE_RAG_HYBRID_SEARCH === true}
-										<div class="border-t border-gray-100/60 pt-4 dark:border-gray-800/40">
-											<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">
-												{$i18n.t('Reranking Model')}
-											</div>
-											<div class="flex w-full gap-2">
-												<input
-													class="glass-input flex-1 px-3 py-2 text-sm dark:text-gray-300"
-													placeholder={$i18n.t('Set reranking model (e.g. {{model}})', {
-														model: 'BAAI/bge-reranker-v2-m3'
-													})}
-													bind:value={rerankingModel}
-												/>
-												<button
-													class="rounded-lg bg-gray-100 px-3 py-2 transition hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700"
-													type="button"
-													on:click={() => {
-														rerankingModelUpdateHandler();
+										<div class="space-y-4 border-t border-gray-100/60 pt-4 dark:border-gray-800/40">
+											<div>
+												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">
+													{$i18n.t('Reranking Engine')}
+												</div>
+												<select
+													class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
+													bind:value={rerankingEngine}
+													on:change={(event) => {
+														applyRerankingEnginePreset((event.currentTarget as HTMLSelectElement).value);
 													}}
-													disabled={updateRerankingModelLoading || localRerankingUnavailable}
 												>
-													{#if updateRerankingModelLoading}
-														<Spinner className="size-4" />
-													{:else}
-														<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4">
-															<path d="M8.75 2.75a.75.75 0 0 0-1.5 0v5.69L5.03 6.22a.75.75 0 0 0-1.06 1.06l3.5 3.5a.75.75 0 0 0 1.06 0l3.5-3.5a.75.75 0 0 0-1.06-1.06L8.75 8.44V2.75Z" />
-															<path d="M3.5 9.75a.75.75 0 0 0-1.5 0v1.5A2.75 2.75 0 0 0 4.75 14h6.5A2.75 2.75 0 0 0 14 11.25v-1.5a.75.75 0 0 0-1.5 0v1.5c0 .69-.56 1.25-1.25 1.25h-6.5c-.69 0-1.25-.56-1.25-1.25v-1.5Z" />
-														</svg>
-													{/if}
-												</button>
+													<option value="local">{$i18n.t('Local')}</option>
+													<option value="jina">Jina</option>
+													<option value="external">{$i18n.t('External')}</option>
+												</select>
 											</div>
-											{#if localRerankingUnavailable}
-												<div class="mt-2 rounded-xl border border-amber-200/70 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">
-													{getLocalRerankingMessage()}
+
+											{#if ['jina', 'external'].includes(rerankingEngine)}
+												<div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+													<div>
+														<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">
+															{$i18n.t('API Base URL')}
+														</div>
+														<input
+															class="glass-input w-full px-3 py-2 text-sm dark:text-gray-300"
+															placeholder={getRerankingApiUrlPlaceholder()}
+															bind:value={rerankingApiUrl}
+														/>
+													</div>
+													<div>
+														<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">
+															{$i18n.t('API Key')}
+														</div>
+														<SensitiveInput
+															placeholder={$i18n.t('API Key')}
+															required={false}
+															bind:value={rerankingApiKey}
+														/>
+													</div>
 												</div>
 											{/if}
+
+											<div>
+												<div class="mb-1.5 text-xs font-medium text-gray-500 dark:text-gray-400">
+													{$i18n.t('Reranking Model')}
+												</div>
+												<div class="flex w-full gap-2">
+													<input
+														class="glass-input flex-1 px-3 py-2 text-sm dark:text-gray-300"
+														placeholder={$i18n.t('Set reranking model (e.g. {{model}})', {
+															model: getRerankingModelPlaceholder()
+														})}
+														bind:value={rerankingModel}
+													/>
+													<button
+														class="rounded-lg bg-gray-100 px-3 py-2 transition hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700"
+														type="button"
+														on:click={() => {
+															rerankingModelUpdateHandler();
+														}}
+														disabled={updateRerankingModelLoading || localRerankingUnavailable}
+													>
+														{#if updateRerankingModelLoading}
+															<Spinner className="size-4" />
+														{:else}
+															<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" class="h-4 w-4">
+																<path d="M8.75 2.75a.75.75 0 0 0-1.5 0v5.69L5.03 6.22a.75.75 0 0 0-1.06 1.06l3.5 3.5a.75.75 0 0 0 1.06 0l3.5-3.5a.75.75 0 0 0-1.06-1.06L8.75 8.44V2.75Z" />
+																<path d="M3.5 9.75a.75.75 0 0 0-1.5 0v1.5A2.75 2.75 0 0 0 4.75 14h6.5A2.75 2.75 0 0 0 14 11.25v-1.5a.75.75 0 0 0-1.5 0v1.5c0 .69-.56 1.25-1.25 1.25h-6.5c-.69 0-1.25-.56-1.25-1.25v-1.5Z" />
+															</svg>
+														{/if}
+													</button>
+												</div>
+												{#if localRerankingUnavailable}
+													<div class="mt-2 rounded-xl border border-amber-200/70 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">
+														{getLocalRerankingMessage()}
+													</div>
+												{/if}
+											</div>
 										</div>
 									{/if}
 

@@ -170,6 +170,12 @@ type OpenAIConfigForm = {
 	url: string;
 };
 
+type RerankingAPIConfigForm = {
+	key: string;
+	url: string;
+	timeout?: string;
+};
+
 type EmbeddingModelUpdateForm = {
 	openai_config?: OpenAIConfigForm;
 	embedding_engine: string;
@@ -230,6 +236,8 @@ export const getRerankingConfig = async (token: string) => {
 
 type RerankingModelUpdateForm = {
 	reranking_model: string;
+	reranking_engine?: string;
+	api_config?: RerankingAPIConfigForm;
 };
 
 export const updateRerankingConfig = async (token: string, payload: RerankingModelUpdateForm) => {

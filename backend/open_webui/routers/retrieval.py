@@ -68,7 +68,7 @@ from open_webui.retrieval.utils import (
     query_doc_with_hybrid_search,
 )
 from open_webui.retrieval.runtime import (
-    ensure_reranking_runtime,
+    get_safe_reranking_runtime,
     get_runtime_capabilities,
     reset_embedding_runtime,
     reset_reranking_runtime,
@@ -203,6 +203,7 @@ async def get_reraanking_config(request: Request, user=Depends(get_admin_user)):
         "api_config": {
             "url": request.app.state.config.RAG_RERANKING_API_BASE_URL,
             "key": request.app.state.config.RAG_RERANKING_API_KEY,
+            "timeout": request.app.state.config.RAG_RERANKING_TIMEOUT,
         },
     }
 
@@ -220,6 +221,7 @@ class OllamaConfigForm(BaseModel):
 class RerankingAPIConfigForm(BaseModel):
     url: str
     key: str
+    timeout: Optional[str] = None
 
 
 class EmbeddingModelUpdateForm(BaseModel):
@@ -311,6 +313,10 @@ async def update_reranking_config(
                 form_data.api_config.url
             )
             request.app.state.config.RAG_RERANKING_API_KEY = form_data.api_config.key
+            if form_data.api_config.timeout is not None:
+                request.app.state.config.RAG_RERANKING_TIMEOUT = (
+                    form_data.api_config.timeout
+                )
 
         reset_reranking_runtime(request.app)
 
@@ -321,6 +327,7 @@ async def update_reranking_config(
             "api_config": {
                 "url": request.app.state.config.RAG_RERANKING_API_BASE_URL,
                 "key": request.app.state.config.RAG_RERANKING_API_KEY,
+                "timeout": request.app.state.config.RAG_RERANKING_TIMEOUT,
             },
         }
     except Exception as e:
@@ -2051,7 +2058,7 @@ def query_doc_handler(
 ):
     try:
         reranking_function = (
-            ensure_reranking_runtime(request.app)
+            get_safe_reranking_runtime(request.app)
             if request.app.state.config.ENABLE_RAG_HYBRID_SEARCH
             else None
         )
@@ -2113,7 +2120,7 @@ def query_collection_handler(
 ):
     try:
         reranking_function = (
-            ensure_reranking_runtime(request.app)
+            get_safe_reranking_runtime(request.app)
             if request.app.state.config.ENABLE_RAG_HYBRID_SEARCH
             else None
         )
