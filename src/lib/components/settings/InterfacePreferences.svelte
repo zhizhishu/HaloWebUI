@@ -113,6 +113,7 @@
 	let widescreenMode = false;
 	let chatDirection: 'LTR' | 'RTL' | 'auto' = 'auto';
 	let showUsername = false;
+	let showFeaturedAssistantsOnHome = true;
 	let notificationSound = true;
 	let showChatTitleInTab = true;
 	let textScale: number | null = null;
@@ -202,6 +203,7 @@
 		layout: {
 			defaultModelId: string;
 			showChatTitleInTab: boolean;
+			showFeaturedAssistantsOnHome: boolean;
 			landingPageMode: string;
 			chatBubble: boolean;
 			showUsername: boolean;
@@ -522,6 +524,7 @@
 		},
 		layout: {
 			showChatTitleInTab,
+			showFeaturedAssistantsOnHome,
 			landingPageMode,
 			chatBubble,
 			showUsername,
@@ -597,6 +600,7 @@
 	const applyLayoutSnapshot = (snapshot: SectionSnapshot['layout']) => {
 		defaultModelId = normalizeModelId(snapshot.defaultModelId);
 		showChatTitleInTab = snapshot.showChatTitleInTab;
+		showFeaturedAssistantsOnHome = snapshot.showFeaturedAssistantsOnHome;
 		landingPageMode = snapshot.landingPageMode;
 		chatBubble = snapshot.chatBubble;
 		showUsername = snapshot.showUsername;
@@ -668,6 +672,7 @@
 		textScale;
 		defaultModelId;
 		showChatTitleInTab;
+		showFeaturedAssistantsOnHome;
 		landingPageMode;
 		chatBubble;
 		showUsername;
@@ -914,6 +919,7 @@
 
 			const payload: Record<string, any> = {
 				showChatTitleInTab,
+				showFeaturedAssistantsOnHome,
 				landingPageMode,
 				chatBubble,
 				showUsername,
@@ -1156,6 +1162,7 @@
 		enableMemory = $settings?.memory ?? false;
 
 		showUsername = $settings?.showUsername ?? false;
+		showFeaturedAssistantsOnHome = $settings?.showFeaturedAssistantsOnHome ?? true;
 
 		showEmojiInCall = $settings?.showEmojiInCall ?? false;
 		voiceInterruption = $settings?.voiceInterruption ?? false;
@@ -1567,6 +1574,15 @@
 												{ value: '', label: $i18n.t('Default') },
 												{ value: 'chat', label: $i18n.t('Chat') }
 											]}
+										/>
+									</div>
+
+									<div class="flex items-center justify-between glass-item px-4 py-3">
+										<div class="text-sm font-medium">
+											{$i18n.t('Show featured assistants on home page')}
+										</div>
+										<Switch
+											bind:state={showFeaturedAssistantsOnHome}
 										/>
 									</div>
 

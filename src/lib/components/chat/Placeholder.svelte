@@ -329,7 +329,7 @@
 			</div>
 		</div>
 	</div>
-	{#if !activeAssistant && onActivateAssistant}
+	{#if !activeAssistant && onActivateAssistant && ($settings?.showFeaturedAssistantsOnHome ?? true)}
 		<div class="mx-auto mt-1 w-full max-w-4xl px-2" in:fade={{ duration: 160, delay: 120 }}>
 			<div class="rounded-3xl border border-gray-200/60 bg-white/65 p-3 text-left shadow-sm backdrop-blur-xl dark:border-gray-700/30 dark:bg-white/[0.03]">
 				<div class="flex items-center justify-between gap-3 px-1">

@@ -200,6 +200,7 @@ type Settings = {
 	showUsername?: boolean;
 	highContrastMode?: boolean;
 	showChatTitleInTab?: boolean;
+	showFeaturedAssistantsOnHome?: boolean;
 	notificationEnabled?: boolean;
 	notificationSound?: boolean;
 	notificationSoundAlways?: boolean;
