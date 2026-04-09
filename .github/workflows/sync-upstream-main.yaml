@@ -1,0 +1,42 @@
+name: Sync Fork Main With Upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every day at 03:20 UTC
+    - cron: "20 3 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: true
+
+jobs:
+  sync-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/ztx888/HaloWebUI.git
+          git fetch upstream main
+
+      - name: Sync upstream/main into main
+        run: |
+          git checkout main
+          git merge --ff-only upstream/main || git merge --no-edit upstream/main
+
+      - name: Push main
+        run: git push origin main
