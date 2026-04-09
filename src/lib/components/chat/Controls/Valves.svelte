@@ -152,12 +152,22 @@
 
 	const init = async () => {
 		loading = true;
+		const shouldRefreshFunctions = !Array.isArray($functions) || $functions.length === 0;
+		const shouldRefreshTools = !Array.isArray($tools) || $tools.length === 0;
 
-		if ($functions === null) {
-			functions.set(await getFunctions(localStorage.token));
-		}
-		if ($tools === null) {
-			tools.set(await getTools(localStorage.token));
+		if (shouldRefreshFunctions || shouldRefreshTools) {
+			const [latestFunctions, latestTools] = await Promise.all([
+				shouldRefreshFunctions ? getFunctions(localStorage.token).catch(() => null) : null,
+				shouldRefreshTools ? getTools(localStorage.token).catch(() => null) : null
+			]);
+
+			if (shouldRefreshFunctions && Array.isArray(latestFunctions)) {
+				functions.set(latestFunctions);
+			}
+
+			if (shouldRefreshTools && Array.isArray(latestTools)) {
+				tools.set(latestTools);
+			}
 		}
 
 		loading = false;

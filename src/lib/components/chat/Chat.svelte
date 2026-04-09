@@ -757,6 +757,11 @@
 			}
 
 			webSearchMode = resolveStoredWebSearchMode(state);
+			if (state.selectedToolIds !== undefined) {
+				selectedToolIds = Array.isArray(state.selectedToolIds)
+					? state.selectedToolIds.filter((id) => typeof id === 'string' && id.trim() !== '')
+					: [];
+			}
 			if (state.reasoningEffort !== undefined) {
 				reasoningEffort = state.reasoningEffort ?? null;
 			}
@@ -802,6 +807,7 @@
 					{ webSearchMode },
 					getPreferredDefaultWebSearchMode()
 				),
+				selectedToolIds,
 				activeAssistant,
 				systemPrompt: typeof params?.system === 'string' ? params.system : null,
 				imageGenerationEnabled,
@@ -979,8 +985,23 @@
 		}
 	}
 
-	$: if ($tools && (atSelectedModel || selectedModels)) {
+	$: if ($tools && (atSelectedModel || selectedModels) && selectedToolIds.length === 0) {
 		setToolIds();
+	}
+
+	const areStringArraysEqual = (a: string[] = [], b: string[] = []) =>
+		a.length === b.length && a.every((item, index) => item === b[index]);
+
+	const filterValidToolIds = (ids: string[] = []) => {
+		const toolIdSet = new Set(($tools ?? []).map((tool) => tool.id));
+		return ids.filter((id) => toolIdSet.has(id));
+	};
+
+	$: if ($tools && selectedToolIds.length > 0) {
+		const filteredToolIds = filterValidToolIds(selectedToolIds);
+		if (!areStringArraysEqual(filteredToolIds, selectedToolIds)) {
+			selectedToolIds = filteredToolIds;
+		}
 	}
 
 	const setToolIds = async () => {
