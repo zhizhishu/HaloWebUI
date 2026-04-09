@@ -181,6 +181,42 @@ def set_user_tool_server_connections(user: UserModel, connections: list[dict]) -
     return _update_tools_settings(user.id, {TOOL_SERVER_CONNECTIONS_KEY: connections})
 
 
+def _is_mcp_inherit_from_admin_enabled(request) -> bool:
+    cfg = getattr(getattr(request, "app", None), "state", None)
+    cfg = getattr(cfg, "config", None)
+    try:
+        return bool(getattr(cfg, "ENABLE_MCP_SERVER_INHERIT_FROM_ADMIN"))
+    except Exception:
+        return False
+
+
+def _get_admin_mcp_seed_connections(request) -> list[dict]:
+    """
+    Resolve inherited MCP connections source for regular users.
+    Priority:
+    1) The first admin user that has per-user MCP settings.
+    2) Legacy global MCP_SERVER_CONNECTIONS config.
+    """
+    try:
+        for candidate in Users.get_users():
+            if getattr(candidate, "role", None) != "admin":
+                continue
+
+            tools = _get_tools_settings(candidate)
+            if MCP_SERVER_CONNECTIONS_KEY in tools:
+                admin_connections = _as_list(tools.get(MCP_SERVER_CONNECTIONS_KEY))
+                if admin_connections:
+                    return deepcopy(admin_connections)
+    except Exception:
+        pass
+
+    cfg = getattr(getattr(request, "app", None), "state", None)
+    cfg = getattr(cfg, "config", None)
+    legacy = getattr(cfg, "MCP_SERVER_CONNECTIONS", None) if cfg is not None else None
+    legacy = legacy if isinstance(legacy, list) else []
+    return deepcopy(legacy)
+
+
 def get_user_mcp_server_connections(request, user: Optional[UserModel]) -> list[dict]:
     tools = _get_tools_settings(user)
     role = getattr(user, "role", None) if user else None
@@ -196,6 +232,11 @@ def get_user_mcp_server_connections(request, user: Optional[UserModel]) -> list[
 
     if MCP_SERVER_CONNECTIONS_KEY in tools:
         return _filter_stdio(_as_list(tools.get(MCP_SERVER_CONNECTIONS_KEY)))
+
+    if user and role != "admin" and _is_mcp_inherit_from_admin_enabled(request):
+        inherited = _get_admin_mcp_seed_connections(request)
+        if inherited:
+            return _filter_stdio(inherited)
 
     # Admin migration fallback (read-only)
     if user and role == "admin":

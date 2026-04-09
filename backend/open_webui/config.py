@@ -1303,6 +1303,14 @@ MCP_SERVER_CONNECTIONS = PersistentConfig(
     [],
 )
 
+# When enabled, non-admin users without their own MCP settings will inherit
+# admin MCP connections (including auth key/headers).
+ENABLE_MCP_SERVER_INHERIT_FROM_ADMIN = PersistentConfig(
+    "ENABLE_MCP_SERVER_INHERIT_FROM_ADMIN",
+    "mcp.inherit_from_admin.enable",
+    os.environ.get("ENABLE_MCP_SERVER_INHERIT_FROM_ADMIN", "True").lower() == "true",
+)
+
 ####################################
 # BUILTIN TOOLS / NATIVE MODE
 ####################################

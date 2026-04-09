@@ -138,6 +138,7 @@ from open_webui.config import (
     TOOL_SERVER_CONNECTIONS,
     # MCP Server Configs
     MCP_SERVER_CONNECTIONS,
+    ENABLE_MCP_SERVER_INHERIT_FROM_ADMIN,
     # Builtin tools / native mode
     TOOL_CALLING_MODE,
     ENABLE_INTERLEAVED_THINKING,
@@ -668,6 +669,9 @@ app.state.TOOL_SERVERS = []
 ########################################
 
 app.state.config.MCP_SERVER_CONNECTIONS = MCP_SERVER_CONNECTIONS
+app.state.config.ENABLE_MCP_SERVER_INHERIT_FROM_ADMIN = (
+    ENABLE_MCP_SERVER_INHERIT_FROM_ADMIN
+)
 app.state.MCP_SERVERS = []
 
 ########################################
