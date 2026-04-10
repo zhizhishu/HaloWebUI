@@ -30,6 +30,50 @@
 - `custom` 推送：构建 `:custom` 分支镜像。
 - `future` 推送：构建 `:future` 分支镜像，便于预发验证。
 
+## 镜像溯源守则（强制）
+
+每次“拉取作者镜像并开始二改”前，必须先记录以下溯源信息到任务日志（`TASK_LOG.md`）：
+
+1. 作者镜像 `RepoDigest`（唯一镜像身份）
+2. 作者镜像 `Created` 时间（镜像构建时间）
+3. 上游 `upstream/main` 提交哈希与提交时间（源码时间锚点）
+
+推荐命令：
+
+```bash
+# 1) 拉取作者镜像（示例）
+docker pull ghcr.io/ztx888/halowebui:main
+
+# 2) 记录镜像身份与时间
+IMAGE_REF="ghcr.io/ztx888/halowebui:main"
+IMAGE_DIGEST=$(docker image inspect "$IMAGE_REF" --format '{{index .RepoDigests 0}}')
+IMAGE_CREATED_AT=$(docker image inspect "$IMAGE_REF" --format '{{.Created}}')
+
+# 3) 记录上游源码锚点
+git fetch upstream main
+UPSTREAM_SHA=$(git rev-parse upstream/main)
+UPSTREAM_COMMIT_TIME=$(git show -s --format='%ci' "$UPSTREAM_SHA")
+
+echo "IMAGE_DIGEST=$IMAGE_DIGEST"
+echo "IMAGE_CREATED_AT=$IMAGE_CREATED_AT"
+echo "UPSTREAM_SHA=$UPSTREAM_SHA"
+echo "UPSTREAM_COMMIT_TIME=$UPSTREAM_COMMIT_TIME"
+```
+
+任务日志模板（可直接复制）：
+
+```text
+- [ ] **目标:** <本次二改目标> (创建于: YYYY-MM-DD HH:MM:SS)
+  - 镜像基线: <IMAGE_DIGEST>
+  - 镜像时间: <IMAGE_CREATED_AT>
+  - 上游基线: <UPSTREAM_SHA>
+  - 上游时间: <UPSTREAM_COMMIT_TIME>
+```
+
+说明：
+- 若镜像时间晚于上次记录，必须先做差异评估再改 `future/custom`。
+- 发布问题回溯时，以 `IMAGE_DIGEST + UPSTREAM_SHA` 作为唯一溯源键。
+
 ## 开发与审核建议
 
 1. 所有功能改动优先进入 `future`，避免直接污染 `custom`。
@@ -66,4 +110,3 @@ git merge future
 git checkout future
 git checkout -b feature/xxx
 ```
-
