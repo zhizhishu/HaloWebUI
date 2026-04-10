@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 concurrency:
   group: sync-upstream-main
@@ -40,3 +41,43 @@ jobs:
 
       - name: Push main
         run: git push origin main
+
+      - name: Ensure future branch exists
+        run: |
+          if git ls-remote --exit-code --heads origin future >/dev/null; then
+            echo "future branch already exists."
+          else
+            echo "future branch missing, creating from main."
+            git push origin main:future
+          fi
+
+      - name: Create PR from main to future (if needed)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch origin main future
+
+          AHEAD_COUNT=$(git rev-list --count origin/future..origin/main)
+          echo "Ahead count (main over future): ${AHEAD_COUNT}"
+          if [ "${AHEAD_COUNT}" -eq 0 ]; then
+            echo "No new commits to merge into future."
+            exit 0
+          fi
+
+          OPEN_PR_COUNT=$(gh pr list \
+            --base future \
+            --head main \
+            --state open \
+            --json number \
+            --jq 'length')
+
+          if [ "${OPEN_PR_COUNT}" -gt 0 ]; then
+            echo "An open PR from main to future already exists. Skip creating a new one."
+            exit 0
+          fi
+
+          gh pr create \
+            --base future \
+            --head main \
+            --title "chore(sync): merge main into future" \
+            --body "Auto-created after syncing upstream/main into fork main. Manual review and merge only."
