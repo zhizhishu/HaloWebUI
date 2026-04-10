@@ -282,7 +282,7 @@ class MCPServerConnection(BaseModel):
     command: Optional[str] = None
     args: List[str] = Field(default_factory=list)
     env: Dict[str, str] = Field(default_factory=dict)
-    headers: Dict[str, str] = Field(default_factory=dict)
+    headers: Dict[str, Any] = Field(default_factory=dict)
     name: Optional[str] = None
     description: Optional[str] = None
     auth_type: Optional[str] = None
