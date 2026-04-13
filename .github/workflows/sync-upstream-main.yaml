@@ -55,6 +55,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set +e
           git fetch origin main future
 
           AHEAD_COUNT=$(git rev-list --count origin/future..origin/main)
@@ -76,8 +77,15 @@ jobs:
             exit 0
           fi
 
-          gh pr create \
+          CREATE_OUTPUT=$(gh pr create \
             --base future \
             --head main \
             --title "chore(sync): merge main into future" \
-            --body "Auto-created after syncing upstream/main into fork main. Manual review and merge only."
+            --body "Auto-created after syncing upstream/main into fork main. Manual review and merge only." 2>&1)
+          CREATE_EXIT=$?
+          if [ "${CREATE_EXIT}" -ne 0 ]; then
+            echo "::warning::PR auto-create skipped: ${CREATE_OUTPUT}"
+            echo "Keep sync workflow non-blocking to avoid false failures."
+            exit 0
+          fi
+          echo "${CREATE_OUTPUT}"

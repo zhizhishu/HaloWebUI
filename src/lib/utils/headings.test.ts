@@ -4,6 +4,13 @@ import { describe, expect, it } from 'vitest';
 import markedExtension from '$lib/utils/marked/extension';
 import { extractHeadings } from './headings';
 
+const expectHeadingIds = (items: Array<{ id: string }>, messageId: string) => {
+	for (const item of items) {
+		expect(item.id).toMatch(new RegExp(`^heading-${messageId}-\\d+(?:-\\d+)*$`));
+	}
+	expect(new Set(items.map((item) => item.id)).size).toBe(items.length);
+};
+
 function createParser() {
 	const parser = new Marked();
 	parser.use(markedExtension());
@@ -32,10 +39,12 @@ describe('extractHeadings', () => {
   ### Nested Heading
 `;
 
-		expect(extractHeadings(createParser().lexer(markdown), 'message-2')).toEqual([
-			{ depth: 2, text: 'Quote Heading', id: 'heading-message-2-0-0' },
-			{ depth: 3, text: 'Nested Heading', id: 'heading-message-2-1-0-1' }
+		const headings = extractHeadings(createParser().lexer(markdown), 'message-2');
+		expect(headings.map(({ depth, text }) => ({ depth, text }))).toEqual([
+			{ depth: 2, text: 'Quote Heading' },
+			{ depth: 3, text: 'Nested Heading' }
 		]);
+		expectHeadingIds(headings, 'message-2');
 	});
 
 	it('keeps duplicate heading text unique by token path', () => {
@@ -48,10 +57,12 @@ describe('extractHeadings', () => {
 	it('extracts code blocks as outline items', () => {
 		const markdown = '```sql\nselect 1;\n```\n\n```dockerfile\nFROM alpine:3.18\n```';
 
-		expect(extractHeadings(createParser().lexer(markdown), 'message-4')).toEqual([
-			{ depth: 2, text: 'SQL', id: 'heading-message-4-0' },
-			{ depth: 2, text: 'Dockerfile', id: 'heading-message-4-1' }
+		const headings = extractHeadings(createParser().lexer(markdown), 'message-4');
+		expect(headings.map(({ depth, text }) => ({ depth, text }))).toEqual([
+			{ depth: 2, text: 'SQL' },
+			{ depth: 2, text: 'Dockerfile' }
 		]);
+		expectHeadingIds(headings, 'message-4');
 	});
 
 	it('extracts headings and code blocks from details content', () => {

@@ -89,6 +89,25 @@ echo "UPSTREAM_COMMIT_TIME=$UPSTREAM_COMMIT_TIME"
    - 是否破坏 `main` 的纯同步定位
    - 是否在 `custom` 引入未经验证的实验功能
 
+## 二改保留清单（强制）
+
+以下能力为本仓库二改核心能力，**每次同步 `main -> future` 后必须验证，不得回归**：
+
+1. 普通用户继承管理员 MCP 配置能力（含开关控制）。
+2. MCP 工具选择状态持久化能力（避免会话中被自动重置）。
+
+强制回归命令：
+
+```bash
+uv run pytest \
+  backend/open_webui/test/unit/test_user_tools_mcp_inherit.py \
+  backend/open_webui/test/unit/test_mcp.py
+```
+
+若回归失败：
+- 不允许直接合并 `future -> custom`。
+- 需先修复并补充测试，再进入发布流程。
+
 ## 本地常用命令
 
 ```bash
