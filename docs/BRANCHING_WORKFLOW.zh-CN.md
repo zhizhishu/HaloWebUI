@@ -74,6 +74,44 @@ echo "UPSTREAM_COMMIT_TIME=$UPSTREAM_COMMIT_TIME"
 - 若镜像时间晚于上次记录，必须先做差异评估再改 `future/custom`。
 - 发布问题回溯时，以 `IMAGE_DIGEST + UPSTREAM_SHA` 作为唯一溯源键。
 
+## 作者更新清单守则（每轮强制）
+
+每一轮同步前，必须先生成“作者更新清单”并写入 `TASK_LOG.md`，避免在未知变更上直接二改。
+
+强制命令：
+
+```bash
+# 1) 同步远端
+git fetch upstream main
+
+# 2) 以上一轮记录的上游基线为起点，生成新增提交清单
+# 例：LAST_UPSTREAM_SHA=89911af
+LAST_UPSTREAM_SHA=<上次记录的上游基线SHA>
+git log --oneline --reverse ${LAST_UPSTREAM_SHA}..upstream/main
+
+# 3) 记录最新上游锚点
+UPSTREAM_SHA=$(git rev-parse upstream/main)
+UPSTREAM_COMMIT_TIME=$(git show -s --format='%ci' "$UPSTREAM_SHA")
+echo "UPSTREAM_SHA=$UPSTREAM_SHA"
+echo "UPSTREAM_COMMIT_TIME=$UPSTREAM_COMMIT_TIME"
+```
+
+任务日志模板（可直接复制）：
+
+```text
+- [ ] **目标:** <本轮同步与二改目标> (创建于: YYYY-MM-DD HH:MM:SS)
+  - 上轮上游基线: <LAST_UPSTREAM_SHA>
+  - 本轮上游基线: <UPSTREAM_SHA>
+  - 本轮上游时间: <UPSTREAM_COMMIT_TIME>
+  - 作者更新清单:
+    - <commit1> <summary>
+    - <commit2> <summary>
+```
+
+规则：
+- 未记录作者更新清单，不允许进入 `main -> future` 合并步骤。
+- 合并后必须再做一次“二改保留清单（强制）”回归验证。
+
 ## 开发与审核建议
 
 1. 所有功能改动优先进入 `future`，避免直接污染 `custom`。
