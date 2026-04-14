@@ -20,6 +20,7 @@ jobs:
   mcp-core-regression:
     name: MCP Core Regression
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v6
@@ -32,10 +33,55 @@ jobs:
       - name: Install uv
         run: python -m pip install --upgrade pip uv
 
-      - name: Run MCP core regression tests (warn only)
+      - name: Run MCP core regression tests (observable, non-blocking)
+        id: mcp_core
+        shell: bash
         run: |
-          if ! uv run pytest \
+          set +e
+          mkdir -p .reports
+          LOG_FILE=".reports/mcp-core-regression.log"
+          JUNIT_FILE=".reports/mcp-core-regression.junit.xml"
+
+          uv run pytest \
             backend/open_webui/test/unit/test_user_tools_mcp_inherit.py \
-            backend/open_webui/test/unit/test_mcp.py; then
-            echo "::warning::MCP regression runtime tests failed in GitHub-hosted runner; keep guard non-blocking and rely on local pre-merge verification."
+            backend/open_webui/test/unit/test_mcp.py \
+            --junitxml "${JUNIT_FILE}" 2>&1 | tee "${LOG_FILE}"
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+
+          if [ "${EXIT_CODE}" -eq 0 ]; then
+            {
+              echo "## MCP Core Regression"
+              echo "- Status: PASS"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
+
+          {
+            echo "## MCP Core Regression"
+            echo "- Status: FAIL (non-blocking)"
+            echo "- Exit code: ${EXIT_CODE}"
+            echo ""
+            echo "<details><summary>Failure tail (last 120 lines)</summary>"
+            echo ""
+            echo '```text'
+            tail -n 120 "${LOG_FILE}"
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - name: Upload MCP regression logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-core-regression-${{ github.run_id }}
+          path: .reports/*
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Annotate MCP regression failure
+        if: steps.mcp_core.outputs.exit_code != '0'
+        run: |
+          echo "::warning::MCP regression failed (non-blocking). Please download artifact 'mcp-core-regression-${{ github.run_id }}' and inspect Job Summary."
