@@ -164,6 +164,77 @@ RUN_TESTS=0 bash scripts/pre-release-check.sh
 ALLOW_DIRTY=1 RUN_TESTS=0 bash scripts/pre-release-check.sh
 ```
 
+### 3) custom 核心回归“可观测失败”
+
+`Custom Regression Guard` 已升级为可观测模式：
+
+1. 失败时仍保持 non-blocking（不阻断主流程）。
+2. 自动上传 `mcp-core-regression-<run_id>` artifact（含日志与 junit xml）。
+3. Job Summary 自动附带失败摘要（最近 120 行）。
+
+这样不会再出现“只看到红灯但不知道原因”。
+
+### 4) 发布后 Smoke Test（自动）
+
+`docker-build.yaml` 在主镜像 manifest 发布后自动执行最小验证：
+
+1. `GET /health` 与 `GET /health/db`
+2. 首页可达性（`/`）
+3. `GET /api/version`
+4. MCP 关键 API 路径可达性（`/api/v1/configs/mcp_servers`、`/api/v1/tools`）
+
+实现脚本：
+
+```bash
+scripts/ci-smoke-test.sh
+```
+
+### 5) 升级回滚标准化脚本
+
+新增脚本：
+
+```bash
+scripts/upgrade-with-rollback.sh
+```
+
+流程固定为：
+
+1. 识别当前运行镜像与数据挂载
+2. 备份数据（volume/bind）
+3. 拉取并升级
+4. 健康检查
+5. 失败自动回滚（可选恢复数据 + 回退到升级前镜像）
+
+示例：
+
+```bash
+COMPOSE_FILE=docker-compose.yml \
+SERVICE_NAME=open-webui \
+HEALTH_URL=http://127.0.0.1:3000/health \
+bash scripts/upgrade-with-rollback.sh
+```
+
+### 6) 本地脏状态治理（uv.lock / .serena）
+
+新增本地治理脚本：
+
+```bash
+scripts/local-worktree-hygiene.sh
+```
+
+常用命令：
+
+```bash
+# 查看当前状态
+bash scripts/local-worktree-hygiene.sh status
+
+# 开启本地治理（.serena/.reports 本地排除 + uv.lock skip-worktree）
+bash scripts/local-worktree-hygiene.sh enable
+
+# 关闭 uv.lock skip-worktree
+bash scripts/local-worktree-hygiene.sh disable
+```
+
 ## 开发与审核建议
 
 1. 所有功能改动优先进入 `future`，避免直接污染 `custom`。
