@@ -112,6 +112,58 @@ echo "UPSTREAM_COMMIT_TIME=$UPSTREAM_COMMIT_TIME"
 - 未记录作者更新清单，不允许进入 `main -> future` 合并步骤。
 - 合并后必须再做一次“二改保留清单（强制）”回归验证。
 
+## 自动报告与一键预检（新增）
+
+### 1) 同步工作流自动生成“作者更新清单”
+
+`Sync Fork Main With Upstream` 现在会在每次运行后自动生成并上传报告：
+
+- Job Summary 会直接展示“作者更新清单 / 影响目录 / 风险提示”。
+- Artifacts 会产出 `upstream-change-report`（`upstream-change-report.md`）。
+
+核心脚本：
+
+```bash
+scripts/generate-upstream-change-report.sh <prev_sha> <new_sha> [upstream_ref] [output_path]
+```
+
+示例（本地手动）：
+
+```bash
+git fetch upstream main
+PREV_SHA=$(git rev-parse main)
+NEW_SHA=$(git rev-parse upstream/main)
+bash scripts/generate-upstream-change-report.sh "$PREV_SHA" "$NEW_SHA" upstream/main .reports/upstream-change-report.md
+```
+
+### 2) 一键发布前检查
+
+新增脚本：
+
+```bash
+scripts/pre-release-check.sh
+```
+
+默认会检查：
+
+1. 工作区是否干净
+2. `main/upstream/main`、`future/main`、`custom/future` 对齐状态
+3. MCP 核心后端回归与前端关键回归
+4. 作者镜像与自定义镜像的本地溯源信息（Digest/Created）
+
+常用用法：
+
+```bash
+# 标准发布前检查（默认目标分支 custom，含测试）
+bash scripts/pre-release-check.sh
+
+# 仅做结构检查，跳过测试
+RUN_TESTS=0 bash scripts/pre-release-check.sh
+
+# 本地开发临时检查（工作区未提交也可执行）
+ALLOW_DIRTY=1 RUN_TESTS=0 bash scripts/pre-release-check.sh
+```
+
 ## 开发与审核建议
 
 1. 所有功能改动优先进入 `future`，避免直接污染 `custom`。
