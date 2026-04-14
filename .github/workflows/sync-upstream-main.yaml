@@ -35,9 +35,31 @@ jobs:
           git fetch upstream main
 
       - name: Sync upstream/main into main
+        id: sync
         run: |
           git checkout main
+          PREV_MAIN_SHA=$(git rev-parse main)
           git merge --ff-only upstream/main || git merge --no-edit upstream/main
+          NEW_MAIN_SHA=$(git rev-parse main)
+          echo "prev_main_sha=${PREV_MAIN_SHA}" >> "$GITHUB_OUTPUT"
+          echo "new_main_sha=${NEW_MAIN_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate upstream change report
+        run: |
+          mkdir -p .reports
+          bash scripts/generate-upstream-change-report.sh \
+            "${{ steps.sync.outputs.prev_main_sha }}" \
+            "${{ steps.sync.outputs.new_main_sha }}" \
+            "upstream/main" \
+            ".reports/upstream-change-report.md"
+          cat .reports/upstream-change-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload upstream change report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-change-report
+          path: .reports/upstream-change-report.md
+          if-no-files-found: error
 
       - name: Push main
         run: git push origin main
