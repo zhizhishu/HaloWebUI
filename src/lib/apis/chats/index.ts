@@ -2,7 +2,12 @@ import { WEBUI_API_BASE_URL } from '$lib/constants';
 import { getTimeRange } from '$lib/utils';
 import { parseJsonResponse } from '../response';
 
-export const createNewChat = async (token: string, chat: object) => {
+export const createNewChat = async (
+	token: string,
+	chat: object,
+	folderId: string | null = null,
+	assistantId: string | null = null
+) => {
 	let error = null;
 
 	const res = await fetch(`${WEBUI_API_BASE_URL}/chats/new`, {
@@ -13,7 +18,9 @@ export const createNewChat = async (token: string, chat: object) => {
 			authorization: `Bearer ${token}`
 		},
 		body: JSON.stringify({
-			chat: chat
+			chat: chat,
+			folder_id: folderId ?? null,
+			assistant_id: assistantId ?? null
 		})
 	})
 		.then(parseJsonResponse)
@@ -35,7 +42,8 @@ export const importChat = async (
 	chat: object,
 	meta: object | null,
 	pinned?: boolean,
-	folderId?: string | null
+	folderId?: string | null,
+	assistantId?: string | null
 ) => {
 	let error = null;
 
@@ -50,7 +58,47 @@ export const importChat = async (
 			chat: chat,
 			meta: meta ?? {},
 			pinned: pinned,
-			folder_id: folderId
+			folder_id: folderId,
+			assistant_id: assistantId ?? null
+		})
+	})
+		.then(parseJsonResponse)
+		.catch((err) => {
+			error = err;
+			console.log(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const importChatsBatch = async (
+	token: string,
+	items: Array<{
+		chat: object;
+		meta?: object | null;
+		pinned?: boolean;
+		folder_id?: string | null;
+		assistant_id?: string | null;
+	}>,
+	mode: 'merge' | 'replace' = 'merge'
+) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/chats/import/batch`, {
+		method: 'POST',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			authorization: `Bearer ${token}`
+		},
+		body: JSON.stringify({
+			items,
+			mode
 		})
 	})
 		.then(parseJsonResponse)
@@ -159,7 +207,10 @@ export const getArchivedChatList = async (token: string = '') => {
 		throw error;
 	}
 
-	return res;
+	return res.map((chat) => ({
+		...chat,
+		time_range: getTimeRange(chat.updated_at)
+	}));
 };
 
 export const getAllChats = async (token: string) => {
@@ -251,6 +302,85 @@ export const getChatsByFolderId = async (token: string, folderId: string) => {
 	}
 
 	return res;
+};
+
+export const getChatListByFolderId = async (
+	token: string,
+	folderId: string,
+	page: number = 1
+) => {
+	let error = null;
+
+	const searchParams = new URLSearchParams();
+	searchParams.append('page', `${page}`);
+
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/chats/folder/${folderId}/list?${searchParams.toString()}`,
+		{
+			method: 'GET',
+			headers: {
+				Accept: 'application/json',
+				'Content-Type': 'application/json',
+				...(token && { authorization: `Bearer ${token}` })
+			}
+		}
+	)
+		.then(parseJsonResponse)
+		.then((json) => {
+			return json;
+		})
+		.catch((err) => {
+			error = err;
+			console.log(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const getChatListByAssistantId = async (
+	token: string,
+	assistantId: string,
+	page: number = 1
+) => {
+	let error = null;
+
+	const searchParams = new URLSearchParams();
+	searchParams.append('page', `${page}`);
+
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/chats/assistant/${assistantId}/list?${searchParams.toString()}`,
+		{
+			method: 'GET',
+			headers: {
+				Accept: 'application/json',
+				'Content-Type': 'application/json',
+				...(token && { authorization: `Bearer ${token}` })
+			}
+		}
+	)
+		.then(parseJsonResponse)
+		.then((json) => {
+			return json;
+		})
+		.catch((err) => {
+			error = err;
+			console.log(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res.map((chat) => ({
+		...chat,
+		time_range: getTimeRange(chat.updated_at)
+	}));
 };
 
 export const getAllArchivedChats = async (token: string) => {
@@ -623,6 +753,50 @@ export const cloneChatById = async (token: string, id: string, title?: string) =
 	return res;
 };
 
+export const branchChatById = async (
+	token: string,
+	id: string,
+	branchPointMessageId: string,
+	title?: string
+) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/chats/${id}/branch`, {
+		method: 'POST',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			...(token && { authorization: `Bearer ${token}` })
+		},
+		body: JSON.stringify({
+			branch_point_message_id: branchPointMessageId,
+			...(title ? { title } : {})
+		})
+	})
+		.then(parseJsonResponse)
+		.then((json) => {
+			return json;
+		})
+		.catch((err) => {
+			error = err;
+
+			if ('detail' in err) {
+				error = err.detail;
+			} else {
+				error = err;
+			}
+
+			console.log(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
 export const cloneSharedChatById = async (token: string, id: string) => {
 	let error = null;
 
@@ -798,6 +972,39 @@ export const updateChatById = async (token: string, id: string, chat: object) =>
 		.catch((err) => {
 			error = err;
 
+			console.log(err);
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const updateChatComposerStateById = async (
+	token: string,
+	id: string,
+	composerState: object
+) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/chats/${id}/composer-state`, {
+		method: 'POST',
+		headers: {
+			Accept: 'application/json',
+			'Content-Type': 'application/json',
+			...(token && { authorization: `Bearer ${token}` })
+		},
+		body: JSON.stringify({
+			composer_state: composerState
+		})
+	})
+		.then(parseJsonResponse)
+		.then((json) => json)
+		.catch((err) => {
+			error = err;
 			console.log(err);
 			return null;
 		});

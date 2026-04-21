@@ -469,6 +469,24 @@ textarea::placeholder {
 	@apply prose dark:prose-invert prose-blockquote:border-s-gray-100 prose-blockquote:dark:border-gray-800 prose-blockquote:border-s-2 prose-blockquote:not-italic prose-blockquote:font-normal prose-headings:font-semibold prose-hr:my-4 prose-hr:border-gray-100 prose-hr:dark:border-gray-800 prose-p:my-0 prose-img:my-1 prose-headings:my-1 prose-pre:my-0 prose-table:my-0 prose-blockquote:my-0 prose-ul:-my-0 prose-ol:-my-0 prose-li:-my-0 whitespace-pre-line;
 }
 
+.markdown-prose
+	:where(h1):not(:where([class~='not-prose'], [class~='not-prose'] *)) {
+	font-size: 1.5625rem;
+	line-height: 1.25;
+}
+
+.markdown-prose
+	:where(h2):not(:where([class~='not-prose'], [class~='not-prose'] *)) {
+	font-size: 1.375rem;
+	line-height: 1.35;
+}
+
+.markdown-prose
+	:where(h3):not(:where([class~='not-prose'], [class~='not-prose'] *)) {
+	font-size: 1.125rem;
+	line-height: 1.45;
+}
+
 .dark .markdown-prose {
 	color: #f0f0f0;
 }
@@ -948,8 +966,19 @@ input[type='range']::-moz-range-thumb {
 		sans-serif,
 		'Apple Color Emoji',
 		'Segoe UI Emoji',
-		'Segoe UI Symbol',
-		'Noto Color Emoji';
+			'Segoe UI Symbol',
+			'Noto Color Emoji';
+}
+
+.tippy-box[data-theme~='transparent'] {
+	background-color: transparent;
+	border: 0;
+	box-shadow: none;
+	color: inherit;
+}
+
+.tippy-box[data-theme~='transparent'] > .tippy-content {
+	padding: 0;
 }
 
 .password {
@@ -1004,6 +1033,22 @@ input[type='range']::-moz-range-thumb {
 
 	content: attr(data-suggestion);
 	pointer-events: none;
+}
+
+.ProseMirror .suggestion {
+	display: inline-flex;
+	align-items: center;
+	border-radius: 0.55rem;
+	padding: 0.02rem 0.28rem;
+	background: rgba(59, 130, 246, 0.12);
+	color: rgb(37, 99, 235);
+	box-decoration-break: clone;
+	-webkit-box-decoration-break: clone;
+}
+
+.dark .ProseMirror .suggestion {
+	background: rgba(96, 165, 250, 0.18);
+	color: rgb(191, 219, 254);
 }
 
 .tiptap > pre > code {

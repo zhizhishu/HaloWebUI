@@ -45,8 +45,12 @@
 	export let showMessage: Function = () => {};
 	export let submitMessage: Function = () => {};
 	export let addMessages: Function = () => {};
+	export let onBranchMessage: Function = () => {};
+	export let branchingMessageId: string | null = null;
+	export let branchSupported = false;
 
 	export let readOnly = false;
+	export let showAllMessages = false;
 
 	export let bottomPadding = false;
 	export let autoScroll;
@@ -71,7 +75,7 @@
 		let _messages = [];
 
 		let message = history.messages[history.currentId];
-		while (message && _messages.length < messagesCount) {
+		while (message && (showAllMessages || _messages.length < messagesCount)) {
 			_messages.unshift({ ...message });
 			message = message.parentId !== null ? history.messages[message.parentId] : null;
 		}
@@ -444,6 +448,9 @@
 							{continueResponse}
 							{mergeResponses}
 							{addMessages}
+							{onBranchMessage}
+							{branchingMessageId}
+							{branchSupported}
 							{triggerScroll}
 							{readOnly}
 						/>

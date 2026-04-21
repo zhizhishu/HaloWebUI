@@ -8,6 +8,7 @@ if str(_BACKEND_DIR) not in sys.path:
 
 from open_webui.routers.images import (  # noqa: E402
     _classify_gemini_image_model,
+    _classify_grok_image_model,
     _classify_openai_image_model,
     _extract_generated_images_from_openai_response,
     load_b64_image_data,
@@ -45,6 +46,23 @@ def test_openai_official_gpt_image_family_prefers_images_endpoint_mode():
     assert classified is not None
     assert classified["generation_mode"] == "openai_images"
     assert classified["supports_background"] is True
+
+
+def test_official_xai_openai_compat_models_use_xai_images_mode():
+    classified = _classify_openai_image_model(
+        {
+            "id": "grok-imagine-image",
+            "name": "Grok Imagine Image",
+        },
+        base_url="https://api.x.ai/v1",
+        api_config={},
+        source={"effective_source": "shared", "provider": "openai"},
+    )
+
+    assert classified is not None
+    assert classified["generation_mode"] == "xai_images"
+    assert classified["size_mode"] == "aspect_ratio"
+    assert classified["supports_resolution"] is True
 
 
 def test_openai_seedream_description_is_detected_as_image_model():
@@ -135,6 +153,20 @@ def test_gemini_generate_content_image_preview_is_detected():
 
     assert classified is not None
     assert classified["generation_mode"] == "gemini_generate_content_image"
+
+
+def test_grok_image_model_is_detected():
+    classified = _classify_grok_image_model(
+        {
+            "id": "grok-imagine-image",
+            "name": "Grok Imagine Image",
+        },
+        source={"effective_source": "personal", "provider": "grok"},
+    )
+
+    assert classified is not None
+    assert classified["generation_mode"] == "xai_images"
+    assert classified["supports_resolution"] is True
 
 
 def test_gemini_camelcase_modalities_are_detected_as_image_model():

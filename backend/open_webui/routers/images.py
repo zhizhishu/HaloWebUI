@@ -16,11 +16,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, stat
 from open_webui.config import CACHE_DIR
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import (
+    AIOHTTP_CLIENT_SESSION_SSL,
     AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST,
     ENABLE_FORWARD_USER_INFO_HEADERS,
+    REQUESTS_VERIFY,
     SRC_LOG_LEVELS,
 )
 from open_webui.routers import gemini as gemini_router
+from open_webui.routers import grok as grok_router
 from open_webui.routers import openai as openai_router
 from open_webui.routers.files import upload_file
 from open_webui.utils.auth import get_admin_user, get_verified_user
@@ -129,6 +132,23 @@ GEMINI_IMAGE_ASPECT_RATIOS = (
     "9:16",
     "16:9",
     "21:9",
+)
+GROK_IMAGE_RESOLUTIONS = ("1k", "2k")
+GROK_IMAGE_ASPECT_RATIOS = (
+    "1:1",
+    "16:9",
+    "9:16",
+    "4:3",
+    "3:4",
+    "3:2",
+    "2:3",
+    "2:1",
+    "1:2",
+    "19.5:9",
+    "9:19.5",
+    "20:9",
+    "9:20",
+    "auto",
 )
 
 def _evict_stale_image_models_cache(now: float) -> None:
@@ -347,6 +367,9 @@ def _get_user_provider_urls_keys(user, provider: str) -> tuple[list[str], list[s
     elif provider == "gemini":
         urls_key = "GEMINI_API_BASE_URLS"
         keys_key = "GEMINI_API_KEYS"
+    elif provider == "grok":
+        urls_key = "GROK_API_BASE_URLS"
+        keys_key = "GROK_API_KEYS"
     else:
         return [], []
 
@@ -418,6 +441,10 @@ def _shared_key_available(request: Request, engine: str) -> bool:
     if engine == "gemini":
         return _is_non_empty(getattr(cfg, "IMAGES_GEMINI_API_BASE_URL", "")) and _is_non_empty(
             getattr(cfg, "IMAGES_GEMINI_API_KEY", "")
+        )
+    if engine == "grok":
+        return _is_non_empty(getattr(cfg, "IMAGES_GROK_API_BASE_URL", "")) and _is_non_empty(
+            getattr(cfg, "IMAGES_GROK_API_KEY", "")
         )
     if engine == "comfyui":
         return _is_non_empty(getattr(cfg, "COMFYUI_BASE_URL", ""))
@@ -500,6 +527,15 @@ def _sync_image_provider_config_state(request: Request) -> None:
         request.app.state.config.IMAGES_GEMINI_API_BASE_URL = normalized_gemini_base_url
     if normalized_gemini_force_mode != gemini_force_mode:
         request.app.state.config.IMAGES_GEMINI_API_FORCE_MODE = normalized_gemini_force_mode
+
+    grok_base_url = str(getattr(cfg, "IMAGES_GROK_API_BASE_URL", "") or "")
+    normalized_grok_base_url, _ = _normalize_image_provider_base_url(
+        grok_base_url,
+        "/v1",
+        force_mode=False,
+    )
+    if normalized_grok_base_url != grok_base_url:
+        request.app.state.config.IMAGES_GROK_API_BASE_URL = normalized_grok_base_url
 
 
 def _normalize_context(value: Optional[str]) -> str:
@@ -664,6 +700,15 @@ def _is_volcengine_ark_connection(url: str) -> bool:
     return hostname.endswith(".volces.com") or hostname.endswith(".volcengineapi.com")
 
 
+def _is_official_xai_connection(url: str) -> bool:
+    try:
+        hostname = (urlparse(_normalize_base_url(url)).hostname or "").strip().lower()
+    except Exception:
+        hostname = ""
+
+    return hostname == "api.x.ai"
+
+
 def _has_image_modality(tokens: set[str]) -> bool:
     for token in tokens:
         if token == "image" or token.startswith("image/"):
@@ -733,6 +778,10 @@ def _match_global_provider_connection(
         base_urls = list(getattr(cfg, "GEMINI_API_BASE_URLS", []) or [])
         keys = list(getattr(cfg, "GEMINI_API_KEYS", []) or [])
         configs = getattr(cfg, "GEMINI_API_CONFIGS", {}) or {}
+    elif provider == "grok":
+        base_urls = list(getattr(cfg, "GROK_API_BASE_URLS", []) or [])
+        keys = list(getattr(cfg, "GROK_API_KEYS", []) or [])
+        configs = getattr(cfg, "GROK_API_CONFIGS", {}) or {}
     else:
         return None, "", {}
 
@@ -754,6 +803,8 @@ def _get_provider_user_connection_bundle(
         return openai_router._get_openai_user_config(user)
     if provider == "gemini":
         return gemini_router._get_gemini_user_config(user)
+    if provider == "grok":
+        return grok_router._get_grok_user_config(user)
     return [], [], {}
 
 
@@ -815,6 +866,13 @@ def _list_image_provider_sources(
         shared_key = str(getattr(cfg, "IMAGES_GEMINI_API_KEY", "") or "").strip()
         if persisted_force_mode:
             image_api_config["force_mode"] = True
+    elif provider == "grok":
+        shared_base_url, _ = _normalize_image_provider_base_url(
+            getattr(cfg, "IMAGES_GROK_API_BASE_URL", ""),
+            "/v1",
+            force_mode=False,
+        )
+        shared_key = str(getattr(cfg, "IMAGES_GROK_API_KEY", "") or "").strip()
     else:
         return []
 
@@ -1011,18 +1069,21 @@ def _build_image_model_entry(
     supports_batch: bool,
     size_mode: str,
     supports_image_size: bool = False,
+    supports_resolution: bool = False,
     text_output_supported: bool,
     source: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     return {
         "id": model_id,
         "name": name or model_id,
+        "provider": source.get("provider") if isinstance(source, dict) else None,
         "generation_mode": generation_mode,
         "detection_method": detection_method,
         "supports_background": bool(supports_background),
         "supports_batch": bool(supports_batch),
         "size_mode": size_mode,
         "supports_image_size": bool(supports_image_size),
+        "supports_resolution": bool(supports_resolution),
         "text_output_supported": bool(text_output_supported),
         "source": source.get("effective_source") if isinstance(source, dict) else None,
         "connection_index": source.get("connection_index") if isinstance(source, dict) else None,
@@ -1039,6 +1100,25 @@ def _classify_openai_image_model(
     model_id = str(model.get("id") or model.get("name") or "").strip()
     if not model_id:
         return None
+
+    if _is_official_xai_connection(base_url):
+        return _build_image_model_entry(
+            model_id=model_id,
+            name=str(
+                model.get("name")
+                or model.get("displayName")
+                or model.get("display_name")
+                or model_id
+            ).strip(),
+            generation_mode="xai_images",
+            detection_method="metadata",
+            supports_background=False,
+            supports_batch=True,
+            size_mode="aspect_ratio",
+            supports_resolution=True,
+            text_output_supported=False,
+            source=source,
+        )
 
     base_name = _model_id_basename(model_id).lower()
     text_blob = _model_text_blob(model)
@@ -1099,6 +1179,7 @@ def _classify_openai_image_model(
         ),
         supports_batch=generation_mode == "openai_images",
         size_mode="exact" if generation_mode == "openai_images" else "aspect_ratio",
+        supports_resolution=False,
         text_output_supported=(output_has_text or generation_mode == "openai_chat_image"),
         source=source,
     )
@@ -1181,6 +1262,41 @@ def _classify_gemini_image_model(
     return None
 
 
+def _classify_grok_image_model(
+    model: dict,
+    *,
+    source: Optional[dict[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    model_id = str(
+        model.get("id")
+        or model.get("name")
+        or model.get("model")
+        or model.get("slug")
+        or ""
+    ).strip()
+    if not model_id:
+        return None
+
+    return _build_image_model_entry(
+        model_id=model_id,
+        name=str(
+            model.get("display_name")
+            or model.get("displayName")
+            or model.get("name")
+            or model_id
+        ).strip(),
+        generation_mode="xai_images",
+        detection_method="metadata",
+        supports_background=False,
+        supports_batch=True,
+        size_mode="aspect_ratio",
+        supports_image_size=False,
+        supports_resolution=True,
+        text_output_supported=False,
+        source=source,
+    )
+
+
 async def _read_aiohttp_body(response: aiohttp.ClientResponse) -> Any:
     try:
         return await response.json(content_type=None)
@@ -1237,6 +1353,13 @@ async def _discover_openai_image_models(
         raw_models = [
             {"id": model_id, "name": model_id, "object": "model"} for model_id in model_ids
         ]
+    elif _is_official_xai_connection(base_url):
+        raw_models = await grok_router._fetch_grok_models(
+            base_url,
+            api_key,
+            api_config,
+            user=user,
+        )
     else:
         models_url = openai_router._get_openai_models_url(base_url, api_config)
         headers = _build_openai_image_headers(base_url, api_key, api_config, user)
@@ -1245,7 +1368,11 @@ async def _discover_openai_image_models(
             timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST),
             trust_env=True,
         ) as session:
-            async with session.get(models_url, headers=headers) as response:
+            async with session.get(
+                models_url,
+                headers=headers,
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ) as response:
                 body = await _read_aiohttp_body(response)
                 if response.status != 200:
                     if openai_router._looks_like_models_listing_unsupported(
@@ -1280,6 +1407,45 @@ async def _discover_openai_image_models(
             api_config=api_config,
             source=source,
         )
+        if not classified:
+            continue
+        if classified["id"] in seen:
+            continue
+        seen.add(classified["id"])
+        discovered.append(classified)
+
+    return discovered
+
+
+async def _discover_grok_image_models(
+    request: Request,
+    user,
+    source: dict[str, Any],
+) -> list[dict[str, Any]]:
+    del request
+
+    base_url = source.get("base_url") or ""
+    api_key = source.get("key") or ""
+    api_config = source.get("api_config") or {}
+    model_ids = _normalize_config_model_ids(api_config)
+
+    raw_models: list[dict[str, Any]]
+    if model_ids:
+        raw_models = [{"id": model_id, "name": model_id} for model_id in model_ids]
+    else:
+        raw_models = await grok_router._fetch_grok_models(
+            base_url,
+            api_key,
+            api_config,
+            user=user,
+        )
+
+    discovered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_model in raw_models:
+        if not isinstance(raw_model, dict):
+            continue
+        classified = _classify_grok_image_model(raw_model, source=source)
         if not classified:
             continue
         if classified["id"] in seen:
@@ -1353,6 +1519,7 @@ def _discover_comfyui_image_models(request: Request) -> list[dict[str, Any]]:
         url=f"{request.app.state.config.COMFYUI_BASE_URL}/object_info",
         headers=headers,
         timeout=15,
+        verify=REQUESTS_VERIFY,
     )
     response.raise_for_status()
     info = response.json()
@@ -1387,6 +1554,7 @@ def _discover_automatic1111_image_models(request: Request) -> list[dict[str, Any
         url=f"{request.app.state.config.AUTOMATIC1111_BASE_URL}/sdapi/v1/sd-models",
         headers={"authorization": get_automatic1111_api_auth(request)},
         timeout=15,
+        verify=REQUESTS_VERIFY,
     )
     response.raise_for_status()
     raw_models = response.json()
@@ -1421,6 +1589,8 @@ async def _discover_image_models_for_source(
         models = await _discover_openai_image_models(request, user, source or {})
     elif engine == "gemini":
         models = await _discover_gemini_image_models(request, user, source or {})
+    elif engine == "grok":
+        models = await _discover_grok_image_models(request, user, source or {})
     elif engine == "comfyui":
         models = _discover_comfyui_image_models(request)
     elif engine in ("automatic1111", ""):
@@ -1441,7 +1611,7 @@ async def _discover_image_models(
     strict: bool = False,
 ) -> list[dict[str, Any]]:
     engine = _normalize_engine(getattr(request.app.state.config, "IMAGE_GENERATION_ENGINE", ""))
-    if engine not in {"openai", "gemini"}:
+    if engine not in {"openai", "gemini", "grok"}:
         return await _discover_image_models_for_source(request, user, engine, None)
 
     source = _resolve_image_provider_source(
@@ -1565,6 +1735,10 @@ async def get_config(request: Request, user=Depends(get_admin_user)):
             ),
             "GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
         },
+        "grok": {
+            "GROK_API_BASE_URL": request.app.state.config.IMAGES_GROK_API_BASE_URL,
+            "GROK_API_KEY": request.app.state.config.IMAGES_GROK_API_KEY,
+        },
     }
 
 
@@ -1595,6 +1769,11 @@ class GeminiConfigForm(BaseModel):
     GEMINI_API_KEY: str
 
 
+class GrokConfigForm(BaseModel):
+    GROK_API_BASE_URL: str
+    GROK_API_KEY: str
+
+
 class ConfigForm(BaseModel):
     enabled: bool
     engine: str
@@ -1604,6 +1783,7 @@ class ConfigForm(BaseModel):
     automatic1111: Automatic1111ConfigForm
     comfyui: ComfyUIConfigForm
     gemini: GeminiConfigForm
+    grok: GrokConfigForm
 
 
 @router.post("/config/update")
@@ -1619,6 +1799,11 @@ async def update_config(
         form_data.gemini.GEMINI_API_BASE_URL,
         "/v1beta",
         force_mode=form_data.gemini.GEMINI_API_FORCE_MODE,
+    )
+    grok_base_url, _ = _normalize_image_provider_base_url(
+        form_data.grok.GROK_API_BASE_URL,
+        "/v1",
+        force_mode=False,
     )
 
     request.app.state.config.IMAGE_GENERATION_ENGINE = form_data.engine
@@ -1638,6 +1823,9 @@ async def update_config(
     request.app.state.config.IMAGES_GEMINI_API_BASE_URL = gemini_base_url
     request.app.state.config.IMAGES_GEMINI_API_FORCE_MODE = gemini_force_mode
     request.app.state.config.IMAGES_GEMINI_API_KEY = form_data.gemini.GEMINI_API_KEY
+
+    request.app.state.config.IMAGES_GROK_API_BASE_URL = grok_base_url
+    request.app.state.config.IMAGES_GROK_API_KEY = form_data.grok.GROK_API_KEY
 
     request.app.state.config.AUTOMATIC1111_BASE_URL = (
         form_data.automatic1111.AUTOMATIC1111_BASE_URL
@@ -1704,6 +1892,10 @@ async def update_config(
             ),
             "GEMINI_API_KEY": request.app.state.config.IMAGES_GEMINI_API_KEY,
         },
+        "grok": {
+            "GROK_API_BASE_URL": request.app.state.config.IMAGES_GROK_API_BASE_URL,
+            "GROK_API_KEY": request.app.state.config.IMAGES_GROK_API_KEY,
+        },
     }
 
 
@@ -1726,6 +1918,7 @@ async def verify_url(request: Request, user=Depends(get_admin_user)):
             r = requests.get(
                 url=f"{request.app.state.config.AUTOMATIC1111_BASE_URL}/sdapi/v1/options",
                 headers={"authorization": get_automatic1111_api_auth(request)},
+                verify=REQUESTS_VERIFY,
             )
             r.raise_for_status()
             return True
@@ -1743,8 +1936,22 @@ async def verify_url(request: Request, user=Depends(get_admin_user)):
             r = requests.get(
                 url=f"{request.app.state.config.COMFYUI_BASE_URL}/object_info",
                 headers=headers,
+                verify=REQUESTS_VERIFY,
             )
             r.raise_for_status()
+            return True
+        except Exception:
+            raise HTTPException(status_code=400, detail=ERROR_MESSAGES.INVALID_URL)
+    elif request.app.state.config.IMAGE_GENERATION_ENGINE == "grok":
+        try:
+            models = await grok_router._fetch_grok_models(
+                request.app.state.config.IMAGES_GROK_API_BASE_URL,
+                request.app.state.config.IMAGES_GROK_API_KEY,
+                {},
+                user=user,
+            )
+            if models is None:
+                raise RuntimeError("No Grok models returned")
             return True
         except Exception:
             raise HTTPException(status_code=400, detail=ERROR_MESSAGES.INVALID_URL)
@@ -1773,7 +1980,7 @@ async def get_usage_config(request: Request, user=Depends(get_verified_user)):
     shared_enabled = bool(getattr(cfg, "ENABLE_IMAGE_GENERATION_SHARED_KEY", False))
     shared_available = _shared_key_available(request, engine) if shared_enabled else False
 
-    personal_supported = engine in ("openai", "gemini")
+    personal_supported = engine in ("openai", "gemini", "grok")
     provider = engine if personal_supported else None
 
     return {
@@ -1782,6 +1989,8 @@ async def get_usage_config(request: Request, user=Depends(get_verified_user)):
         "defaults": {
             "model": getattr(cfg, "IMAGE_GENERATION_MODEL", "") or "",
             "size": getattr(cfg, "IMAGE_SIZE", "") or "",
+            "aspect_ratio": getattr(cfg, "IMAGE_ASPECT_RATIO", "") or "",
+            "resolution": getattr(cfg, "IMAGE_RESOLUTION", "") or "",
             "steps": getattr(cfg, "IMAGE_STEPS", 0),
         },
         "shared_key": {"enabled": shared_enabled, "available": shared_available},
@@ -1797,6 +2006,7 @@ def set_image_model(request: Request, model: str):
         r = requests.get(
             url=f"{request.app.state.config.AUTOMATIC1111_BASE_URL}/sdapi/v1/options",
             headers={"authorization": api_auth},
+            verify=REQUESTS_VERIFY,
         )
         options = r.json()
         if model != options["sd_model_checkpoint"]:
@@ -1805,6 +2015,7 @@ def set_image_model(request: Request, model: str):
                 url=f"{request.app.state.config.AUTOMATIC1111_BASE_URL}/sdapi/v1/options",
                 json=options,
                 headers={"authorization": api_auth},
+                verify=REQUESTS_VERIFY,
             )
     return request.app.state.config.IMAGE_GENERATION_MODEL
 
@@ -1822,6 +2033,12 @@ def get_image_model(request):
             if request.app.state.config.IMAGE_GENERATION_MODEL
             else "imagen-3.0-generate-002"
         )
+    elif request.app.state.config.IMAGE_GENERATION_ENGINE == "grok":
+        return (
+            request.app.state.config.IMAGE_GENERATION_MODEL
+            if request.app.state.config.IMAGE_GENERATION_MODEL
+            else "grok-imagine-image"
+        )
     elif request.app.state.config.IMAGE_GENERATION_ENGINE == "comfyui":
         return (
             request.app.state.config.IMAGE_GENERATION_MODEL
@@ -1836,6 +2053,7 @@ def get_image_model(request):
             r = requests.get(
                 url=f"{request.app.state.config.AUTOMATIC1111_BASE_URL}/sdapi/v1/options",
                 headers={"authorization": get_automatic1111_api_auth(request)},
+                verify=REQUESTS_VERIFY,
             )
             options = r.json()
             return options["sd_model_checkpoint"]
@@ -1846,6 +2064,8 @@ def get_image_model(request):
 class ImageConfigForm(BaseModel):
     MODEL: str
     IMAGE_SIZE: str
+    IMAGE_ASPECT_RATIO: Optional[str] = None
+    IMAGE_RESOLUTION: Optional[str] = None
     IMAGE_STEPS: int
     IMAGE_MODEL_FILTER_REGEX: Optional[str] = None
 
@@ -1855,6 +2075,8 @@ async def get_image_config(request: Request, user=Depends(get_admin_user)):
     return {
         "MODEL": request.app.state.config.IMAGE_GENERATION_MODEL,
         "IMAGE_SIZE": request.app.state.config.IMAGE_SIZE,
+        "IMAGE_ASPECT_RATIO": getattr(request.app.state.config, "IMAGE_ASPECT_RATIO", "1:1"),
+        "IMAGE_RESOLUTION": getattr(request.app.state.config, "IMAGE_RESOLUTION", "1k"),
         "IMAGE_STEPS": request.app.state.config.IMAGE_STEPS,
         "IMAGE_MODEL_FILTER_REGEX": request.app.state.config.IMAGE_MODEL_FILTER_REGEX,
     }
@@ -1873,6 +2095,24 @@ async def update_image_config(
         raise HTTPException(
             status_code=400,
             detail=ERROR_MESSAGES.INCORRECT_FORMAT("  (e.g., 512x512)."),
+        )
+
+    image_aspect_ratio = str(form_data.IMAGE_ASPECT_RATIO or "").strip() or "1:1"
+    if image_aspect_ratio in GROK_IMAGE_ASPECT_RATIOS:
+        request.app.state.config.IMAGE_ASPECT_RATIO = image_aspect_ratio
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=ERROR_MESSAGES.INCORRECT_FORMAT("  (invalid aspect ratio)."),
+        )
+
+    image_resolution = str(form_data.IMAGE_RESOLUTION or "").strip().lower() or "1k"
+    if image_resolution in GROK_IMAGE_RESOLUTIONS:
+        request.app.state.config.IMAGE_RESOLUTION = image_resolution
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=ERROR_MESSAGES.INCORRECT_FORMAT("  (invalid resolution)."),
         )
 
     if form_data.IMAGE_STEPS >= 0:
@@ -1898,6 +2138,8 @@ async def update_image_config(
     return {
         "MODEL": request.app.state.config.IMAGE_GENERATION_MODEL,
         "IMAGE_SIZE": request.app.state.config.IMAGE_SIZE,
+        "IMAGE_ASPECT_RATIO": request.app.state.config.IMAGE_ASPECT_RATIO,
+        "IMAGE_RESOLUTION": request.app.state.config.IMAGE_RESOLUTION,
         "IMAGE_STEPS": request.app.state.config.IMAGE_STEPS,
         "IMAGE_MODEL_FILTER_REGEX": request.app.state.config.IMAGE_MODEL_FILTER_REGEX,
     }
@@ -1940,6 +2182,7 @@ class GenerateImageForm(BaseModel):
     size: Optional[str] = None
     image_size: Optional[str] = None
     aspect_ratio: Optional[str] = None
+    resolution: Optional[str] = None
     n: int = 1
     negative_prompt: Optional[str] = None
     credential_source: Optional[str] = None
@@ -2099,6 +2342,20 @@ def _normalize_gemini_aspect_ratio(value: Optional[str]) -> Optional[str]:
     if not normalized:
         return None
     return normalized if normalized in GEMINI_IMAGE_ASPECT_RATIOS else None
+
+
+def _normalize_grok_aspect_ratio(value: Optional[str]) -> Optional[str]:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    return normalized if normalized in GROK_IMAGE_ASPECT_RATIOS else None
+
+
+def _normalize_grok_resolution(value: Optional[str]) -> Optional[str]:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    return normalized if normalized in GROK_IMAGE_RESOLUTIONS else None
 
 
 def _size_to_gemini_image_size(size: Optional[str]) -> Optional[str]:
@@ -2390,7 +2647,13 @@ def _post_json_with_attempts(
 
     for url, headers in attempts:
         try:
-            response = requests.post(url=url, json=payload, headers=headers, timeout=timeout)
+            response = requests.post(
+                url=url,
+                json=payload,
+                headers=headers,
+                timeout=timeout,
+                verify=REQUESTS_VERIFY,
+            )
         except Exception as error:
             last_error = error
             continue
@@ -2457,6 +2720,7 @@ async def _generate_via_openai_images_endpoint(
         json=payload,
         headers=headers,
         timeout=60,
+        verify=REQUESTS_VERIFY,
     )
     if response.status_code >= 400:
         raise HTTPException(
@@ -2480,6 +2744,83 @@ async def _generate_via_openai_images_endpoint(
         raise HTTPException(
             status_code=400,
             detail="Upstream image generation completed but returned no images.",
+        )
+
+    return [
+        {
+            "url": upload_image(request, payload, image_bytes, mime_type, user),
+        }
+        for image_bytes, mime_type in images
+    ]
+
+
+async def _generate_via_xai_images(
+    request: Request,
+    user,
+    *,
+    model_id: str,
+    prompt: str,
+    n: int,
+    source: dict[str, Any],
+    aspect_ratio: Optional[str] = None,
+    resolution: Optional[str] = None,
+    fallback_size: Optional[str] = None,
+) -> list[dict[str, str]]:
+    base_url = source.get("base_url") or ""
+    api_key = source.get("key") or ""
+    api_config = source.get("api_config") or {}
+    headers = _build_openai_image_headers(base_url, api_key, api_config, user)
+
+    effective_aspect_ratio = _normalize_grok_aspect_ratio(aspect_ratio)
+    if not effective_aspect_ratio:
+        effective_aspect_ratio = _normalize_grok_aspect_ratio(
+            _size_to_aspect_ratio(fallback_size)
+        )
+
+    effective_resolution = _normalize_grok_resolution(resolution)
+
+    payload: dict[str, Any] = {
+        "model": model_id,
+        "prompt": prompt,
+        "n": max(1, int(n or 1)),
+        "response_format": "b64_json",
+    }
+    if effective_aspect_ratio:
+        payload["aspect_ratio"] = effective_aspect_ratio
+    if effective_resolution:
+        payload["resolution"] = effective_resolution
+
+    generation_url = _get_openai_images_generation_url(base_url, api_config)
+    response = await asyncio.to_thread(
+        requests.post,
+        generation_url,
+        json=payload,
+        headers=headers,
+        timeout=60,
+        verify=REQUESTS_VERIFY,
+    )
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=response.status_code,
+            detail=build_error_detail(
+                read_requests_error_payload(response),
+                default="Failed to generate image via xAI /images/generations",
+            ),
+        )
+
+    response_body = _parse_upstream_json_response(
+        response,
+        default_message="Invalid JSON response from xAI /images/generations",
+    )
+    images = _extract_generated_images_from_openai_response(
+        response_body,
+        headers=headers,
+        allowed_base_urls=[base_url],
+    )
+    if not images:
+        raise HTTPException(
+            status_code=400,
+            detail="xAI image generation completed but returned no images.",
         )
 
     return [
@@ -2555,6 +2896,7 @@ async def _generate_via_openai_chat_image(
             json=candidate_payload,
             headers=headers,
             timeout=90,
+            verify=REQUESTS_VERIFY,
         )
         if response.status_code < 400:
             response_body = _parse_upstream_json_response(
@@ -2764,9 +3106,20 @@ async def image_generations(
                 detail=ERROR_MESSAGES.INCORRECT_FORMAT("  (e.g., 512x512)."),
             )
     requested_aspect_ratio = _normalize_gemini_aspect_ratio(form_data.aspect_ratio)
+    requested_grok_aspect_ratio = _normalize_grok_aspect_ratio(
+        form_data.aspect_ratio
+        or getattr(request.app.state.config, "IMAGE_ASPECT_RATIO", None)
+    )
     requested_image_size = _normalize_gemini_image_size(form_data.image_size)
+    requested_grok_resolution = _normalize_grok_resolution(
+        form_data.resolution or getattr(request.app.state.config, "IMAGE_RESOLUTION", None)
+    )
     if not requested_aspect_ratio:
         requested_aspect_ratio = _size_to_aspect_ratio(effective_size)
+    if not requested_grok_aspect_ratio:
+        requested_grok_aspect_ratio = _normalize_grok_aspect_ratio(
+            _size_to_aspect_ratio(effective_size)
+        )
     if not requested_image_size:
         requested_image_size = _size_to_gemini_image_size(effective_size)
 
@@ -2872,6 +3225,19 @@ async def image_generations(
                     background=background,
                     source=source,
                     model_meta=selected_model_meta,
+                )
+
+            if generation_mode == "xai_images":
+                return await _generate_via_xai_images(
+                    request,
+                    user,
+                    model_id=selected_model,
+                    prompt=form_data.prompt,
+                    n=requested_n,
+                    source=source,
+                    aspect_ratio=requested_grok_aspect_ratio,
+                    resolution=requested_grok_resolution,
+                    fallback_size=effective_size,
                 )
 
             return await _generate_via_openai_images_endpoint(
@@ -2994,6 +3360,91 @@ async def image_generations(
                 source=source,
             )
 
+        elif request.app.state.config.IMAGE_GENERATION_ENGINE == "grok":
+            credential_source = _normalize_credential_source(form_data.credential_source)
+            source: Optional[dict[str, Any]] = None
+            discovered_models: Optional[list[dict[str, Any]]] = None
+            if credential_source == "auto" and form_data.connection_index is None:
+                source, discovered_models = await _select_runtime_image_provider_source(
+                    request,
+                    user,
+                    "grok",
+                    selected_model=selected_model,
+                    prefer_shared=not bool(form_data.model) and bool(selected_model),
+                )
+            if source is None:
+                source = _resolve_image_provider_source(
+                    request,
+                    user,
+                    "grok",
+                    context="runtime",
+                    credential_source=credential_source,
+                    connection_index=form_data.connection_index,
+                    strict=True,
+                )
+                assert source is not None
+
+            if discovered_models is None:
+                try:
+                    discovered_models = await _discover_image_models_for_source(
+                        request, user, "grok", source
+                    )
+                except HTTPException:
+                    if selected_model:
+                        discovered_models = []
+                    else:
+                        raise
+
+            filtered_models = _apply_image_model_regex_filter(request, discovered_models)
+            selected_model_meta = next(
+                (model for model in filtered_models if model.get("id") == selected_model),
+                None,
+            ) or next(
+                (model for model in discovered_models if model.get("id") == selected_model),
+                None,
+            )
+
+            if not selected_model:
+                if filtered_models:
+                    selected_model_meta = filtered_models[0]
+                elif discovered_models:
+                    selected_model_meta = discovered_models[0]
+                selected_model = (
+                    str((selected_model_meta or {}).get("id") or "").strip()
+                    or get_image_model(request)
+                )
+
+            if not selected_model_meta and selected_model:
+                selected_model_meta = _classify_grok_image_model(
+                    {"id": selected_model, "name": selected_model},
+                    source=source,
+                )
+
+            requested_n = (
+                max(1, min(int(form_data.n or 1), 4))
+                if (selected_model_meta or {}).get("supports_batch", True)
+                else 1
+            )
+
+            try:
+                log.info(
+                    f"image_generation user_id={user.id} engine=grok credential_source={source.get('effective_source') or credential_source} connection_index={source.get('connection_index') if source.get('connection_index') is not None else ''} model={selected_model or ''} aspect_ratio={requested_grok_aspect_ratio or ''} resolution={requested_grok_resolution or ''} n={requested_n}"
+                )
+            except Exception:
+                pass
+
+            return await _generate_via_xai_images(
+                request,
+                user,
+                model_id=selected_model,
+                prompt=form_data.prompt,
+                n=requested_n,
+                source=source,
+                aspect_ratio=requested_grok_aspect_ratio,
+                resolution=requested_grok_resolution,
+                fallback_size=effective_size,
+            )
+
         elif request.app.state.config.IMAGE_GENERATION_ENGINE == "comfyui":
             workflow = _parse_comfyui_workflow_config(request)
             _validate_comfyui_workflow_node_mapping(
@@ -3104,6 +3555,7 @@ async def image_generations(
                 url=f"{request.app.state.config.AUTOMATIC1111_BASE_URL}/sdapi/v1/txt2img",
                 json=data,
                 headers={"authorization": get_automatic1111_api_auth(request)},
+                verify=REQUESTS_VERIFY,
             )
 
             res = r.json()

@@ -26,10 +26,12 @@ from open_webui.config import (
     CACHE_DIR,
 )
 from open_webui.env import (
+    AIOHTTP_CLIENT_SESSION_SSL,
     AIOHTTP_CLIENT_TIMEOUT,
     AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST,
     ENABLE_FORWARD_USER_INFO_HEADERS,
     BYPASS_MODEL_ACCESS_CONTROL,
+    REQUESTS_VERIFY,
 )
 from open_webui.models.users import UserModel
 from open_webui.storage.provider import Storage
@@ -794,7 +796,12 @@ async def _upload_file_to_openai(
                 content_type=content_type or "application/octet-stream",
             )
 
-            async with session.post(upload_url, data=form, headers=headers) as response:
+            async with session.post(
+                upload_url,
+                data=form,
+                headers=headers,
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ) as response:
                 data = await response.json(content_type=None)
                 if response.status >= 400:
                     message = None
@@ -1114,6 +1121,7 @@ async def _probe_responses_support_for_native_file_inputs(
                 request_url,
                 headers=headers,
                 data=json.dumps(payload, ensure_ascii=False, default=str),
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
             ) as response:
                 body = await _safe_read_upstream_body(response)
                 body_text = _truncate_text(_stringify_upstream_body(body), 1200)
@@ -1267,6 +1275,7 @@ async def send_get_request(
             async with session.get(
                 url,
                 headers=_build_upstream_headers(url, key or "", api_config or {}, user=user),
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
             ) as response:
                 body = await _safe_read_upstream_body(response)
                 if response.status == 200:
@@ -1535,6 +1544,7 @@ async def speech(request: Request, user=Depends(get_verified_user)):
                     ),
                 },
                 stream=True,
+                verify=REQUESTS_VERIFY,
             )
 
             r.raise_for_status()
@@ -1874,6 +1884,7 @@ async def get_models(
                 async with session.get(
                     models_url,
                     headers=_build_upstream_headers(url, key, api_config, user=user),
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
                 ) as r:
                     response_data = await _safe_read_upstream_body(r)
                     if r.status != 200:
@@ -1978,7 +1989,11 @@ async def _discover_openai_probe_model(
     models_url = _get_openai_models_url(url, api_config)
 
     try:
-        async with session.get(models_url, headers=headers) as response:
+        async with session.get(
+            models_url,
+            headers=headers,
+            ssl=AIOHTTP_CLIENT_SESSION_SSL,
+        ) as response:
             body = await _safe_read_upstream_body(response)
             if response.status != 200:
                 return None
@@ -2013,7 +2028,11 @@ async def verify_connection(
         trust_env=True,
     ) as session:
         try:
-            async with session.get(models_url, headers=headers) as r:
+            async with session.get(
+                models_url,
+                headers=headers,
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ) as r:
                 response_body = await _safe_read_upstream_body(r)
 
                 if r.status == 200:
@@ -2149,6 +2168,7 @@ async def health_check_connection(
                     target_url,
                     headers=headers,
                     data=json.dumps(payload, ensure_ascii=False, default=str),
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
                 ) as response:
                     body = await _safe_read_upstream_body(response)
                     return response.status, body
@@ -2254,7 +2274,11 @@ async def verify_responses_connection(
                 timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST),
                 trust_env=True,
             ) as session:
-                async with session.get(f"{url}/models", headers=headers) as r:
+                async with session.get(
+                    f"{url}/models",
+                    headers=headers,
+                    ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                ) as r:
                     if r.status == 200:
                         data = await r.json()
                         items = data.get("data") if isinstance(data, dict) else None
@@ -2286,6 +2310,7 @@ async def verify_responses_connection(
             request_url,
             headers=headers,
             data=json.dumps(payload),
+            ssl=AIOHTTP_CLIENT_SESSION_SSL,
         ) as r:
             body = await _safe_read_upstream_body(r)
 
@@ -2524,6 +2549,7 @@ async def generate_chat_completion(
                 url=request_url,
                 data=payload_json,
                 headers=headers,
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
             )
 
             # ── Log upstream response metadata ──
@@ -2781,6 +2807,19 @@ async def generate_chat_completion(
                 _last_finish_reason = None
                 _last_usage = None
                 _total_content_len = 0
+                _image_payload_count = 0
+                try:
+                    _chunk_max_buffer_size = int(
+                        getattr(
+                            request.app.state.config,
+                            "CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE",
+                            16777216,
+                        )
+                        or 16777216
+                    )
+                except Exception:
+                    _chunk_max_buffer_size = 16777216
+                _chunk_max_buffer_size = max(_chunk_max_buffer_size, 65536)
 
                 # Use iter_any() to avoid aiohttp's readline() buffer
                 # limit which crashes on large SSE lines (e.g. base64
@@ -2788,7 +2827,12 @@ async def generate_chat_completion(
                 # split on b'\n' ourselves, yielding complete lines to
                 # the downstream middleware.
                 _buf = b""
-                async for raw in _orig_content.iter_any():
+                _stream_iter = (
+                    _orig_content.iter_chunked(_chunk_max_buffer_size)
+                    if hasattr(_orig_content, "iter_chunked")
+                    else _orig_content.iter_any()
+                )
+                async for raw in _stream_iter:
                     _buf += raw
                     # Split on newline – may produce multiple lines per
                     # raw chunk, or none if the line is still incomplete.
@@ -2822,6 +2866,43 @@ async def generate_chat_completion(
                                     _ct = _delta.get("content")
                                     if _ct:
                                         _total_content_len += len(_ct)
+                                    _image_url = _delta.get("image_url")
+                                    if isinstance(_image_url, dict):
+                                        _image_url = (
+                                            _image_url.get("url")
+                                            or _image_url.get("image_url")
+                                        )
+                                    _images = _delta.get("images")
+                                    if isinstance(_images, dict):
+                                        _images = [_images]
+                                    _has_image_list_payload = False
+                                    if isinstance(_images, list):
+                                        for _image_item in _images:
+                                            if isinstance(_image_item, str) and _image_item.strip():
+                                                _has_image_list_payload = True
+                                                break
+                                            if not isinstance(_image_item, dict):
+                                                continue
+                                            _candidate = _image_item.get("image_url")
+                                            if isinstance(_candidate, dict):
+                                                _candidate = (
+                                                    _candidate.get("url")
+                                                    or _candidate.get("image_url")
+                                                )
+                                            elif not isinstance(_candidate, str):
+                                                _candidate = _image_item.get("url")
+                                            if isinstance(_candidate, str) and _candidate.strip():
+                                                _has_image_list_payload = True
+                                                break
+                                    if (
+                                        _delta.get("image")
+                                        or (
+                                            isinstance(_image_url, str)
+                                            and _image_url.strip()
+                                        )
+                                        or _has_image_list_payload
+                                    ):
+                                        _image_payload_count += 1
                                 _u = _payload.get("usage")
                                 if isinstance(_u, dict) and _u:
                                     _last_usage = _u
@@ -2830,8 +2911,11 @@ async def generate_chat_completion(
 
                             if _data_count <= 3 or _data_count % 20 == 0:
                                 log.info(
-                                    "[SSE DATA #%d] finish_reason=%s content_so_far=%d chunk=%s",
-                                    _data_count, _last_finish_reason, _total_content_len,
+                                    "[SSE DATA #%d] finish_reason=%s content_so_far=%d image_events=%d chunk=%s",
+                                    _data_count,
+                                    _last_finish_reason,
+                                    _total_content_len,
+                                    _image_payload_count,
                                     _stripped[:200],
                                 )
                             else:
@@ -2850,9 +2934,9 @@ async def generate_chat_completion(
                 # Final summary — always INFO
                 log.info(
                     "[SSE DONE] total_lines=%d data_events=%d "
-                    "finish_reason=%s content_len=%d usage=%s",
+                    "finish_reason=%s content_len=%d image_events=%d usage=%s",
                     _line_count, _data_count,
-                    _last_finish_reason, _total_content_len,
+                    _last_finish_reason, _total_content_len, _image_payload_count,
                     json.dumps(_last_usage, ensure_ascii=False)[:300] if _last_usage else "(none)",
                 )
                 if _last_data_line:
@@ -2924,6 +3008,7 @@ async def proxy(path: str, request: Request, user=Depends(get_verified_user)):
             method=request.method,
             url=f"{url}/{path}",
             data=body,
+            ssl=AIOHTTP_CLIENT_SESSION_SSL,
             headers={
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",

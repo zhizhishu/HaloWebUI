@@ -10,6 +10,7 @@ if str(_BACKEND_DIR) not in sys.path:
 
 from open_webui.routers import images as images_router  # noqa: E402
 from open_webui.routers.images import _normalize_image_provider_base_url  # noqa: E402
+from open_webui.routers.images import _generate_via_xai_images  # noqa: E402
 from open_webui.routers.images import _resolve_image_provider_source  # noqa: E402
 from open_webui.routers.images import _select_runtime_image_provider_source  # noqa: E402
 from open_webui.routers.images import _sync_image_provider_config_state  # noqa: E402
@@ -230,6 +231,8 @@ def test_sync_image_provider_config_state_persists_normalized_legacy_urls():
         IMAGES_GEMINI_API_BASE_URL="https://generativelanguage.googleapis.com",
         IMAGES_GEMINI_API_KEY="gemini-key",
         IMAGES_GEMINI_API_FORCE_MODE=False,
+        IMAGES_GROK_API_BASE_URL="https://api.x.ai",
+        IMAGES_GROK_API_KEY="grok-key",
     )
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(config=cfg)))
 
@@ -239,6 +242,7 @@ def test_sync_image_provider_config_state_persists_normalized_legacy_urls():
     assert cfg.IMAGES_OPENAI_API_FORCE_MODE is False
     assert cfg.IMAGES_GEMINI_API_BASE_URL == "https://generativelanguage.googleapis.com/v1beta"
     assert cfg.IMAGES_GEMINI_API_FORCE_MODE is False
+    assert cfg.IMAGES_GROK_API_BASE_URL == "https://api.x.ai/v1"
 
 
 def test_auto_runtime_source_matches_selected_model_across_personal_connections(monkeypatch):
@@ -296,6 +300,40 @@ def test_auto_runtime_source_matches_selected_model_across_personal_connections(
     assert discovered_models == [{"id": "doubao-seedream-4-5-251128"}]
 
 
+def test_grok_settings_source_uses_grok_shared_config():
+    cfg = SimpleNamespace(
+        IMAGES_OPENAI_API_BASE_URL="",
+        IMAGES_OPENAI_API_KEY="",
+        IMAGES_OPENAI_API_FORCE_MODE=False,
+        OPENAI_API_BASE_URLS=[],
+        OPENAI_API_KEYS=[],
+        OPENAI_API_CONFIGS={},
+        IMAGES_GEMINI_API_BASE_URL="",
+        IMAGES_GEMINI_API_KEY="",
+        IMAGES_GEMINI_API_FORCE_MODE=False,
+        GEMINI_API_BASE_URLS=[],
+        GEMINI_API_KEYS=[],
+        GEMINI_API_CONFIGS={},
+        IMAGES_GROK_API_BASE_URL="https://api.x.ai/v1",
+        IMAGES_GROK_API_KEY="grok-key",
+        GROK_API_BASE_URLS=["https://api.x.ai/v1"],
+        GROK_API_KEYS=["grok-key"],
+        GROK_API_CONFIGS={"0": {"auth_type": "bearer"}},
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(config=cfg)))
+
+    source = _resolve_image_provider_source(
+        request,
+        user=None,
+        provider="grok",
+        context="settings",
+    )
+
+    assert source is not None
+    assert source["base_url"] == "https://api.x.ai/v1"
+    assert source["key"] == "grok-key"
+
+
 def test_volcengine_chat_image_falls_back_to_images_endpoint(monkeypatch):
     request = SimpleNamespace()
     user = SimpleNamespace(id="user-1")
@@ -337,3 +375,54 @@ def test_volcengine_chat_image_falls_back_to_images_endpoint(monkeypatch):
     )
 
     assert result == [{"url": "/api/v1/files/fallback-image"}]
+
+
+def test_xai_generation_payload_only_uses_supported_fields(monkeypatch):
+    request = SimpleNamespace()
+    user = SimpleNamespace(id="user-1")
+    captured_payloads = []
+
+    monkeypatch.setattr(images_router, "_build_openai_image_headers", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(images_router, "upload_image", lambda *_args, **_kwargs: "/api/v1/files/generated")
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"data": [{"b64_json": "YWJj"}]}
+
+    def fake_post(_url, json=None, headers=None, timeout=None, verify=None):
+        captured_payloads.append(dict(json or {}))
+        return FakeResponse()
+
+    monkeypatch.setattr(images_router.requests, "post", fake_post)
+
+    result = asyncio.run(
+        _generate_via_xai_images(
+            request,
+            user,
+            model_id="grok-imagine-image",
+            prompt="health check",
+            n=1,
+            source={
+                "base_url": "https://api.x.ai/v1",
+                "key": "grok-key",
+                "api_config": {},
+            },
+            aspect_ratio="16:9",
+            resolution="2k",
+            fallback_size="1024x1024",
+        )
+    )
+
+    assert result == [{"url": "/api/v1/files/generated"}]
+    assert captured_payloads == [
+        {
+            "model": "grok-imagine-image",
+            "prompt": "health check",
+            "n": 1,
+            "response_format": "b64_json",
+            "aspect_ratio": "16:9",
+            "resolution": "2k",
+        }
+    ]

@@ -6,6 +6,7 @@
 
 	import XMark from '$lib/components/icons/XMark.svelte';
 	import ArrowPath from '$lib/components/icons/ArrowPath.svelte';
+	import { translateWithDefault } from '$lib/i18n';
 	import AdvancedParams from '../Settings/Advanced/AdvancedParams.svelte';
 	import Valves from '$lib/components/chat/Controls/Valves.svelte';
 	import FileItem from '$lib/components/common/FileItem.svelte';
@@ -53,6 +54,7 @@
 		'num_batch',
 		'num_keep',
 		'max_tokens',
+		'max_history_messages',
 		'use_mmap',
 		'use_mlock',
 		'num_thread',
@@ -83,6 +85,16 @@
 		thinking: 0,
 		advanced: 0
 	};
+	const tr = (key: string, defaultValue: string, options: Record<string, any> = {}) =>
+		translateWithDefault($i18n, key, defaultValue, options);
+	const trWithDefaultOption = (key: string, options: Record<string, any> = {}) =>
+		tr(
+			key,
+			typeof options?.defaultValue === 'string' && options.defaultValue.trim()
+				? options.defaultValue
+				: key,
+			options
+		);
 
 	const normalizeToolCallingMode = (value: unknown): ToolCallingMode | null => {
 		return value === 'default' || value === 'native' || value === 'off' ? value : null;
@@ -297,9 +309,9 @@
 
 	let showValves = false;
 
-	const defaultEffortSteps = [
-		{ value: 'none', label: '关闭' },
-		{ value: null, label: '默认' },
+	$: defaultEffortSteps = [
+		{ value: 'none', label: tr('关闭', 'Off') },
+		{ value: null, label: tr('默认', 'Default') },
 		{ value: 'low', label: 'Low' },
 		{ value: 'medium', label: 'Medium' },
 		{ value: 'high', label: 'High' },
@@ -307,9 +319,9 @@
 		{ value: 'max', label: 'Max' }
 	];
 
-	const defaultTokenSteps = [
-		{ value: 0, label: '关闭' },
-		{ value: null, label: '默认' },
+	$: defaultTokenSteps = [
+		{ value: 0, label: tr('关闭', 'Off') },
+		{ value: null, label: tr('默认', 'Default') },
 		{ value: 2048, label: '2K' },
 		{ value: 8192, label: '8K' },
 		{ value: 16384, label: '16K' },
@@ -319,8 +331,10 @@
 
 	$: primaryThinkingModel = models?.[0] ?? null;
 	$: anthropicThinkingProfile = getAnthropicThinkingProfile(primaryThinkingModel);
-	$: effortSteps = getAnthropicEffortSteps(primaryThinkingModel) ?? defaultEffortSteps;
-	$: tokenSteps = getAnthropicBudgetSteps(primaryThinkingModel) ?? defaultTokenSteps;
+	$: effortSteps =
+		getAnthropicEffortSteps(primaryThinkingModel, trWithDefaultOption) ?? defaultEffortSteps;
+	$: tokenSteps =
+		getAnthropicBudgetSteps(primaryThinkingModel, trWithDefaultOption) ?? defaultTokenSteps;
 
 	// 滑动条每个 step 的颜色
 	const defaultEffortSliderColors = [
@@ -528,7 +542,9 @@
 							</span>
 							{#if systemModified || systemAck}
 								<span class="inline-flex items-center rounded-full border border-teal-200/80 bg-teal-50 px-2 py-0.5 text-[11px] font-medium text-teal-700 dark:border-teal-800/70 dark:bg-teal-950/40 dark:text-teal-300">
-									{systemModified ? '已调整' : '已应用'}
+									{systemModified
+										? $i18n.t('已调整', { defaultValue: 'Adjusted' })
+										: $i18n.t('已应用', { defaultValue: 'Applied' })}
 								</span>
 							{/if}
 						</div>
@@ -628,7 +644,9 @@
 						class="absolute top-2 right-10 z-10 flex items-center gap-1 px-2 py-1 rounded-full bg-teal-50/95 dark:bg-teal-900/70 border border-teal-200/80 dark:border-teal-700/60 shadow-sm pointer-events-none"
 					>
 						<span class="text-[10px] font-medium text-teal-700 dark:text-teal-300">
-							{thinkingModified ? '已调整' : '已应用'}
+							{thinkingModified
+								? $i18n.t('已调整', { defaultValue: 'Adjusted' })
+								: $i18n.t('已应用', { defaultValue: 'Applied' })}
 						</span>
 						{#if thinkingModified}
 							<button
@@ -657,7 +675,7 @@
 									: 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'}"
 								on:click={() => switchMode('effort')}
 							>
-								强度模式
+								{tr('强度模式', 'Effort Mode')}
 							</button>
 							<button
 								type="button"
@@ -667,7 +685,7 @@
 									: 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'}"
 								on:click={() => switchMode('budget')}
 							>
-								预算模式
+								{tr('预算模式', 'Budget Mode')}
 							</button>
 						</div>
 
@@ -675,7 +693,9 @@
 							<!-- 强度模式 -->
 							<div>
 								<div class="flex items-center justify-between mb-1">
-									<div class="text-xs text-gray-500 dark:text-gray-400">思考强度</div>
+								<div class="text-xs text-gray-500 dark:text-gray-400">
+									{tr('思考强度', 'Reasoning Effort')}
+								</div>
 									<button
 										type="button"
 										class="text-[10px] transition-colors duration-150 cursor-pointer {customEffortMode
@@ -693,14 +713,19 @@
 											}
 										}}
 									>
-										{customEffortMode ? '返回预设' : '自定义'}
+										{customEffortMode
+											? tr('返回预设', 'Back to presets')
+											: tr('自定义', 'Custom')}
 									</button>
 								</div>
 								{#if customEffortMode}
 									<input
 										type="text"
 										class="w-full text-xs py-2 px-3 bg-gray-50 dark:bg-gray-800/50 border border-gray-200/60 dark:border-gray-700/40 rounded-lg outline-hidden focus:border-blue-300/50 dark:focus:border-blue-500/30 transition-colors duration-200 placeholder:text-gray-400 dark:placeholder:text-gray-500"
-										placeholder="输入自定义值，如 high、medium"
+										placeholder={tr(
+											'输入自定义值，如 high、medium',
+											'Enter a custom value, e.g. high, medium'
+										)}
 										bind:value={customEffortValue}
 										on:input={() => {
 											lockBaseline();
@@ -723,7 +748,9 @@
 							<!-- 预算模式 -->
 							<div>
 								<div class="flex items-center justify-between mb-1">
-									<div class="text-xs text-gray-500 dark:text-gray-400">思考预算</div>
+									<div class="text-xs text-gray-500 dark:text-gray-400">
+										{tr('思考预算', 'Thinking Budget')}
+									</div>
 									<button
 										type="button"
 										class="text-[10px] transition-colors duration-150 cursor-pointer {customTokenMode
@@ -744,14 +771,19 @@
 											}
 										}}
 									>
-										{customTokenMode ? '返回预设' : '自定义'}
+										{customTokenMode
+											? tr('返回预设', 'Back to presets')
+											: tr('自定义', 'Custom')}
 									</button>
 								</div>
 								{#if customTokenMode}
 									<input
 										type="number"
 										class="w-full text-xs py-2 px-3 bg-gray-50 dark:bg-gray-800/50 border border-gray-200/60 dark:border-gray-700/40 rounded-lg outline-hidden focus:border-blue-300/50 dark:focus:border-blue-500/30 transition-colors duration-200 placeholder:text-gray-400 dark:placeholder:text-gray-500"
-										placeholder="输入 Token 数量（最小 1024）"
+										placeholder={tr(
+											'输入 Token 数量（最小 1024）',
+											'Enter token count (minimum 1024)'
+										)}
 										bind:value={customTokenValue}
 										min="1024"
 										on:input={() => {
@@ -794,7 +826,9 @@
 						class="absolute top-2 right-10 z-10 flex items-center gap-1 px-2 py-1 rounded-full bg-teal-50/95 dark:bg-teal-900/70 border border-teal-200/80 dark:border-teal-700/60 shadow-sm pointer-events-none"
 					>
 						<span class="text-[10px] font-medium text-teal-700 dark:text-teal-300">
-							{advancedModified ? '已调整' : '已应用'}
+							{advancedModified
+								? $i18n.t('已调整', { defaultValue: 'Adjusted' })
+								: $i18n.t('已应用', { defaultValue: 'Applied' })}
 						</span>
 						{#if advancedModified}
 							<button

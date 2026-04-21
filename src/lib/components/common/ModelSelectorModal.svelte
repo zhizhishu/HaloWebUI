@@ -3,12 +3,14 @@
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
 	import { toast } from 'svelte-sonner';
+	import { translateWithDefault } from '$lib/i18n';
 
 	const i18n = getContext('i18n') as Writable<i18nType>;
 
 	import { verifyOpenAIConnection } from '$lib/apis/openai';
 	import { verifyOllamaConnection } from '$lib/apis/ollama';
 	import { verifyGeminiConnection } from '$lib/apis/gemini';
+	import { verifyGrokConnection } from '$lib/apis/grok';
 	import { verifyAnthropicConnection } from '$lib/apis/anthropic';
 	import {
 		inferModelCapabilities,
@@ -43,6 +45,7 @@
 	export let api_version: string | undefined = undefined;
 	export let ollama = false;
 	export let gemini = false;
+	export let grok = false;
 	export let anthropic = false;
 	export let auth_type: string | undefined = undefined;
 	export let headers: Record<string, string> | undefined = undefined;
@@ -69,6 +72,9 @@
 		return description ? `${title} ${description}` : title;
 	};
 
+	const tr = (key: string, defaultValue: string) =>
+		translateWithDefault($i18n, key, defaultValue);
+
 	// 本地选中状态
 	let selectedIds: Set<string> = new Set();
 
@@ -88,17 +94,18 @@
 		| 'rerank'
 		| 'selected';
 	let activeTag: FilterTag = 'all';
-	const filterTags: { key: FilterTag; label: string }[] = [
-		{ key: 'all', label: '全部' },
-		{ key: 'selected', label: '已选' },
-		{ key: 'reasoning', label: '推理' },
-		{ key: 'vision', label: '视觉' },
-		{ key: 'webSearch', label: '原生联网' },
-		{ key: 'tools', label: '工具' },
-		{ key: 'free', label: '免费' },
-		{ key: 'imageGen', label: '生图' },
-		{ key: 'embedding', label: '嵌入' },
-		{ key: 'rerank', label: '重排' }
+	let filterTags: { key: FilterTag; label: string }[] = [];
+	$: filterTags = [
+		{ key: 'all', label: tr('全部', 'All') },
+		{ key: 'selected', label: tr('已选', 'Selected') },
+		{ key: 'reasoning', label: tr('推理', 'Reasoning') },
+		{ key: 'vision', label: tr('视觉', 'Vision') },
+		{ key: 'webSearch', label: tr('原生联网', 'Native Web Search') },
+		{ key: 'tools', label: tr('工具', 'Tools') },
+		{ key: 'free', label: tr('免费', 'Free') },
+		{ key: 'imageGen', label: tr('生图', 'Image Generation') },
+		{ key: 'embedding', label: tr('嵌入', 'Embedding') },
+		{ key: 'rerank', label: tr('重排', 'Rerank') }
 	];
 
 	// 追踪模态框打开状态，避免 selectedIds 被意外重置
@@ -152,6 +159,24 @@
 						native_web_search_supported: m.native_web_search_supported,
 						native_web_search_support: m.native_web_search_support
 					}));
+			} else if (grok) {
+				data = await verifyGrokConnection(localStorage.token, {
+					url,
+					key,
+					config: {
+						...(auth_type ? { auth_type } : {}),
+						...(headers ? { headers } : {})
+					}
+				});
+
+				if (!Array.isArray(data?.models)) {
+					throw new Error('Grok: Invalid response (expected models.list format)');
+				}
+
+				availableModels = (data.models || []).map((m: any) => ({
+					id: m.id,
+					name: m.name || m.id
+				}));
 			} else if (anthropic) {
 				data = await verifyAnthropicConnection(localStorage.token, {
 					url,

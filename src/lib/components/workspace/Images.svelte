@@ -19,6 +19,10 @@
 	import { copyToClipboard } from '$lib/utils';
 	import { localizeCommonError } from '$lib/utils/common-errors';
 	import {
+		GROK_IMAGE_ASPECT_RATIO_OPTIONS,
+		GROK_IMAGE_RESOLUTION_OPTIONS
+	} from '$lib/utils/image-generation';
+	import {
 		CUSTOM_SIZE_OPTION_VALUE,
 		WORKSPACE_IMAGE_SIZE_PRESETS,
 		extractImageConstraintFromError,
@@ -45,6 +49,8 @@
 		presetSize?: string;
 		customSize?: string;
 		useCustomSize?: boolean;
+		aspect_ratio?: string;
+		resolution?: string;
 		steps?: number;
 		learnedConstraints?: Record<string, LearnedImageConstraint>;
 	};
@@ -83,6 +89,8 @@
 	let selectedPresetSize = WORKSPACE_IMAGE_SIZE_PRESETS[0];
 	let usingCustomSize = false;
 	let customSizeInput = '';
+	let selectedAspectRatioOption = '1:1';
+	let selectedResolution = '1k';
 	let steps = 0;
 	let canSubmit = false;
 	let blockedReason: string | null = null;
@@ -115,6 +123,8 @@
 				: WORKSPACE_IMAGE_SIZE_PRESETS[0];
 			customSizeInput = `${prefs?.customSize ?? ''}`.trim();
 			usingCustomSize = Boolean(prefs?.useCustomSize && customSizeInput);
+			selectedAspectRatioOption = `${prefs?.aspect_ratio ?? '1:1'}`.trim() || '1:1';
+			selectedResolution = `${prefs?.resolution ?? '1k'}`.trim().toLowerCase() || '1k';
 
 			const nextSteps = Number(prefs?.steps ?? 0);
 			steps = Number.isFinite(nextSteps) && nextSteps >= 0 ? nextSteps : 0;
@@ -132,6 +142,14 @@
 		value: model.id,
 		label: model.name ?? model.id
 	}));
+	$: nativeAspectRatioOptions = GROK_IMAGE_ASPECT_RATIO_OPTIONS.map((option) => ({
+		value: option.value,
+		label: option.label
+	}));
+	$: nativeResolutionOptions = GROK_IMAGE_RESOLUTION_OPTIONS.map((option) => ({
+		value: option.value,
+		label: option.label
+	}));
 
 	$: sizeOptions = [
 		...curatedSizeOptions,
@@ -145,6 +163,12 @@
 	$: selectedModelLabel =
 		modelOptions.find((option) => option.value === selectedModel)?.label ?? selectedModel;
 	$: selectedModelMeta = imageModels.find((model) => model.id === selectedModel) ?? null;
+	$: usesNativeAspectRatioControls = Boolean(
+		selectedModelMeta &&
+			(selectedModelMeta?.size_mode === 'aspect_ratio' || selectedModelMeta?.supports_resolution)
+	);
+	$: showsResolutionControl = Boolean(selectedModelMeta?.supports_resolution);
+	$: showsStepsControl = !showsResolutionControl;
 	$: activeSize = usingCustomSize ? `${customSizeInput ?? ''}`.trim() : selectedPresetSize;
 	$: activeSizeLabel =
 		usingCustomSize && activeSize ? activeSize : usingCustomSize ? $i18n.t('Custom size') : selectedPresetSize;
@@ -158,6 +182,10 @@
 	});
 
 	$: sizeValidation = (() => {
+		if (usesNativeAspectRatioControls) {
+			return null;
+		}
+
 		if (usingCustomSize && !activeSize) {
 			return {
 				kind: 'empty',
@@ -221,6 +249,8 @@
 				presetSize: selectedPresetSize,
 				customSize: customSizeInput,
 				useCustomSize: usingCustomSize,
+				aspect_ratio: selectedAspectRatioOption,
+				resolution: selectedResolution,
 				steps,
 				learnedConstraints
 			})
@@ -265,7 +295,8 @@
 
 	const loadWorkspaceModels = async () => {
 		const nextModels = await getImageGenerationModels(localStorage.token, {
-			context: 'settings'
+			context: 'runtime',
+			credentialSource: 'auto'
 		}).catch((error) => {
 			loadError = `${error ?? ''}`;
 			return null;
@@ -398,9 +429,11 @@
 			const response = await imageGenerations(localStorage.token, {
 				prompt: trimmedPrompt,
 				model: selectedModel || undefined,
-				size: activeSize || undefined,
-				steps: steps > 0 ? steps : undefined,
-				credential_source: 'shared'
+				size: usesNativeAspectRatioControls ? undefined : activeSize || undefined,
+				aspect_ratio: usesNativeAspectRatioControls ? selectedAspectRatioOption : undefined,
+				resolution: showsResolutionControl ? selectedResolution : undefined,
+				steps: showsStepsControl && steps > 0 ? steps : undefined,
+				credential_source: 'auto'
 			});
 
 			if (response?.length) {
@@ -462,6 +495,31 @@
 		if (!usageConfig.enabled) {
 			viewState = 'disabled';
 			return;
+		}
+
+		if (!lastPersistedPrefsSnapshot) {
+			const defaultModel = `${usageConfig?.defaults?.model ?? ''}`.trim();
+			if (defaultModel) {
+				selectedModel = defaultModel;
+			}
+
+			const defaultSize = `${usageConfig?.defaults?.size ?? ''}`.trim();
+			if (defaultSize) {
+				const presetMatch = curatedSizeOptions.find((option) => option.value === defaultSize);
+				if (presetMatch) {
+					selectedPresetSize = presetMatch.value as (typeof WORKSPACE_IMAGE_SIZE_PRESETS)[number];
+					usingCustomSize = false;
+					customSizeInput = '';
+				} else {
+					customSizeInput = defaultSize;
+					usingCustomSize = true;
+				}
+			}
+
+			selectedAspectRatioOption = `${usageConfig?.defaults?.aspect_ratio ?? '1:1'}`.trim() || '1:1';
+			selectedResolution = `${usageConfig?.defaults?.resolution ?? '1k'}`.trim().toLowerCase() || '1k';
+			const defaultSteps = Number(usageConfig?.defaults?.steps ?? 0);
+			steps = Number.isFinite(defaultSteps) && defaultSteps >= 0 ? defaultSteps : 0;
 		}
 
 		await loadWorkspaceModels();
@@ -544,7 +602,7 @@
 							</div>
 							<div class="opacity-80">
 								{$i18n.t(
-									'This image workbench remembers your last model, size, and steps only in this browser.'
+									'This image workbench remembers your last model and generation settings only in this browser.'
 								)}
 							</div>
 						</div>
@@ -634,108 +692,135 @@
 							/>
 						</div>
 
-						<div class="space-y-1.5">
-							<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
-								{$i18n.t('Size')}
+						{#if usesNativeAspectRatioControls}
+							<div class="space-y-1.5">
+								<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
+									{$i18n.t('Aspect Ratio')}
+								</div>
+								<HaloSelect
+									bind:value={selectedAspectRatioOption}
+									options={nativeAspectRatioOptions}
+									className="w-full text-xs"
+								/>
+								<div class="text-xs text-gray-500 dark:text-gray-400">
+									{$i18n.t('This model uses aspect ratio instead of exact pixel size.')}
+								</div>
 							</div>
-							<HaloSelect
-								value={sizeSelectValue}
-								options={sizeOptions.map((option) => ({
-									value: option.value,
-									label:
-										option.value === CUSTOM_SIZE_OPTION_VALUE
-											? option.label
-											: `${option.ratio} · ${option.label}`
-								}))}
-								className="w-full text-xs"
-								on:change={(event) => handleSizeSelect(event.detail.value)}
-							/>
+						{:else}
+							<div class="space-y-1.5">
+								<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
+									{$i18n.t('Size')}
+								</div>
+								<HaloSelect
+									value={sizeSelectValue}
+									options={sizeOptions.map((option) => ({
+										value: option.value,
+										label:
+											option.value === CUSTOM_SIZE_OPTION_VALUE
+												? option.label
+												: `${option.ratio} · ${option.label}`
+									}))}
+									className="w-full text-xs"
+									on:change={(event) => handleSizeSelect(event.detail.value)}
+								/>
 
-							{#if usingCustomSize}
-								<div class="space-y-2 rounded-xl border border-dashed border-gray-200/80 bg-gray-50/70 p-3 dark:border-gray-700/60 dark:bg-gray-900/40">
-									<div class="flex items-center justify-between gap-2">
-										<div class="text-xs font-medium text-gray-700 dark:text-gray-200">
-											{$i18n.t('Custom size')}
+								{#if usingCustomSize}
+									<div class="space-y-2 rounded-xl border border-dashed border-gray-200/80 bg-gray-50/70 p-3 dark:border-gray-700/60 dark:bg-gray-900/40">
+										<div class="flex items-center justify-between gap-2">
+											<div class="text-xs font-medium text-gray-700 dark:text-gray-200">
+												{$i18n.t('Custom size')}
+											</div>
+											<button
+												type="button"
+												class="text-xs font-medium text-gray-500 transition hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+												on:click={restorePresetSize}
+											>
+												{$i18n.t('Restore preset')}
+											</button>
 										</div>
-										<button
-											type="button"
-											class="text-xs font-medium text-gray-500 transition hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
-											on:click={restorePresetSize}
-										>
-											{$i18n.t('Restore preset')}
-										</button>
+										<input
+											bind:value={customSizeInput}
+											placeholder="1344x768"
+											class="w-full rounded-xl border border-gray-200/80 bg-white px-3 py-2 text-sm text-gray-800 outline-none transition focus:border-gray-300 dark:border-gray-700/60 dark:bg-gray-950/70 dark:text-gray-100 dark:focus:border-gray-600"
+										/>
+										<div class="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
+											<div>{$i18n.t('Enter a custom size like {{example}}.', { example: '1344x768' })}</div>
+											{#if activeSizeParsed}
+												<div>
+													{$i18n.t('Total pixels')}: {formatPixelCount(activeSizeParsed.pixels)}
+												</div>
+											{/if}
+										</div>
 									</div>
-									<input
-										bind:value={customSizeInput}
-										placeholder="1344x768"
-										class="w-full rounded-xl border border-gray-200/80 bg-white px-3 py-2 text-sm text-gray-800 outline-none transition focus:border-gray-300 dark:border-gray-700/60 dark:bg-gray-950/70 dark:text-gray-100 dark:focus:border-gray-600"
-									/>
-									<div class="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
-										<div>{$i18n.t('Enter a custom size like {{example}}.', { example: '1344x768' })}</div>
-										{#if activeSizeParsed}
-											<div>
-												{$i18n.t('Total pixels')}: {formatPixelCount(activeSizeParsed.pixels)}
+								{/if}
+
+								{#if selectedModelMeta?.size_mode === 'aspect_ratio' && selectedAspectRatio}
+									<div class="text-xs text-amber-600 dark:text-amber-400">
+										{$i18n.t(
+											'This model only accepts aspect ratio requests. {{size}} will be sent as {{ratio}}, not as an exact pixel size.',
+											{ size: activeSizeLabel, ratio: selectedAspectRatio }
+										)}
+									</div>
+								{/if}
+
+								{#if sizeValidation}
+									<div class="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+										<div class="font-semibold">{sizeValidation.title}</div>
+										<div class="mt-1 leading-5">{sizeValidation.description}</div>
+										{#if currentConstraint?.requestId}
+											<div class="mt-2 opacity-80">
+												{$i18n.t('Request ID')}: {currentConstraint.requestId}
+											</div>
+										{/if}
+										{#if recommendedSizes.length > 0}
+											<div class="mt-3">
+												<div class="mb-2 font-medium">{$i18n.t('Recommended sizes')}</div>
+												<div class="flex flex-wrap gap-2">
+													{#each recommendedSizes as size}
+														<button
+															type="button"
+															class="rounded-full border border-amber-300 bg-white px-3 py-1 font-medium text-amber-700 transition hover:bg-amber-100 dark:border-amber-500/30 dark:bg-transparent dark:text-amber-200 dark:hover:bg-amber-500/20"
+															on:click={() => applyRecommendedSize(size)}
+														>
+															{size}
+														</button>
+													{/each}
+												</div>
 											</div>
 										{/if}
 									</div>
-								</div>
-							{/if}
-
-							{#if selectedModelMeta?.size_mode === 'aspect_ratio' && selectedAspectRatio}
-								<div class="text-xs text-amber-600 dark:text-amber-400">
-									{$i18n.t(
-										'This model only accepts aspect ratio requests. {{size}} will be sent as {{ratio}}, not as an exact pixel size.',
-										{ size: activeSizeLabel, ratio: selectedAspectRatio }
-									)}
-								</div>
-							{/if}
-
-							{#if sizeValidation}
-								<div class="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
-									<div class="font-semibold">{sizeValidation.title}</div>
-									<div class="mt-1 leading-5">{sizeValidation.description}</div>
-									{#if currentConstraint?.requestId}
-										<div class="mt-2 opacity-80">
-											{$i18n.t('Request ID')}: {currentConstraint.requestId}
-										</div>
-									{/if}
-									{#if recommendedSizes.length > 0}
-										<div class="mt-3">
-											<div class="mb-2 font-medium">{$i18n.t('Recommended sizes')}</div>
-											<div class="flex flex-wrap gap-2">
-												{#each recommendedSizes as size}
-													<button
-														type="button"
-														class="rounded-full border border-amber-300 bg-white px-3 py-1 font-medium text-amber-700 transition hover:bg-amber-100 dark:border-amber-500/30 dark:bg-transparent dark:text-amber-200 dark:hover:bg-amber-500/20"
-														on:click={() => applyRecommendedSize(size)}
-													>
-														{size}
-													</button>
-												{/each}
-											</div>
-										</div>
-									{/if}
-								</div>
-							{/if}
-						</div>
+								{/if}
+							</div>
+						{/if}
 
 						<div class="space-y-1.5">
-							<div class="flex items-center justify-between">
+							{#if showsResolutionControl}
 								<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
-									{$i18n.t('Set Steps')}
+									{$i18n.t('Resolution')}
 								</div>
-								<div class="text-xs font-semibold text-gray-900 dark:text-gray-100">
-									{steps === 0 ? $i18n.t('Auto') : steps}
+								<HaloSelect
+									bind:value={selectedResolution}
+									options={nativeResolutionOptions}
+									className="w-full text-xs"
+								/>
+							{:else if showsStepsControl}
+								<div class="flex items-center justify-between">
+									<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
+										{$i18n.t('Set Steps')}
+									</div>
+									<div class="text-xs font-semibold text-gray-900 dark:text-gray-100">
+										{steps === 0 ? $i18n.t('Auto') : steps}
+									</div>
 								</div>
-							</div>
-							<input
-								type="range"
-								min="0"
-								max="80"
-								step="5"
-								bind:value={steps}
-								class="image-range mt-1 h-2 w-full cursor-pointer appearance-none rounded-full bg-gray-200 dark:bg-gray-800"
-							/>
+								<input
+									type="range"
+									min="0"
+									max="80"
+									step="5"
+									bind:value={steps}
+									class="image-range mt-1 h-2 w-full cursor-pointer appearance-none rounded-full bg-gray-200 dark:bg-gray-800"
+								/>
+							{/if}
 						</div>
 					</div>
 				</div>

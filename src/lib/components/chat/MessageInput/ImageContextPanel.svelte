@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { createEventDispatcher } from 'svelte';
+	import { createEventDispatcher, getContext } from 'svelte';
 	import { toast } from 'svelte-sonner';
+	import { translateWithDefault } from '$lib/i18n';
 
 	import type { Model } from '$lib/stores';
 	import { mobile } from '$lib/stores';
@@ -16,20 +17,26 @@
 	import Sparkles from '$lib/components/icons/Sparkles.svelte';
 	import {
 		GEMINI_IMAGE_SIZE_OPTIONS,
+		GROK_IMAGE_ASPECT_RATIO_OPTIONS,
+		GROK_IMAGE_RESOLUTION_OPTIONS,
 		IMAGE_ASPECT_RATIO_OPTIONS,
 		getFunctionPipeRootId,
 		getImageValveProperty,
 		getPropertyEnumOptions,
 		looksLikeImageValveSpec,
 		mapLegacySizeToGeminiParams,
-		modelSupportsGeminiImageOptions
+		modelSupportsNativeImageOptions
 	} from '$lib/utils/image-generation';
 
 	const dispatch = createEventDispatcher();
+	const i18n = getContext('i18n');
+	const tr = (key: string, defaultValue: string) =>
+		translateWithDefault($i18n, key, defaultValue);
 
 	type ImageGenerationOptions = {
 		image_size?: string | null;
 		aspect_ratio?: string | null;
+		resolution?: string | null;
 		n?: number | null;
 	};
 
@@ -61,7 +68,11 @@
 
 	$: syncInitialExpandState();
 
-	const applyBuiltinDefaults = (size: string | null, aspectRatio: string | null) => {
+	const applyBuiltinDefaults = (
+		size: string | null,
+		aspectRatio: string | null,
+		resolution: string | null = null
+	) => {
 		const next: ImageGenerationOptions = { ...imageGenerationOptions };
 		let changed = false;
 
@@ -76,6 +87,10 @@
 			aspectRatio
 		) {
 			next.aspect_ratio = aspectRatio;
+			changed = true;
+		}
+		if ((builtinModelMeta?.supports_resolution ?? false) && !next.resolution && resolution) {
+			next.resolution = resolution;
 			changed = true;
 		}
 
@@ -102,7 +117,7 @@
 		try {
 			const usageConfig = await getImageUsageConfig(localStorage.token);
 			builtinEngine = `${usageConfig?.engine ?? ''}`.toLowerCase();
-			if (builtinEngine !== 'gemini') {
+			if (!['gemini', 'grok'].includes(builtinEngine)) {
 				builtinModelMeta = null;
 				builtinReady = true;
 				return;
@@ -114,15 +129,19 @@
 			const preferredId = `${usageConfig?.defaults?.model ?? ''}`.trim();
 			builtinModelMeta =
 				(runtimeModels ?? []).find((model) => model.id === preferredId) ??
-				(runtimeModels ?? []).find((model) => modelSupportsGeminiImageOptions(model)) ??
+				(runtimeModels ?? []).find((model) => modelSupportsNativeImageOptions(model)) ??
 				(runtimeModels ?? [])[0] ??
 				null;
 			builtinReady = true;
 
 			const mappedDefaults = mapLegacySizeToGeminiParams(usageConfig?.defaults?.size ?? '');
-			applyBuiltinDefaults(mappedDefaults.imageSize, mappedDefaults.aspectRatio);
+			applyBuiltinDefaults(
+				mappedDefaults.imageSize,
+				`${usageConfig?.defaults?.aspect_ratio ?? mappedDefaults.aspectRatio ?? ''}`.trim() || null,
+				`${usageConfig?.defaults?.resolution ?? ''}`.trim() || null
+			);
 		} catch (error) {
-			console.error('Failed to load Gemini image context', error);
+			console.error('Failed to load native image context', error);
 			builtinModelMeta = null;
 			builtinReady = true;
 		} finally {
@@ -219,23 +238,39 @@
 	$: showBuiltinPanel =
 		imageGenerationEnabled &&
 		builtinReady &&
-		builtinEngine === 'gemini' &&
+		['gemini', 'grok'].includes(builtinEngine) &&
 		Boolean(builtinModelMeta) &&
-		modelSupportsGeminiImageOptions(builtinModelMeta);
+		modelSupportsNativeImageOptions(builtinModelMeta);
 
 	$: showCustomPanel = Boolean(customFunctionId) && customHasImageFields;
 	$: showPanel = showCustomPanel || showBuiltinPanel || customLoading || builtinLoading;
 	$: panelTitle = showCustomPanel
-		? '画图参数'
+		? tr('画图参数', 'Image Options')
 		: showBuiltinPanel
-			? 'Gemini 绘图参数'
-			: '图片参数';
+			? builtinEngine === 'grok'
+				? tr('Grok 绘图参数', 'Grok Image Options')
+				: tr('Gemini 绘图参数', 'Gemini Image Options')
+			: tr('图片参数', 'Image Settings');
 
 	$: builtinImageSizeOptions = GEMINI_IMAGE_SIZE_OPTIONS.map((option) => ({
 		value: option.value,
 		label: `${option.label} · ${option.pixels}`
 	}));
-	$: aspectRatioOptions = IMAGE_ASPECT_RATIO_OPTIONS.map((option) => ({
+	$: aspectRatioOptions = (
+		builtinModelMeta?.supports_resolution ? GROK_IMAGE_ASPECT_RATIO_OPTIONS : IMAGE_ASPECT_RATIO_OPTIONS
+	).map((option) => ({
+		value: option.value,
+		label: option.label
+	}));
+	$: customAspectRatioFallback = Array.from(
+		new Map(
+			[...GROK_IMAGE_ASPECT_RATIO_OPTIONS, ...IMAGE_ASPECT_RATIO_OPTIONS].map((option) => [
+				option.value,
+				option
+			])
+		).values()
+	);
+	$: resolutionOptions = GROK_IMAGE_RESOLUTION_OPTIONS.map((option) => ({
 		value: option.value,
 		label: option.label
 	}));
@@ -246,7 +281,11 @@
 	);
 	$: customAspectRatioOptions = getPropertyEnumOptions(
 		getImageValveProperty(customValvesSpec, 'aspect_ratio'),
-		IMAGE_ASPECT_RATIO_OPTIONS
+		customAspectRatioFallback
+	);
+	$: customResolutionOptions = getPropertyEnumOptions(
+		getImageValveProperty(customValvesSpec, 'resolution'),
+		GROK_IMAGE_RESOLUTION_OPTIONS
 	);
 </script>
 
@@ -264,13 +303,15 @@
 					</div>
 					<div class="min-w-0">
 						<div class="text-sm font-semibold text-gray-900 dark:text-gray-100">{panelTitle}</div>
-						<div class="text-[11px] text-gray-500 dark:text-gray-400">
-							{#if showCustomPanel}
-								当前自定义画图模型的常用参数
-							{:else}
-								当前会直接传给 Gemini 官方图片接口
-							{/if}
-						</div>
+							<div class="text-[11px] text-gray-500 dark:text-gray-400">
+								{#if showCustomPanel}
+									{tr('当前自定义画图模型的常用参数', 'Common options for the current custom image model')}
+								{:else}
+									{builtinEngine === 'grok'
+										? tr('当前会直接传给 Grok 官方图片接口', 'These values will be sent directly to the Grok image API')
+										: tr('当前会直接传给 Gemini 官方图片接口', 'These values will be sent directly to the Gemini image API')}
+								{/if}
+							</div>
 					</div>
 				</div>
 
@@ -283,7 +324,7 @@
 								dispatch('advanced');
 							}}
 						>
-							高级参数
+							{tr('高级参数', 'Advanced')}
 						</button>
 					{/if}
 
@@ -295,7 +336,7 @@
 								panelExpanded = !panelExpanded;
 							}}
 						>
-							{panelExpanded ? '收起' : '展开'}
+							{panelExpanded ? tr('收起', 'Collapse') : tr('展开', 'Expand')}
 						</button>
 					{/if}
 				</div>
@@ -306,13 +347,14 @@
 					{#if customLoading || builtinLoading}
 						<div class="col-span-full flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
 							<Spinner className="size-4" />
-							加载图片参数...
+							{tr('加载图片参数...', 'Loading image options...')}
 						</div>
 					{:else if showCustomPanel}
 						{#if getImageValveProperty(customValvesSpec, 'image_size')}
 							<div class="space-y-1.5">
 								<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
-									{getImageValveProperty(customValvesSpec, 'image_size')?.title ?? '图片尺寸'}
+									{getImageValveProperty(customValvesSpec, 'image_size')?.title ??
+										tr('图片尺寸', 'Image Size')}
 								</div>
 								<HaloSelect
 									value={`${customValves?.image_size ?? customImageSizeOptions[0]?.value ?? ''}`}
@@ -328,7 +370,8 @@
 						{#if getImageValveProperty(customValvesSpec, 'aspect_ratio')}
 							<div class="space-y-1.5">
 								<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
-									{getImageValveProperty(customValvesSpec, 'aspect_ratio')?.title ?? '图片比例'}
+									{getImageValveProperty(customValvesSpec, 'aspect_ratio')?.title ??
+										tr('图片比例', 'Aspect Ratio')}
 								</div>
 								<HaloSelect
 									value={`${customValves?.aspect_ratio ?? customAspectRatioOptions[0]?.value ?? ''}`}
@@ -340,10 +383,28 @@
 								/>
 							</div>
 						{/if}
+						{#if getImageValveProperty(customValvesSpec, 'resolution')}
+							<div class="space-y-1.5">
+								<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
+									{getImageValveProperty(customValvesSpec, 'resolution')?.title ??
+										tr('清晰度', 'Resolution')}
+								</div>
+								<HaloSelect
+									value={`${customValves?.resolution ?? customResolutionOptions[0]?.value ?? ''}`}
+									options={customResolutionOptions}
+									className="w-full text-xs"
+									on:change={(e) => {
+										void saveCustomValves({ resolution: e.detail.value });
+									}}
+								/>
+							</div>
+						{/if}
 					{:else if showBuiltinPanel}
 						{#if builtinModelMeta?.supports_image_size}
 							<div class="space-y-1.5">
-								<div class="text-xs font-medium text-gray-500 dark:text-gray-400">图片尺寸</div>
+								<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
+									{tr('图片尺寸', 'Image Size')}
+								</div>
 								<HaloSelect
 									value={`${imageGenerationOptions?.image_size ?? builtinImageSizeOptions[1]?.value ?? '1K'}`}
 									options={builtinImageSizeOptions}
@@ -357,10 +418,30 @@
 								/>
 							</div>
 						{/if}
+						{#if builtinModelMeta?.supports_resolution}
+							<div class="space-y-1.5">
+								<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
+									{tr('清晰度', 'Resolution')}
+								</div>
+								<HaloSelect
+									value={`${imageGenerationOptions?.resolution ?? resolutionOptions[0]?.value ?? '1k'}`}
+									options={resolutionOptions}
+									className="w-full text-xs"
+									on:change={(e) => {
+										imageGenerationOptions = {
+											...imageGenerationOptions,
+											resolution: e.detail.value
+										};
+									}}
+								/>
+							</div>
+						{/if}
 
 						{#if builtinModelMeta?.size_mode === 'aspect_ratio' || builtinModelMeta?.supports_image_size}
 							<div class="space-y-1.5">
-								<div class="text-xs font-medium text-gray-500 dark:text-gray-400">图片比例</div>
+								<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
+									{tr('图片比例', 'Aspect Ratio')}
+								</div>
 								<HaloSelect
 									value={`${imageGenerationOptions?.aspect_ratio ?? '1:1'}`}
 									options={aspectRatioOptions}

@@ -4,7 +4,7 @@
 
 	import { createEventDispatcher } from 'svelte';
 	import { onMount, tick, getContext } from 'svelte';
-	import type { Writable } from 'svelte/store';
+	import { writable, type Writable } from 'svelte/store';
 	import type { i18n as i18nType, t } from 'i18next';
 
 	const i18n = getContext<Writable<i18nType>>('i18n');
@@ -38,6 +38,8 @@
 		stripThinkingBlocks
 	} from '$lib/utils';
 	import { WEBUI_BASE_URL } from '$lib/constants';
+	import { translateWithDefault } from '$lib/i18n';
+	import { saveUserSettingsPatch } from '$lib/utils/user-settings';
 
 	import Name from './Name.svelte';
 	import ModelIcon from '$lib/components/common/ModelIcon.svelte';
@@ -52,6 +54,7 @@
 		ChevronRight,
 		PencilLine,
 		Copy,
+		GitBranchPlus,
 		Volume2,
 		VolumeX,
 		ImagePlus,
@@ -60,6 +63,8 @@
 		RefreshCw,
 		Trash2,
 		ListPlus,
+		Eye,
+		EyeOff,
 		AlignLeft,
 		Lightbulb,
 		Globe,
@@ -79,7 +84,16 @@
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 	import FileItem from '$lib/components/common/FileItem.svelte';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
+	import {
+		getRenderableMessageError,
+		hasVisibleMessageFiles as messageHasVisibleFiles
+	} from '$lib/utils/chat-message-errors';
 	import type { HeadingItem } from '$lib/utils/headings';
+
+	type MessageOutlineVisibilityContext = {
+		scrollVisibleStore: Writable<boolean>;
+		reveal: () => void;
+	};
 
 	interface MessageType {
 		id: string;
@@ -105,7 +119,13 @@
 		done: boolean;
 		completedAt?: number;
 		usage?: Record<string, unknown>;
-		error?: boolean | { content: string };
+		error?:
+			| boolean
+			| {
+					content?: string;
+					type?: string;
+					[key: string]: unknown;
+			  };
 		sources?: string[];
 		followUps?: string[];
 		code_executions?: {
@@ -140,6 +160,8 @@
 
 	let message: MessageType = history.messages?.[messageId] as MessageType;
 	$: message = history.messages?.[messageId] as MessageType;
+	const tr = (key: string, defaultValue: string, options: Record<string, any> = {}) =>
+		translateWithDefault($i18n, key, defaultValue, options);
 
 	function getVisibleAssistantOutput(content: string): string {
 		return sanitizeResponseContent(
@@ -148,6 +170,8 @@
 	}
 
 	$: hasVisibleAssistantOutput = getVisibleAssistantOutput(message?.content ?? '') !== '';
+	$: hasVisibleMessageFiles = messageHasVisibleFiles(message?.files);
+	$: renderableMessageError = getRenderableMessageError(message?.error, message?.files);
 	$: hasVisibleThinkingOutput =
 		/<details\b[^>]*type="reasoning"/i.test(message?.content ?? '') ||
 		/<(think|thinking|reasoning)\b[^>]*>/i.test(message?.content ?? '');
@@ -182,6 +206,9 @@
 	export let regenerateResponse: Function;
 
 	export let addMessages: Function;
+	export let onBranchMessage: Function = () => {};
+	export let branchingMessageId: string | null = null;
+	export let branchSupported = false;
 
 	export let isLastMessage = true;
 	export let readOnly = false;
@@ -189,6 +216,14 @@
 	let buttonsContainerElement: HTMLDivElement;
 	let citationsRef: any = null;
 	let buttonsScrollBound = false;
+	let isBranching = false;
+	let branchTooltip = '';
+
+	$: isBranching = branchingMessageId === message?.id;
+	$: branchTooltip = tr(
+		isBranching ? 'Creating branch...' : 'Create branch',
+		isBranching ? '正在创建分支...' : '创建分支'
+	);
 
 	function setupButtonsScroll() {
 		if (buttonsContainerElement && !buttonsScrollBound) {
@@ -209,6 +244,11 @@
 	let showRegenerateConfirm = false;
 	let showRegenerateMenu = false;
 	let regenerateInput = '';
+
+	type RenderedCopyPayload = {
+		text: string;
+		html?: string;
+	};
 
 	$: modelSupportsThinking = model?.info?.meta?.capabilities?.reasoning ?? false;
 
@@ -291,8 +331,28 @@
 	let editTextAreaElement: HTMLTextAreaElement;
 	let contentRendererRef: any = null;
 	let messageHeadings: HeadingItem[] = [];
+	let isOutlineHostPointerActive = false;
+	let hasOutlineHostFocusWithin = false;
+	let isOutlineHostActive = false;
+	const fallbackOutlineScrollVisibleStore = writable(false);
+	const messageOutlineVisibilityContext =
+		getContext<MessageOutlineVisibilityContext | undefined>('messageOutlineVisibility');
+	const outlineScrollVisibleStore =
+		messageOutlineVisibilityContext?.scrollVisibleStore ?? fallbackOutlineScrollVisibleStore;
+	$: isOutlineHostActive = isOutlineHostPointerActive || hasOutlineHostFocusWithin;
 	$: canShowMessageOutline =
 		!edit && !$mobile && ($settings?.showMessageOutline ?? true) && messageHeadings.length >= 1;
+
+	const handleOutlineHostFocusOut = (event: FocusEvent) => {
+		const currentTarget = event.currentTarget as HTMLElement | null;
+		const relatedTarget = event.relatedTarget as Node | null;
+
+		if (currentTarget && relatedTarget && currentTarget.contains(relatedTarget)) {
+			return;
+		}
+
+		hasOutlineHostFocusWithin = false;
+	};
 
 	let messageIndexEdit = false;
 
@@ -324,12 +384,54 @@
 		);
 	};
 
+	const writeRenderedCopyPayload = async (payload: RenderedCopyPayload) => {
+		if (($settings?.copyFormatted ?? false) && payload.html) {
+			try {
+				const data = new ClipboardItem({
+					'text/html': new Blob([payload.html], { type: 'text/html' }),
+					'text/plain': new Blob([payload.text], { type: 'text/plain' })
+				});
+				await navigator.clipboard.write([data]);
+				return true;
+			} catch (error) {
+				console.error('Failed to copy rendered HTML content:', error);
+			}
+		}
+
+		return await _copyToClipboard(payload.text, $settings?.copyFormatted ?? false);
+	};
+
 	const copyToClipboard = async (text) => {
 		text = removeAllDetails(text);
 
-		const res = await _copyToClipboard(text, $settings?.copyFormatted ?? false);
+		const renderedPayload = contentRendererRef?.getCopyPayload?.();
+		const res = renderedPayload
+			? await writeRenderedCopyPayload(renderedPayload)
+			: await _copyToClipboard(text, $settings?.copyFormatted ?? false);
+
 		if (res) {
 			toast.success($i18n.t('Copying to clipboard was successful!'));
+		}
+	};
+
+	const toggleInlineCitations = async () => {
+		const nextValue = !($settings?.showInlineCitations ?? true);
+		const optimisticSettings = {
+			...($settings ?? {}),
+			showInlineCitations: nextValue
+		};
+
+		settings.set(optimisticSettings);
+
+		if (!localStorage?.token) {
+			return;
+		}
+
+		try {
+			await saveUserSettingsPatch(localStorage.token, { showInlineCitations: nextValue });
+		} catch (error) {
+			settings.set(optimisticSettings);
+			toast.error(tr('正文引用显示偏好保存失败', 'Failed to save inline citation preference.'));
 		}
 	};
 
@@ -647,17 +749,17 @@
 
 		const num = (v: unknown) => (typeof v === 'number' ? v.toLocaleString() : null);
 		const rows: [string, string | null][] = [
-			['输入 Token', num(input)],
-			['输出 Token', num(output)],
-			['推理 Token', num(reasoning)],
-			['缓存 Token', num(cached)]
+			[tr('输入 Token', 'Input Tokens'), num(input)],
+			[tr('输出 Token', 'Output Tokens'), num(output)],
+			[tr('推理 Token', 'Reasoning Tokens'), num(reasoning)],
+			[tr('缓存 Token', 'Cached Tokens'), num(cached)]
 		];
 
 		let h = `<div style="background:${bg};backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid ${bd};border-radius:1rem;padding:10px 14px;box-shadow:0 10px 15px -3px rgba(0,0,0,0.1);min-width:150px">`;
 
 		if (typeof total === 'number') {
 			h += `<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid ${dv}">`;
-			h += `<span style="font-size:12px;font-weight:500;color:${lb}">总消耗</span>`;
+			h += `<span style="font-size:12px;font-weight:500;color:${lb}">${tr('总消耗', 'Total')}</span>`;
 			h += `<span style="font-size:18px;font-weight:600;font-variant-numeric:tabular-nums;color:${hr}">${total.toLocaleString()}</span>`;
 			h += `</div>`;
 		}
@@ -668,7 +770,7 @@
 			h += `<span style="color:${lb}">${label}</span>`;
 			h += val !== null
 				? `<span style="font-weight:500;font-variant-numeric:tabular-nums;color:${vl}">${val}</span>`
-				: `<span style="color:${vl};font-style:italic">未返回</span>`;
+				: `<span style="color:${vl};font-style:italic">${tr('未返回', 'Not returned')}</span>`;
 			h += `</div>`;
 		}
 		h += `</div></div>`;
@@ -781,7 +883,7 @@
 					<ModelIcon
 						src={model?.info?.meta?.profile_image_url ??
 							model?.meta?.profile_image_url ??
-							($i18n.language === 'dg-DG' ? `/doge.png` : `${WEBUI_BASE_URL}/static/favicon.png`)}
+							`${WEBUI_BASE_URL}/static/favicon.png`}
 						alt="model profile"
 						bare={true}
 						className="size-[26px] sm:size-[34px] rounded-xl -translate-y-[1px] ring-2 ring-white/60 dark:ring-white/20"
@@ -830,8 +932,8 @@
 
 			{#if stats && (stats.speed || stats.tokens || stats.elapsed)}
 				<div class="text-gray-500 dark:text-gray-400 mt-1 ml-0.5 text-xs sm:text-sm">
-					{#if stats.speed}速度: {stats.speed} T/s{/if}{#if stats.speed && (stats.tokens || stats.elapsed)}{' | '}{/if}{#if stats.tokens}消耗:
-						{stats.tokens} Token{/if}{#if stats.tokens && stats.elapsed}{' | '}{/if}{#if stats.elapsed}耗时:
+					{#if stats.speed}{tr('速度', 'Speed')}: {stats.speed} T/s{/if}{#if stats.speed && (stats.tokens || stats.elapsed)}{' | '}{/if}{#if stats.tokens}{tr('消耗', 'Tokens')}:
+						{stats.tokens} {$i18n.t('Token')}{/if}{#if stats.tokens && stats.elapsed}{' | '}{/if}{#if stats.elapsed}{tr('耗时', 'Elapsed')}:
 						{stats.elapsed} s{/if}
 				</div>
 			{/if}
@@ -841,14 +943,14 @@
 					class="flex items-baseline gap-1.5 mt-1 ml-0.5 text-xs text-gray-400 dark:text-gray-500 italic"
 				>
 					<RefreshCw class="w-3.5 h-3.5 shrink-0 translate-y-[1px]" strokeWidth={1.5} />
-					<span class="line-clamp-1">{message.instruction.replace(/^请/, '')}</span>
+					<span class="line-clamp-1">{message.instruction.replace(/^请/, '').replace(/^Please\s+/i, '')}</span>
 				</div>
 			{/if}
 
 			<div class="mt-1.5 -ml-4 w-[calc(100%+1rem)] sm:ml-0 sm:w-auto">
 				<div class="chat-{message.role} w-full min-w-full markdown-prose">
 					<div>
-						{#if message.content !== '' || message.error}
+						{#if message.content !== '' || renderableMessageError || hasVisibleMessageFiles}
 							<!-- Only show status section when content is streaming (not during initial loading) -->
 							{#if displayStatusHistory.length > 0}
 								{@const status = displayStatusHistory.at(-1)}
@@ -1042,11 +1144,23 @@
 								class="relative min-w-0 flex-1 overflow-visible message-outline-host {canShowMessageOutline
 									? 'message-outline-host-active'
 									: ''}"
+								on:pointerenter={() => {
+									isOutlineHostPointerActive = true;
+								}}
+								on:pointerleave={() => {
+									isOutlineHostPointerActive = false;
+								}}
+								on:focusin={() => {
+									hasOutlineHostFocusWithin = true;
+								}}
+								on:focusout={handleOutlineHostFocusOut}
 							>
 								{#if canShowMessageOutline}
 									<MessageOutline
 										headings={messageHeadings}
+										visible={$outlineScrollVisibleStore && isOutlineHostActive}
 										onSelect={(heading) => {
+											messageOutlineVisibilityContext?.reveal?.();
 											contentRendererRef?.scrollToHeading?.(heading.id);
 										}}
 									/>
@@ -1065,7 +1179,7 @@
 											/>
 										{/if}
 
-										{#if message.content === '' && message.done && !message.error && !(message?.files?.length > 0)}
+										{#if message.content === '' && message.done && !renderableMessageError && !hasVisibleMessageFiles}
 											<!-- Empty response: model returned 0 tokens without error -->
 											<Error
 												content={$i18n.t(
@@ -1127,9 +1241,11 @@
 											/>
 										{/if}
 
-										{#if message?.error}
+										{#if renderableMessageError}
 											<Error
-												content={message?.error === true ? message.content : message?.error}
+												content={renderableMessageError === true
+													? message.content
+													: renderableMessageError}
 											/>
 										{/if}
 
@@ -1140,12 +1256,33 @@
 
 									<div class="message-outline-toolbar-row flex items-end mt-2 gap-3 flex-wrap">
 						{#if (message?.sources || message?.citations) && (model?.info?.meta?.capabilities?.citations ?? true)}
-							<div class="flex-shrink-0">
+							<div class="flex shrink-0 items-center gap-2">
 								<Citations
 									bind:this={citationsRef}
 									id={message?.id}
 									sources={message?.sources ?? message?.citations}
 								/>
+								<Tooltip
+									content={($settings?.showInlineCitations ?? true)
+										? tr('隐藏正文引用标签', 'Hide inline citations')
+										: tr('显示正文引用标签', 'Show inline citations')}
+									placement="bottom"
+								>
+									<button
+										type="button"
+										aria-label={($settings?.showInlineCitations ?? true)
+											? tr('隐藏正文引用标签', 'Hide inline citations')
+											: tr('显示正文引用标签', 'Show inline citations')}
+										class="text-gray-600 dark:text-gray-300 rounded-xl bg-white/60 dark:bg-gray-800/60 backdrop-blur-xl shadow-sm hover:bg-white/80 dark:hover:bg-gray-700/60 transition-all duration-200 flex items-center justify-center border border-gray-200/50 dark:border-gray-700/50 h-[36px] w-[36px] shrink-0"
+										on:click={toggleInlineCitations}
+									>
+										{#if $settings?.showInlineCitations ?? true}
+											<EyeOff class="size-3.5 shrink-0" strokeWidth={2.25} />
+										{:else}
+											<Eye class="size-3.5 shrink-0" strokeWidth={2.25} />
+										{/if}
+									</button>
+								</Tooltip>
 							</div>
 						{/if}
 						{#if message.done || siblings.length > 1}
@@ -1259,6 +1396,26 @@
 											<Copy class="w-4 h-4" strokeWidth={2} />
 										</button>
 									</Tooltip>
+
+									{#if !readOnly && branchSupported}
+										<Tooltip content={branchTooltip} placement="bottom">
+											<button
+												class="{isLastMessage
+													? 'visible'
+													: 'invisible group-hover:visible'} p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl dark:hover:text-white hover:text-black transition-all duration-200 hover:scale-110 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100"
+												on:click={() => {
+													onBranchMessage(message.id);
+												}}
+												disabled={isBranching}
+												aria-busy={isBranching}
+											>
+												<GitBranchPlus
+													class={`w-4 h-4 ${isBranching ? 'animate-spin' : ''}`}
+													strokeWidth={2}
+												/>
+											</button>
+										</Tooltip>
+									{/if}
 
 									<!-- [REACTION_FEATURE] Commented out - reaction button disabled for now
 								{#if !readOnly}

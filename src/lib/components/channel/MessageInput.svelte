@@ -7,7 +7,21 @@
 	const i18n = getContext('i18n');
 
 	import { config, mobile, settings, socket, user } from '$lib/stores';
-	import { blobToFile, compressImage } from '$lib/utils';
+	import {
+		blobToFile,
+		compressImage,
+		convertHeicToJpeg,
+		extractInputVariables,
+		getAge,
+		getCurrentDateTime,
+		getFormattedDate,
+		getFormattedTime,
+		getUserPosition,
+		getUserTimezone,
+		getWeekday,
+		isAnimatedImage,
+		isHeicFile
+	} from '$lib/utils';
 	import {
 		buildIgnoredFailedFilesMessage,
 		getFileUploadDiagnostic,
@@ -19,15 +33,18 @@
 	import Tooltip from '../common/Tooltip.svelte';
 	import RichTextInput from '../common/RichTextInput.svelte';
 	import VoiceRecording from '../chat/MessageInput/VoiceRecording.svelte';
+	import InputVariablesModal from '../chat/MessageInput/InputVariablesModal.svelte';
+	import CommandSuggestionList from '../chat/MessageInput/CommandSuggestionList.svelte';
 	import InputMenu from './MessageInput/InputMenu.svelte';
-	import { uploadFile } from '$lib/apis/files';
-	import { WEBUI_API_BASE_URL } from '$lib/constants';
+	import { deleteFileById, uploadFile } from '$lib/apis/files';
+	import { PASTED_TEXT_CHARACTER_LIMIT, WEBUI_API_BASE_URL } from '$lib/constants';
 	import FileItem from '../common/FileItem.svelte';
 	import Image from '../common/Image.svelte';
 	import { transcribeAudio } from '$lib/apis/audio';
 	import FilesOverlay from '../chat/MessageInput/FilesOverlay.svelte';
+	import { getSuggestionRenderer } from '../common/RichTextInput/suggestions';
 	import MentionList from './MessageInput/MentionList.svelte';
-	import { getUsers } from '$lib/apis/users';
+	import { getSessionUser } from '$lib/apis/auths';
 
 	export let placeholder = $i18n.t('Send a Message');
 	export let transparentBackground = false;
@@ -35,59 +52,206 @@
 	export let id = null;
 
 	let draggedOver = false;
+	let dragCounter = 0;
 
 	let recording = false;
 	let content = '';
 	let files = [];
+	let chatInputElement;
+	let command = '';
+	let suggestions = null;
 
 	let filesInputElement;
 	let inputFiles;
-
-	// @mention support
-	let showMentions = false;
-	let mentionQuery = '';
-	let mentionUsers: any[] = [];
-	let mentionListEl: MentionList;
-
-	$: {
-		// Detect @mention trigger: look for @ followed by word chars at end of text
-		const match = content.match(/@(\w*)$/);
-		if (match) {
-			showMentions = true;
-			mentionQuery = match[1];
-		} else {
-			showMentions = false;
-			mentionQuery = '';
-		}
-	}
-
-	const loadMentionUsers = async () => {
-		if (mentionUsers.length === 0) {
-			try {
-				mentionUsers = await getUsers(localStorage.token);
-			} catch {
-				mentionUsers = [];
-			}
-		}
-	};
-
-	$: if (showMentions) {
-		loadMentionUsers();
-	}
-
-	const handleMentionSelect = (e: CustomEvent) => {
-		const user = e.detail;
-		// Replace @query with @username
-		content = content.replace(/@(\w*)$/, `@${user.name} `);
-		showMentions = false;
-	};
+	let showInputVariablesModal = false;
+	let inputVariables = {};
+	let inputVariableValues = {};
+	let inputVariablesModalCallback = (_variableValues) => {};
 
 	export let typingUsers = [];
+	export let userSuggestions = true;
+	export let channelSuggestions = false;
 
 	export let onSubmit: Function;
 	export let onChange: Function;
 	export let scrollEnd = true;
 	export let scrollToBottom: Function = () => {};
+
+	const IMAGE_INPUT_MIME_TYPES = [
+		'image/gif',
+		'image/webp',
+		'image/jpeg',
+		'image/png',
+		'image/avif'
+	];
+
+	const buildUploadedImageContentUrl = (fileId: string) =>
+		`${WEBUI_API_BASE_URL}/files/${fileId}/content`;
+
+	const revokePreviewUrl = (value: unknown) => {
+		if (typeof value === 'string' && value.startsWith('blob:')) {
+			URL.revokeObjectURL(value);
+		}
+	};
+
+	const createNamedImageFile = (blob: Blob, namePrefix: string) => {
+		const mimeType = blob.type || 'image/png';
+		const extension = mimeType.split('/').at(1)?.split('+').at(0) || 'png';
+		const existingName = blob instanceof File ? blob.name : '';
+		const filename = existingName || `${namePrefix}_${Date.now()}.${extension}`;
+		return new File([blob], filename, { type: mimeType });
+	};
+
+	const normalizeInputFileForMessage = (file) => {
+		if (!file || typeof file !== 'object') {
+			return file;
+		}
+
+		if (file.type === 'image') {
+			return Object.fromEntries(
+				Object.entries({
+					type: 'image',
+					id: file.id,
+					name: file.name,
+					url: file.id ? buildUploadedImageContentUrl(file.id) : file.url,
+					size: file.size,
+					content_type: file.content_type
+				}).filter(([, value]) => value !== undefined && value !== null && value !== '')
+			);
+		}
+
+		return structuredClone(file);
+	};
+
+	const inputVariableHandler = async (text: string): Promise<string> => {
+		inputVariables = extractInputVariables(text);
+
+		if (Object.keys(inputVariables).length === 0) {
+			return text;
+		}
+
+		showInputVariablesModal = true;
+		return await new Promise<string>((resolve) => {
+			inputVariablesModalCallback = (variableValues) => {
+				inputVariableValues = { ...inputVariableValues, ...variableValues };
+				chatInputElement?.replaceVariables?.(inputVariableValues);
+				showInputVariablesModal = false;
+				resolve(text);
+			};
+		});
+	};
+
+	const textVariableHandler = async (text: string) => {
+		if (text.includes('{{CLIPBOARD}}')) {
+			const clipboardText = await navigator.clipboard.readText().catch(() => {
+				toast.error($i18n.t('Failed to read clipboard contents'));
+				return '{{CLIPBOARD}}';
+			});
+
+			const clipboardItems = await navigator.clipboard.read().catch(() => []);
+			for (const item of clipboardItems) {
+				for (const type of item.types) {
+					if (type.startsWith('image/')) {
+						const blob = await item.getType(type);
+						const file = new File([blob], `clipboard-image.${type.split('/')[1]}`, { type });
+						await inputFilesHandler([file]);
+					}
+				}
+			}
+
+			text = text.replaceAll('{{CLIPBOARD}}', clipboardText.replaceAll('\r\n', '\n'));
+		}
+
+		if (text.includes('{{USER_LOCATION}}')) {
+			let location;
+			try {
+				location = await getUserPosition();
+			} catch {
+				toast.error($i18n.t('Location access not allowed'));
+				location = 'LOCATION_UNKNOWN';
+			}
+			text = text.replaceAll('{{USER_LOCATION}}', String(location));
+		}
+
+		const sessionUser = await getSessionUser(localStorage.token).catch(() => null);
+
+		if (text.includes('{{USER_NAME}}')) {
+			text = text.replaceAll('{{USER_NAME}}', sessionUser?.name || 'User');
+		}
+		if (text.includes('{{USER_EMAIL}}') && sessionUser?.email) {
+			text = text.replaceAll('{{USER_EMAIL}}', sessionUser.email);
+		}
+		if (text.includes('{{USER_BIO}}') && sessionUser?.bio) {
+			text = text.replaceAll('{{USER_BIO}}', sessionUser.bio);
+		}
+		if (text.includes('{{USER_GENDER}}') && sessionUser?.gender) {
+			text = text.replaceAll('{{USER_GENDER}}', sessionUser.gender);
+		}
+		if (text.includes('{{USER_BIRTH_DATE}}') && sessionUser?.date_of_birth) {
+			text = text.replaceAll('{{USER_BIRTH_DATE}}', sessionUser.date_of_birth);
+		}
+		if (text.includes('{{USER_AGE}}') && sessionUser?.date_of_birth) {
+			text = text.replaceAll('{{USER_AGE}}', getAge(sessionUser.date_of_birth));
+		}
+		if (text.includes('{{USER_LANGUAGE}}')) {
+			text = text.replaceAll('{{USER_LANGUAGE}}', localStorage.getItem('locale') || 'en-US');
+		}
+		if (text.includes('{{CURRENT_DATE}}')) {
+			text = text.replaceAll('{{CURRENT_DATE}}', getFormattedDate());
+		}
+		if (text.includes('{{CURRENT_TIME}}')) {
+			text = text.replaceAll('{{CURRENT_TIME}}', getFormattedTime());
+		}
+		if (text.includes('{{CURRENT_DATETIME}}')) {
+			text = text.replaceAll('{{CURRENT_DATETIME}}', getCurrentDateTime());
+		}
+		if (text.includes('{{CURRENT_TIMEZONE}}')) {
+			text = text.replaceAll('{{CURRENT_TIMEZONE}}', getUserTimezone());
+		}
+		if (text.includes('{{CURRENT_WEEKDAY}}')) {
+			text = text.replaceAll('{{CURRENT_WEEKDAY}}', getWeekday());
+		}
+
+		return text;
+	};
+
+	const getCommand = () => {
+		const chatInput = document.getElementById(`chat-input-${id}`);
+		if (!chatInput) {
+			return '';
+		}
+		return chatInputElement?.getWordAtDocPos?.() ?? '';
+	};
+
+	const replaceCommandWithText = (text: string) => {
+		const chatInput = document.getElementById(`chat-input-${id}`);
+		if (!chatInput) {
+			return;
+		}
+		chatInputElement?.replaceCommandWithText?.(text);
+	};
+
+	const insertTextAtCursor = async (text: string) => {
+		const chatInput = document.getElementById(`chat-input-${id}`);
+		if (!chatInput) {
+			return;
+		}
+
+		text = await textVariableHandler(text);
+
+		if (command) {
+			replaceCommandWithText(text);
+		} else {
+			chatInputElement?.insertContent?.(text);
+		}
+
+		await tick();
+		text = await inputVariableHandler(text);
+		await tick();
+
+		chatInputElement?.focus?.();
+		chatInput.dispatchEvent(new Event('input'));
+	};
 
 	const screenCaptureHandler = async () => {
 		try {
@@ -114,10 +278,14 @@
 			// bring back focus to this current tab, so that the user can see the screen capture
 			window.focus();
 
-			// Convert the canvas to a Base64 image URL
-			const imageUrl = canvas.toDataURL('image/png');
-			// Add the captured image to the files array to render it
-			files = [...files, { type: 'image', url: imageUrl }];
+			const imageBlob = await new Promise<Blob | null>((resolve) =>
+				canvas.toBlob(resolve, 'image/png')
+			);
+			if (!imageBlob) {
+				throw new Error('Failed to capture screen image');
+			}
+
+			await uploadImageFileHandler(createNamedImageFile(imageBlob, 'Channel_Screen_Capture'));
 			// Clean memory: Clear video srcObject
 			video.srcObject = null;
 		} catch (error) {
@@ -127,7 +295,7 @@
 	};
 
 	const inputFilesHandler = async (inputFiles) => {
-		inputFiles.forEach((file) => {
+		for (let file of inputFiles) {
 			console.log('Processing file:', {
 				name: file.name,
 				type: file.type,
@@ -148,43 +316,123 @@
 						maxSize: $config?.file?.max_size
 					})
 				);
-				return;
+				continue;
 			}
 
-			if (
-				['image/gif', 'image/webp', 'image/jpeg', 'image/png', 'image/avif'].includes(file['type'])
-			) {
-				let reader = new FileReader();
+			if (isHeicFile(file)) {
+				try {
+					file = await convertHeicToJpeg(file);
+				} catch (error) {
+					console.error('HEIC conversion failed:', error);
+					toast.error($i18n.t('Failed to convert HEIC image'));
+					continue;
+				}
+			}
 
-				reader.onload = async (event) => {
-					let imageUrl = event.target.result;
+			if (IMAGE_INPUT_MIME_TYPES.includes(file['type'])) {
+				if (
+					($settings?.imageCompression ?? false) &&
+					($settings?.imageCompressionInChannels ?? true) &&
+					!isAnimatedImage(file)
+				) {
+					const width = $settings?.imageCompressionSize?.width ?? null;
+					const height = $settings?.imageCompressionSize?.height ?? null;
 
-					if (
-						($settings?.imageCompression ?? false) &&
-						($settings?.imageCompressionInChannels ?? true)
-					) {
-						const width = $settings?.imageCompressionSize?.width ?? null;
-						const height = $settings?.imageCompressionSize?.height ?? null;
-
-						if (width || height) {
-							imageUrl = await compressImage(imageUrl, width, height);
-						}
+					if (width || height) {
+						const tempPreviewUrl = URL.createObjectURL(file);
+						const imageUrl = await compressImage(tempPreviewUrl, width, height).finally(() => {
+							revokePreviewUrl(tempPreviewUrl);
+						});
+						const response = await fetch(imageUrl);
+						const imageBlob = await response.blob();
+						file = createNamedImageFile(
+							imageBlob,
+							file.name.replace(/\.[^.]+$/, '') || 'Channel_Image'
+						);
 					}
+				}
 
-					files = [
-						...files,
-						{
-							type: 'image',
-							url: `${imageUrl}`
-						}
-					];
-				};
-
-				reader.readAsDataURL(file);
+				await uploadImageFileHandler(file);
 			} else {
-				uploadFileHandler(file);
+				await uploadFileHandler(file);
 			}
-		});
+		}
+	};
+
+	const uploadImageFileHandler = async (file: File) => {
+		const tempItemId = uuidv4();
+		const previewUrl = URL.createObjectURL(file);
+		const fileItem = {
+			type: 'image',
+			id: null,
+			url: '',
+			name: file.name,
+			size: file.size,
+			content_type: file.type,
+			status: 'uploading',
+			error: '',
+			errorTitle: '',
+			errorHint: '',
+			diagnostic: null,
+			itemId: tempItemId,
+			preview_url: previewUrl
+		};
+
+		if (fileItem.size == 0) {
+			revokePreviewUrl(previewUrl);
+			toast.error($i18n.t('You cannot upload an empty file.'));
+			return null;
+		}
+
+		files = [...files, fileItem];
+
+		try {
+			const uploadedFile = await uploadFile(localStorage.token, file, { process: false });
+
+			if (uploadedFile) {
+				if (uploadedFile.error) {
+					toast.warning(
+						localizeFileUploadError(uploadedFile.error, $i18n.t.bind($i18n), {
+							isAdmin: $user?.role === 'admin'
+						})
+					);
+				}
+
+				fileItem.status = 'uploaded';
+				fileItem.id = uploadedFile.id;
+				fileItem.name = uploadedFile?.meta?.name ?? file.name;
+				fileItem.size = uploadedFile?.meta?.size ?? file.size;
+				fileItem.content_type = uploadedFile?.meta?.content_type ?? file.type;
+				fileItem.url = buildUploadedImageContentUrl(uploadedFile.id);
+				revokePreviewUrl(fileItem.preview_url);
+				delete fileItem.preview_url;
+
+				files = files;
+			} else {
+				setUploadFailure(tempItemId, new Error($i18n.t('Failed to upload file.')));
+			}
+		} catch (e) {
+			setUploadFailure(tempItemId, e);
+		}
+	};
+
+	const removeInputFile = async (fileIdx: number) => {
+		const file = files[fileIdx];
+		if (!file) {
+			return;
+		}
+
+		if (file.itemId && file.id && file.type !== 'collection' && !file?.collection) {
+			try {
+				await deleteFileById(localStorage.token, file.id);
+			} catch (error) {
+				console.error('Failed to delete uploaded file:', error);
+			}
+		}
+
+		revokePreviewUrl(file?.preview_url);
+		files.splice(fileIdx, 1);
+		files = files;
 	};
 
 	const uploadFileHandler = async (file) => {
@@ -283,44 +531,42 @@
 	const handleKeyDown = (event: KeyboardEvent) => {
 		if (event.key === 'Escape') {
 			console.log('Escape');
+			dragCounter = 0;
 			draggedOver = false;
 		}
+	};
+
+	const onDragEnter = (e) => {
+		if (!e.dataTransfer?.types?.includes('Files')) return;
+		dragCounter++;
+		draggedOver = true;
 	};
 
 	const onDragOver = (e) => {
 		e.preventDefault();
-
-		// Check if a file is being draggedOver.
-		if (e.dataTransfer?.types?.includes('Files')) {
-			draggedOver = true;
-		} else {
-			draggedOver = false;
-		}
 	};
 
 	const onDragLeave = () => {
-		draggedOver = false;
+		if (dragCounter > 0) dragCounter--;
+		if (dragCounter === 0) draggedOver = false;
 	};
 
 	const onDrop = async (e) => {
 		e.preventDefault();
-		console.log(e);
+
+		dragCounter = 0;
+		draggedOver = false;
 
 		if (e.dataTransfer?.files) {
 			const inputFiles = Array.from(e.dataTransfer?.files);
 			if (inputFiles && inputFiles.length > 0) {
-				console.log(inputFiles);
-				inputFilesHandler(inputFiles);
+				await inputFilesHandler(inputFiles);
 			}
 		}
-
-		draggedOver = false;
 	};
 
 	const submitHandler = async () => {
-		const uploadingFiles = files.filter(
-			(file) => file.type !== 'image' && file.status === 'uploading'
-		);
+		const uploadingFiles = files.filter((file) => file.status === 'uploading');
 		if (uploadingFiles.length > 0) {
 			toast.error(
 				$i18n.t(`Oops! There are files still uploading. Please wait for the upload to complete.`)
@@ -349,7 +595,7 @@
 		onSubmit({
 			content,
 			data: {
-				files: validFiles
+				files: validFiles.map((file) => normalizeInputFileForMessage(file))
 			}
 		});
 
@@ -357,9 +603,8 @@
 		files = failedFiles;
 
 		await tick();
-
-		const chatInputElement = document.getElementById(`chat-input-${id}`);
-		chatInputElement?.focus();
+		chatInputElement?.setText?.('');
+		chatInputElement?.focus?.();
 	};
 
 	$: if (content) {
@@ -367,6 +612,49 @@
 	}
 
 	onMount(async () => {
+		suggestions = [
+			{
+				char: '@',
+				render: getSuggestionRenderer(MentionList, {
+					i18n,
+					triggerChar: '@',
+					userSuggestions,
+					channelSuggestions: false
+				})
+			},
+			...(channelSuggestions
+				? [
+						{
+							char: '#',
+							render: getSuggestionRenderer(MentionList, {
+								i18n,
+								triggerChar: '#',
+								channelSuggestions: true
+							})
+						}
+					]
+				: []),
+			{
+				char: '/',
+				render: getSuggestionRenderer(CommandSuggestionList, {
+					i18n,
+					onSelect: () => {
+						document.getElementById(`chat-input-${id}`)?.focus();
+					},
+					insertTextHandler: insertTextAtCursor,
+					onUpload: (event) => {
+						const { type, data } = event;
+						if (type === 'file') {
+							if (files.find((file) => file.id === data.id)) {
+								return;
+							}
+							files = [...files, { ...data, status: 'processed' }];
+						}
+					}
+				})
+			}
+		];
+
 		window.setTimeout(() => {
 			const chatInput = document.getElementById(`chat-input-${id}`);
 			chatInput?.focus();
@@ -377,6 +665,7 @@
 
 		const dropzoneElement = document.getElementById('channel-container');
 
+		dropzoneElement?.addEventListener('dragenter', onDragEnter);
 		dropzoneElement?.addEventListener('dragover', onDragOver);
 		dropzoneElement?.addEventListener('drop', onDrop);
 		dropzoneElement?.addEventListener('dragleave', onDragLeave);
@@ -389,14 +678,24 @@
 		const dropzoneElement = document.getElementById('channel-container');
 
 		if (dropzoneElement) {
+			dropzoneElement?.removeEventListener('dragenter', onDragEnter);
 			dropzoneElement?.removeEventListener('dragover', onDragOver);
 			dropzoneElement?.removeEventListener('drop', onDrop);
 			dropzoneElement?.removeEventListener('dragleave', onDragLeave);
+		}
+
+		for (const file of files) {
+			revokePreviewUrl(file?.preview_url);
 		}
 	});
 </script>
 
 <FilesOverlay show={draggedOver} />
+<InputVariablesModal
+	bind:show={showInputVariablesModal}
+	variables={inputVariables}
+	onSave={inputVariablesModalCallback}
+/>
 
 <input
 	bind:this={filesInputElement}
@@ -406,7 +705,7 @@
 	multiple
 	on:change={async () => {
 		if (inputFiles && inputFiles.length > 0) {
-			inputFilesHandler(Array.from(inputFiles));
+			await inputFilesHandler(Array.from(inputFiles));
 		} else {
 			toast.error($i18n.t(`File not found.`));
 		}
@@ -503,7 +802,7 @@
 										<div class=" relative group">
 											<div class="relative">
 												<Image
-													src={file.url}
+													src={file.preview_url || file.url}
 													alt="input"
 													imageClassName=" h-16 w-16 rounded-xl object-cover"
 												/>
@@ -512,9 +811,8 @@
 												<button
 													class=" bg-white text-black border border-white rounded-full group-hover:visible invisible transition"
 													type="button"
-													on:click={() => {
-														files.splice(fileIdx, 1);
-														files = files;
+													on:click={async () => {
+														await removeInputFile(fileIdx);
 													}}
 												>
 													<svg
@@ -539,9 +837,8 @@
 											loading={file.status === 'uploading'}
 											dismissible={true}
 											edit={true}
-											on:dismiss={() => {
-												files.splice(fileIdx, 1);
-												files = files;
+											on:dismiss={async () => {
+												await removeInputFile(fileIdx);
 											}}
 											on:click={() => {
 												console.log(file);
@@ -553,19 +850,12 @@
 						{/if}
 
 						<div class="px-2.5 relative">
-							{#if showMentions}
-								<MentionList
-									bind:this={mentionListEl}
-									query={mentionQuery}
-									users={mentionUsers}
-									on:select={handleMentionSelect}
-								/>
-							{/if}
 							<div
 								class="scrollbar-hidden font-primary text-left bg-transparent dark:text-gray-100 outline-hidden w-full pt-3 px-1 rounded-xl resize-none h-fit max-h-80 overflow-auto"
 							>
 								<RichTextInput
-									bind:value={content}
+									bind:this={chatInputElement}
+									value={content}
 									id={`chat-input-${id}`}
 									messageInput={true}
 									showFormattingToolbar={$settings?.showFormattingToolbar ?? false}
@@ -578,36 +868,65 @@
 										)}
 									{placeholder}
 									largeTextAsFile={$settings?.largeTextAsFile ?? false}
+									{suggestions}
+									onChange={(nextContent) => {
+										content = nextContent.md;
+										command = getCommand();
+									}}
 									on:keydown={async (e) => {
 										e = e.detail.event;
-										const isCtrlPressed = e.ctrlKey || e.metaKey; // metaKey is for Cmd key on Mac
-										if (
-											!$mobile ||
-											!(
-												'ontouchstart' in window ||
-												navigator.maxTouchPoints > 0 ||
-												navigator.msMaxTouchPoints > 0
-											)
-										) {
-											// Prevent Enter key from creating a new line
-											// Uses keyCode '13' for Enter key for chinese/japanese keyboards
-											if (e.keyCode === 13 && !e.shiftKey) {
-												e.preventDefault();
-											}
+										const suggestionsContainerElement =
+											document.getElementById('suggestions-container');
+											if (
+												!suggestionsContainerElement &&
+												(!$mobile ||
+												!(
+													'ontouchstart' in window ||
+													navigator.maxTouchPoints > 0 ||
+													navigator.msMaxTouchPoints > 0
+												))
+											) {
+												if (e.keyCode === 13 && !e.shiftKey) {
+													e.preventDefault();
+												}
 
-											// Submit the content when Enter key is pressed
-											if (content !== '' && e.keyCode === 13 && !e.shiftKey) {
-												submitHandler();
+												if ((content !== '' || files.length > 0) && e.keyCode === 13 && !e.shiftKey) {
+													submitHandler();
+												}
 											}
-										}
-
-										if (e.key === 'Escape') {
-											console.log('Escape');
-										}
-									}}
+										}}
 									on:paste={async (e) => {
 										e = e.detail.event;
-										console.log(e);
+										const clipboardData = e.clipboardData || window.clipboardData;
+
+										if (clipboardData && clipboardData.items) {
+											for (const item of clipboardData.items) {
+												if (item.type.indexOf('image') !== -1) {
+													let blob = item.getAsFile();
+													if (blob && isHeicFile(blob)) {
+														try {
+															blob = await convertHeicToJpeg(blob);
+														} catch (error) {
+															console.error('HEIC paste conversion failed:', error);
+															continue;
+														}
+													}
+													await uploadImageFileHandler(
+														createNamedImageFile(blob, 'Channel_Pasted_Image')
+													);
+												} else if (item.type === 'text/plain' && ($settings?.largeTextAsFile ?? false)) {
+													const text = clipboardData.getData('text/plain');
+													if (text.length > PASTED_TEXT_CHARACTER_LIMIT) {
+														e.preventDefault();
+														const blob = new Blob([text], { type: 'text/plain' });
+														const file = new File([blob], `Pasted_Text_${Date.now()}.txt`, {
+															type: 'text/plain'
+														});
+														await uploadFileHandler(file);
+													}
+												}
+											}
+										}
 									}}
 								/>
 							</div>

@@ -16,7 +16,7 @@
 	import { getBanners, setBanners, setDefaultPromptSuggestions } from '$lib/apis/configs';
 	import { updateUserInfo } from '$lib/apis/users';
 	import { getUserPosition } from '$lib/utils';
-	import { getLanguages, changeLanguage } from '$lib/i18n';
+	import { getLanguages, changeLanguage, translateWithDefault } from '$lib/i18n';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
 	import { setTextScale } from '$lib/utils/text-scale';
 	import { revealExpandedSection } from '$lib/utils/expanded-section-scroll';
@@ -59,6 +59,8 @@
 
 	const dispatch = createEventDispatcher();
 	const i18n: Writable<any> = getContext('i18n');
+	const tr = (key: string, defaultValue: string, options: Record<string, any> = {}) =>
+		translateWithDefault($i18n, key, defaultValue, options);
 	const { getModels } = getContext<UserSettingsContext>('user-settings');
 
 	export let saveSettings: Function;
@@ -119,7 +121,9 @@
 	let textScale: number | null = null;
 	let collapseCodeBlocks = false;
 	let collapseHistoricalLongResponses = true;
+	let showInlineCitations = true;
 	let showMessageOutline = true;
+	let showFormulaQuickCopyButton = true;
 	let expandDetails = false;
 
 	// Chat behavior
@@ -239,7 +243,9 @@
 			temporaryChatByDefault: boolean;
 			collapseCodeBlocks: boolean;
 			collapseHistoricalLongResponses: boolean;
+			showInlineCitations: boolean;
 			showMessageOutline: boolean;
+			showFormulaQuickCopyButton: boolean;
 			expandDetails: boolean;
 			insertSuggestionPrompt: boolean;
 			keepFollowUpPrompts: boolean;
@@ -383,13 +389,13 @@
 		applyTheme(nextTheme);
 	};
 
-	const commitLanguageSelection = (nextLang: string) => {
+	const commitLanguageSelection = async (nextLang: string) => {
 		lang = nextLang;
-		changeLanguage(nextLang);
+		await changeLanguage(nextLang);
 	};
 
 	const getThemeOptionLabel = (displayName: string, id: string) =>
-		id === 'lobe-theme' ? '默认主题' : displayName;
+		id === 'lobe-theme' ? tr('默认主题', 'Default Theme') : displayName;
 
 	const commitTextScaleSelection = (scale: number | null) => {
 		textScale = scale;
@@ -562,7 +568,9 @@
 			temporaryChatByDefault,
 			collapseCodeBlocks,
 			collapseHistoricalLongResponses,
+			showInlineCitations,
 			showMessageOutline,
+			showFormulaQuickCopyButton,
 			expandDetails,
 			insertSuggestionPrompt,
 			keepFollowUpPrompts,
@@ -640,7 +648,9 @@
 		temporaryChatByDefault = snapshot.temporaryChatByDefault;
 		collapseCodeBlocks = snapshot.collapseCodeBlocks;
 		collapseHistoricalLongResponses = snapshot.collapseHistoricalLongResponses;
+		showInlineCitations = snapshot.showInlineCitations;
 		showMessageOutline = snapshot.showMessageOutline;
+		showFormulaQuickCopyButton = snapshot.showFormulaQuickCopyButton;
 		expandDetails = snapshot.expandDetails;
 		insertSuggestionPrompt = snapshot.insertSuggestionPrompt;
 		keepFollowUpPrompts = snapshot.keepFollowUpPrompts;
@@ -709,7 +719,9 @@
 		enableAutoScrollOnStreaming;
 		collapseCodeBlocks;
 		collapseHistoricalLongResponses;
+		showInlineCitations;
 		showMessageOutline;
+		showFormulaQuickCopyButton;
 		expandDetails;
 		insertSuggestionPrompt;
 		keepFollowUpPrompts;
@@ -904,7 +916,7 @@
 			});
 			localStorage.setItem('theme', normalizeTheme(selectedTheme));
 			commitThemeSelection(selectedTheme);
-			commitLanguageSelection(lang);
+			await commitLanguageSelection(lang);
 			commitTextScaleSelection(textScale);
 			await tick();
 			startSectionBaselineSync();
@@ -1005,7 +1017,9 @@
 				temporaryChatByDefault,
 				collapseCodeBlocks,
 				collapseHistoricalLongResponses,
+				showInlineCitations,
 				showMessageOutline,
+				showFormulaQuickCopyButton,
 				expandDetails,
 				insertSuggestionPrompt,
 				keepFollowUpPrompts,
@@ -1190,7 +1204,9 @@
 
 		collapseCodeBlocks = $settings?.collapseCodeBlocks ?? false;
 		collapseHistoricalLongResponses = $settings?.collapseHistoricalLongResponses ?? true;
+		showInlineCitations = $settings?.showInlineCitations ?? true;
 		showMessageOutline = $settings?.showMessageOutline ?? true;
+		showFormulaQuickCopyButton = $settings?.showFormulaQuickCopyButton ?? true;
 		expandDetails = $settings?.expandDetails ?? false;
 
 		landingPageMode = $settings?.landingPageMode ?? '';
@@ -2137,10 +2153,26 @@
 										</div>
 										<div class="flex items-center justify-between glass-item px-4 py-3">
 											<div class="text-sm font-medium">
+												{tr('显示正文引用标签', 'Show Inline Citations')}
+											</div>
+											<Switch
+												bind:state={showInlineCitations}
+											/>
+										</div>
+										<div class="flex items-center justify-between glass-item px-4 py-3">
+											<div class="text-sm font-medium">
 												{$i18n.t('Show Message Outline')}
 											</div>
 											<Switch
 												bind:state={showMessageOutline}
+											/>
+										</div>
+										<div class="flex items-center justify-between glass-item px-4 py-3">
+											<div class="text-sm font-medium">
+												{$i18n.t('Show Formula Quick Copy Button')}
+											</div>
+											<Switch
+												bind:state={showFormulaQuickCopyButton}
 											/>
 										</div>
 										<div class="flex items-center justify-between glass-item px-4 py-3">
@@ -2177,12 +2209,18 @@
 										</div>
 										<div class="flex items-center justify-between glass-item px-4 py-3">
 											<div class="text-sm font-medium">
-												{$i18n.t('Stylized PDF Export')}
+												{tr('按当前页面样式导出 PDF', 'Export PDF using current page style')}
 											</div>
 											<Switch
 												bind:state={stylizedPdfExport}
 											/>
 										</div>
+									</div>
+									<div class="text-xs text-gray-500 dark:text-gray-400 mt-1.5 pl-1">
+										{tr(
+											'开启：导出效果更接近当前聊天页面。关闭：使用简化兼容导出，速度更稳。',
+											'On: export stays closer to the current chat page. Off: use simplified export for better stability.'
+										)}
 									</div>
 
 									<!-- Sub-group C: Interaction -->
@@ -2422,11 +2460,29 @@
 														}
 													}}
 													options={[
-														{ value: 'auto', label: '自动（仅压缩文件大小）' },
-														{ value: 'standard', label: '标准 (1920x1080)' },
-														{ value: 'medium', label: '中等 (1280x720)' },
-														{ value: 'small', label: '小图 (800x600)' },
-														{ value: 'custom', label: '自定义' }
+														{
+															value: 'auto',
+															label: tr(
+																'自动（仅压缩文件大小）',
+																'Auto (compress file size only)'
+															)
+														},
+														{
+															value: 'standard',
+															label: tr('标准 (1920x1080)', 'Standard (1920x1080)')
+														},
+														{
+															value: 'medium',
+															label: tr('中等 (1280x720)', 'Medium (1280x720)')
+														},
+														{
+															value: 'small',
+															label: tr('小图 (800x600)', 'Small (800x600)')
+														},
+														{
+															value: 'custom',
+															label: tr('自定义', 'Custom')
+														}
 													]}
 													className="w-64"
 												/>
@@ -2435,14 +2491,14 @@
 											{#if imageCompressionPreset === 'custom'}
 												<div class="flex items-center justify-between glass-item px-4 py-3">
 													<div class="text-sm font-medium">
-														自定义尺寸
+														{tr('自定义尺寸', 'Custom size')}
 													</div>
 													<div class="flex items-center gap-2">
 														<input
 															bind:value={imageCompressionSize.width}
 															type="number"
 															min="0"
-															placeholder="宽"
+															placeholder={tr('宽', 'Width')}
 															class="w-24 dark:bg-gray-850 rounded-lg px-3 py-2 text-sm bg-gray-50 outline-none border border-gray-200 dark:border-gray-700 text-center"
 														/>
 														<span class="text-gray-500">x</span>
@@ -2450,7 +2506,7 @@
 															bind:value={imageCompressionSize.height}
 															type="number"
 															min="0"
-															placeholder="高"
+															placeholder={tr('高', 'Height')}
 															class="w-24 dark:bg-gray-850 rounded-lg px-3 py-2 text-sm bg-gray-50 outline-none border border-gray-200 dark:border-gray-700 text-center"
 														/>
 													</div>

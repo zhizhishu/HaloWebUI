@@ -19,9 +19,16 @@
 	import HaloSelect from '$lib/components/common/HaloSelect.svelte';
 	import InlineDirtyActions from './InlineDirtyActions.svelte';
 	import { cloneSettingsSnapshot, isSettingsSnapshotEqual } from '$lib/utils/settings-dirty';
+	import { translateWithDefault } from '$lib/i18n';
+	import {
+		GROK_IMAGE_ASPECT_RATIO_OPTIONS,
+		GROK_IMAGE_RESOLUTION_OPTIONS
+	} from '$lib/utils/image-generation';
 	const dispatch = createEventDispatcher();
 
 	const i18n = getContext('i18n');
+	const tr = (key: string, defaultValue: string) =>
+		translateWithDefault($i18n, key, defaultValue);
 
 	let loading = false;
 	let initialSnapshot = null;
@@ -106,6 +113,15 @@
 	];
 
 	const VERSION_LIKE_BASE_URL_RE = /\/(?:compatible-mode\/)?v\d+(?:[a-z]+\d*)?$/i;
+	const GROK_ASPECT_RATIO_OPTIONS = GROK_IMAGE_ASPECT_RATIO_OPTIONS.map((option) => ({
+		value: option.value,
+		label: option.label
+	}));
+	const GROK_RESOLUTION_OPTIONS = GROK_IMAGE_RESOLUTION_OPTIONS.map((option) => ({
+		value: option.value,
+		label: option.label
+	}));
+	const isSharedKeyCapableEngine = (engine: string) => ['openai', 'gemini', 'grok'].includes(engine);
 
 	const normalizeImageProviderUrlInput = (inputUrl: string, versionPath: string): string => {
 		let normalized = `${inputUrl ?? ''}`.trim();
@@ -165,6 +181,7 @@
 		const nextConfig = cloneSettingsSnapshot(draftConfig);
 		const openai = splitImageProviderUrlInput(nextConfig?.openai?.OPENAI_API_BASE_URL, '/v1');
 		const gemini = splitImageProviderUrlInput(nextConfig?.gemini?.GEMINI_API_BASE_URL, '/v1beta');
+		const grok = splitImageProviderUrlInput(nextConfig?.grok?.GROK_API_BASE_URL, '/v1');
 
 		nextConfig.openai = {
 			...nextConfig.openai,
@@ -176,6 +193,11 @@
 			...nextConfig.gemini,
 			GEMINI_API_BASE_URL: gemini.baseUrl,
 			GEMINI_API_FORCE_MODE: gemini.forceMode
+		};
+
+		nextConfig.grok = {
+			...nextConfig.grok,
+			GROK_API_BASE_URL: grok.baseUrl
 		};
 
 		return nextConfig;
@@ -204,6 +226,14 @@
 				normalizedValue.gemini?.GEMINI_API_BASE_URL,
 				Boolean(normalizedValue.gemini?.GEMINI_API_FORCE_MODE),
 				'/v1beta'
+			)
+		};
+		normalizedValue.grok = {
+			...(normalizedValue.grok ?? {}),
+			GROK_API_BASE_URL: decorateImageProviderUrlInput(
+				normalizedValue.grok?.GROK_API_BASE_URL,
+				false,
+				'/v1'
 			)
 		};
 		return normalizedValue;
@@ -750,7 +780,11 @@
 				}
 
 				if (imageConfigRes) {
-					imageGenerationConfig = imageConfigRes;
+					imageGenerationConfig = {
+						IMAGE_ASPECT_RATIO: '1:1',
+						IMAGE_RESOLUTION: '1k',
+						...imageConfigRes
+					};
 				}
 
 				if (config.enabled) {
@@ -864,6 +898,20 @@
 													)
 												);
 												config.enabled = false;
+											} else if (
+												config.engine === 'grok' &&
+												config.shared_key_enabled &&
+												(!hasConfiguredProviderBaseUrl(config.grok.GROK_API_BASE_URL, '/v1') ||
+													config.grok.GROK_API_KEY === '')
+											) {
+												toast.error(
+													$i18n.t(
+														!hasConfiguredProviderBaseUrl(config.grok.GROK_API_BASE_URL, '/v1')
+															? 'Grok API Base URL is required.'
+															: 'Grok API Key is required.'
+													)
+												);
+												config.enabled = false;
 											}
 										}
 										syncDraftModels();
@@ -892,11 +940,12 @@
 											{ value: 'openai', label: $i18n.t('Default (Open AI)') },
 											{ value: 'comfyui', label: $i18n.t('ComfyUI') },
 											{ value: 'automatic1111', label: $i18n.t('Automatic1111') },
-											{ value: 'gemini', label: $i18n.t('Gemini') }
+											{ value: 'gemini', label: $i18n.t('Gemini') },
+											{ value: 'grok', label: $i18n.t('Grok') }
 										]}
 										className="w-fit"
 										on:change={async () => {
-											if (!['openai', 'gemini'].includes(config.engine)) {
+											if (!isSharedKeyCapableEngine(config.engine)) {
 												config.shared_key_enabled = false;
 											}
 											if (imageGenerationConfig?.MODEL) {
@@ -911,7 +960,7 @@
 								</div>
 							</div>
 
-							{#if config.enabled && ['openai', 'gemini'].includes(config.engine)}
+							{#if config.enabled && isSharedKeyCapableEngine(config.engine)}
 								<div
 									class="flex items-center justify-between glass-item px-4 py-3"
 								>
@@ -953,6 +1002,21 @@
 													config.shared_key_enabled = false;
 													return;
 												}
+												if (
+													config.engine === 'grok' &&
+													(!hasConfiguredProviderBaseUrl(config.grok.GROK_API_BASE_URL, '/v1') ||
+														config.grok.GROK_API_KEY === '')
+												) {
+													toast.error(
+														$i18n.t(
+															!hasConfiguredProviderBaseUrl(config.grok.GROK_API_BASE_URL, '/v1')
+																? 'Grok API Base URL is required.'
+																: 'Grok API Key is required.'
+														)
+													);
+													config.shared_key_enabled = false;
+													return;
+												}
 											}
 										}}
 									/>
@@ -960,7 +1024,7 @@
 							{/if}
 						</div>
 
-						{#if config.enabled && ['openai', 'gemini'].includes(config.engine)}
+						{#if config.enabled && isSharedKeyCapableEngine(config.engine)}
 							<div class="text-xs text-gray-400 dark:text-gray-500">
 								{$i18n.t(
 									'When enabled, users without personal connections can fall back to the workspace shared key.'
@@ -992,7 +1056,7 @@
 							</svg>
 						</div>
 						<div class="text-base font-semibold text-gray-800 dark:text-gray-100">
-							引擎配置
+							{tr('引擎配置', 'Engine Configuration')}
 						</div>
 					</div>
 
@@ -1373,6 +1437,42 @@
 									/>
 								</div>
 							</div>
+						{:else if config?.engine === 'grok'}
+							<div class="text-sm font-medium text-gray-500 dark:text-gray-400 pl-1">
+								{tr('Grok 接口配置', 'Grok API Config')}
+							</div>
+							<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+								<div
+									class="glass-item p-4"
+								>
+									<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+										{$i18n.t('API Base URL')}
+									</div>
+									<input
+										class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input"
+										placeholder={$i18n.t('API Base URL')}
+										bind:value={config.grok.GROK_API_BASE_URL}
+										on:blur={() => {
+											config.grok.GROK_API_BASE_URL = normalizeImageProviderUrlInput(
+												config.grok.GROK_API_BASE_URL,
+												'/v1'
+											);
+										}}
+										required
+									/>
+								</div>
+								<div
+									class="glass-item p-4"
+								>
+									<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+										{$i18n.t('API Key')}
+									</div>
+									<SensitiveInput
+										placeholder={$i18n.t('API Key')}
+										bind:value={config.grok.GROK_API_KEY}
+									/>
+								</div>
+							</div>
 						{/if}
 					</div>
 				</section>
@@ -1397,13 +1497,13 @@
 							</svg>
 						</div>
 						<div class="text-base font-semibold text-gray-800 dark:text-gray-100">
-							生成参数
+							{tr('生成参数', 'Generation Parameters')}
 						</div>
 					</div>
 
 					<div class="space-y-4">
 						<div class="text-sm font-medium text-gray-500 dark:text-gray-400 pl-1">
-							默认设置
+							{tr('默认设置', 'Default Settings')}
 						</div>
 
 						{#if config?.enabled}
@@ -1431,39 +1531,65 @@
 											)}
 										</div>
 								</div>
-								<div
-									class="glass-item p-4"
-								>
-									<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-										{$i18n.t('Set Image Size')}
-									</div>
-									<Tooltip content={$i18n.t('Enter Image Size (e.g. 512x512)')} placement="top-start">
-										<input
-											class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input"
-											placeholder={$i18n.t('Enter Image Size (e.g. 512x512)')}
-											bind:value={imageGenerationConfig.IMAGE_SIZE}
-											required
+								{#if config?.engine === 'grok'}
+									<div class="glass-item p-4">
+										<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+											{tr('图片比例', 'Aspect Ratio')}
+										</div>
+										<HaloSelect
+											bind:value={imageGenerationConfig.IMAGE_ASPECT_RATIO}
+											options={GROK_ASPECT_RATIO_OPTIONS}
+											className="w-full"
 										/>
-									</Tooltip>
-								</div>
+									</div>
+								{:else}
+									<div
+										class="glass-item p-4"
+									>
+										<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+											{$i18n.t('Set Image Size')}
+										</div>
+										<Tooltip content={$i18n.t('Enter Image Size (e.g. 512x512)')} placement="top-start">
+											<input
+												class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input"
+												placeholder={$i18n.t('Enter Image Size (e.g. 512x512)')}
+												bind:value={imageGenerationConfig.IMAGE_SIZE}
+												required
+											/>
+										</Tooltip>
+									</div>
+								{/if}
 							</div>
 
 							<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-								<div
-									class="glass-item p-4"
-								>
-									<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
-										{$i18n.t('Set Steps')}
-									</div>
-									<Tooltip content={$i18n.t('Enter Number of Steps (e.g. 50)')} placement="top-start">
-										<input
-											class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input"
-											placeholder={$i18n.t('Enter Number of Steps (e.g. 50)')}
-											bind:value={imageGenerationConfig.IMAGE_STEPS}
-											required
+								{#if config?.engine === 'grok'}
+									<div class="glass-item p-4">
+										<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+											{tr('清晰度', 'Resolution')}
+										</div>
+										<HaloSelect
+											bind:value={imageGenerationConfig.IMAGE_RESOLUTION}
+											options={GROK_RESOLUTION_OPTIONS}
+											className="w-full"
 										/>
-									</Tooltip>
-								</div>
+									</div>
+								{:else}
+									<div
+										class="glass-item p-4"
+									>
+										<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+											{$i18n.t('Set Steps')}
+										</div>
+										<Tooltip content={$i18n.t('Enter Number of Steps (e.g. 50)')} placement="top-start">
+											<input
+												class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input"
+												placeholder={$i18n.t('Enter Number of Steps (e.g. 50)')}
+												bind:value={imageGenerationConfig.IMAGE_STEPS}
+												required
+											/>
+										</Tooltip>
+									</div>
+								{/if}
 								<div
 									class="glass-item p-4"
 								>

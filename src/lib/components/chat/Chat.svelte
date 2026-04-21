@@ -10,12 +10,14 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 
-	import { get, type Unsubscriber, type Writable } from 'svelte/store';
+	import { get, writable, type Unsubscriber, type Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
-	import { WEBUI_BASE_URL } from '$lib/constants';
+	import { WEBUI_BASE_URL, WEBUI_API_BASE_URL } from '$lib/constants';
 
 	import {
 		chatId,
+		chatListRefreshRevision,
+		chatListRefreshTarget,
 		chats,
 		config,
 		type Model,
@@ -36,8 +38,11 @@
 		chatTitle,
 		showArtifacts,
 		tools,
+		skills as skillsStore,
 		toolServers,
-		activeChatIds
+		activeChatIds,
+		overviewFocusedMessageId,
+		selectedAssistantScene
 	} from '$lib/stores';
 	import {
 		convertMessagesToHistory,
@@ -52,6 +57,11 @@
 		getPromptVariables,
 		processDetails
 	} from '$lib/utils';
+	import {
+		createEmptySelectionThreads,
+		normalizeSelectionThreads,
+		type PersistedSelectionThreads
+	} from '$lib/utils/selection-threads';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
 	import {
 		type ChatAssistantSnapshot,
@@ -67,14 +77,18 @@
 	import {
 		getPreferredWebSearchMode,
 		normalizeWebSearchMode,
-		type WebSearchMode
+		normalizeWebSearchModeSource,
+		type WebSearchMode,
+		type WebSearchModeSource
 	} from '$lib/utils/web-search-mode';
 	import { getFunctionPipeRootId } from '$lib/utils/image-generation';
 	import { applyUserSettingsSnapshot } from '$lib/utils/user-settings';
+	import { buildWebSearchModeOptions } from '$lib/utils/native-web-search';
 
 	import { generateChatCompletion } from '$lib/apis/ollama';
 	import {
 		addTagById,
+		branchChatById,
 		createNewChat,
 		deleteTagById,
 		deleteTagsById,
@@ -82,8 +96,10 @@
 		getChatById,
 		getChatContextById,
 		getChatList,
-		updateChatById
+		updateChatById,
+		updateChatComposerStateById
 	} from '$lib/apis/chats';
+	import { getModelById as getWorkspaceModelById } from '$lib/apis/models';
 	import { generateOpenAIChatCompletion } from '$lib/apis/openai';
 	import { processWeb, processWebSearch, processYoutubeVideo } from '$lib/apis/retrieval';
 	import { createOpenAITextStream } from '$lib/apis/streaming';
@@ -98,6 +114,7 @@
 		stopTask
 	} from '$lib/apis';
 	import { getTools } from '$lib/apis/tools';
+	import { getSkills } from '$lib/apis/skills';
 	import { ensureModels } from '$lib/services/models';
 
 	import Banner from '../common/Banner.svelte';
@@ -118,6 +135,25 @@
 		localizeFileUploadError
 	} from '$lib/utils/file-upload-errors';
 
+	const MESSAGE_OUTLINE_IDLE_MS = 900;
+	const MESSAGE_OUTLINE_SCROLL_INTENT_WINDOW_MS = 220;
+	const MESSAGE_OUTLINE_SCROLLBAR_DRAG_PRIME_MS = 1400;
+	const MESSAGE_OUTLINE_SCROLL_KEYS = new Set([
+		'ArrowUp',
+		'ArrowDown',
+		'PageUp',
+		'PageDown',
+		'Home',
+		'End',
+		' ',
+		'Spacebar'
+	]);
+
+	type MessageOutlineVisibilityContext = {
+		scrollVisibleStore: Writable<boolean>;
+		reveal: () => void;
+	};
+
 	export let chatIdProp = '';
 
 	let loading = false;
@@ -128,6 +164,7 @@
 		parts: string[];
 	};
 	const pendingGeminiImages = new Map<string, Map<string, PendingGeminiImage>>();
+	const OPENWEBUI_FILE_URL_SCHEME = 'openwebui-file://';
 	const buildImageDataUrl = (mimeType: string, data: string) => `data:${mimeType};base64,${data}`;
 	const mergeMessageFiles = (existing: any[] = [], incoming: any[] = []) => {
 		const merged = [];
@@ -144,6 +181,162 @@
 
 		return merged;
 	};
+	const isInlineDataImageUrl = (value: unknown): value is string =>
+		typeof value === 'string' && value.startsWith('data:image/');
+	const buildChatImageContentUrl = (id: string) => `${WEBUI_API_BASE_URL}/files/${id}/content`;
+	const extractChatImageFileId = (file: any): string | null => {
+		const directId = typeof file?.id === 'string' && file.id.trim() ? file.id.trim() : null;
+		if (directId) {
+			return directId;
+		}
+
+		const url = typeof file?.url === 'string' ? file.url : '';
+		const match = url.match(/\/api\/v1\/files\/([^/?#]+)(?:\/content)?(?:[?#].*)?$/);
+		return match?.[1] ?? null;
+	};
+	const sanitizeImageFileRef = (file: any) => {
+		const fileId = extractChatImageFileId(file);
+		const url =
+			fileId !== null
+				? buildChatImageContentUrl(fileId)
+				: typeof file?.url === 'string'
+					? file.url
+					: '';
+
+		if (!url) {
+			return null;
+		}
+
+		return Object.fromEntries(
+			Object.entries({
+				type: 'image',
+				id: fileId ?? undefined,
+				name:
+					typeof file?.name === 'string' && file.name
+						? file.name
+						: file?.file?.meta?.name ?? undefined,
+				url,
+				size:
+					typeof file?.size === 'number'
+						? file.size
+						: file?.file?.meta?.size ?? undefined,
+				content_type:
+					typeof file?.content_type === 'string' && file.content_type
+						? file.content_type
+						: file?.file?.meta?.content_type ?? undefined
+			}).filter(([, value]) => value !== undefined && value !== null && value !== '')
+		);
+	};
+	const buildModelImageRequestUrl = (file: any) => {
+		const fileId = extractChatImageFileId(file);
+		if (fileId) {
+			return `${OPENWEBUI_FILE_URL_SCHEME}${fileId}`;
+		}
+
+		return typeof file?.url === 'string' ? file.url : '';
+	};
+	const normalizeInputFileForMessage = (file: any) => {
+		if (!file || typeof file !== 'object') {
+			return file;
+		}
+
+		if (file.type === 'image') {
+			return sanitizeImageFileRef(file) ?? structuredClone(file);
+		}
+
+		return structuredClone(file);
+	};
+	const uploadInlineImageForPersistence = async (file: any) => {
+		if (!file || typeof file !== 'object' || !isInlineDataImageUrl(file?.url)) {
+			return sanitizeImageFileRef(file) ?? structuredClone(file);
+		}
+
+		try {
+			const response = await fetch(file.url);
+			const imageBlob = await response.blob();
+			if (!imageBlob || imageBlob.size === 0) {
+				return structuredClone(file);
+			}
+
+			const mimeType = imageBlob.type || 'image/png';
+			const extension = mimeType.split('/').at(1)?.split('+').at(0) || 'png';
+			const fileName =
+				typeof file?.name === 'string' && file.name
+					? file.name
+					: `Chat_Image_${Date.now()}.${extension}`;
+			const uploadedFile = await uploadFile(
+				localStorage.token,
+				new File([imageBlob], fileName, { type: mimeType }),
+				{ process: false }
+			);
+
+			if (!uploadedFile?.id) {
+				return structuredClone(file);
+			}
+
+			const normalizedRef = sanitizeImageFileRef({
+				...file,
+				id: uploadedFile.id,
+				name: uploadedFile?.meta?.name ?? fileName,
+				size: uploadedFile?.meta?.size ?? imageBlob.size,
+				content_type: uploadedFile?.meta?.content_type ?? mimeType
+			});
+			return normalizedRef ? structuredClone(normalizedRef) : structuredClone(file);
+		} catch (error) {
+			console.error('Failed to normalize inline image before saving chat:', error);
+			return structuredClone(file);
+		}
+	};
+	const historyHasInlineDataImages = (historyState) =>
+		Object.values(historyState?.messages ?? {}).some((message: any) =>
+			Array.isArray(message?.files)
+				? message.files.some(
+						(file: any) => file?.type === 'image' && isInlineDataImageUrl(file?.url)
+					)
+				: false
+		);
+	const normalizeHistoryForPersistence = async (historyState) => {
+		if (!historyState?.messages || !historyHasInlineDataImages(historyState)) {
+			return { history: historyState, changed: false };
+		}
+
+		const normalizedHistory = structuredClone(historyState);
+		let changed = false;
+
+		for (const [messageId, message] of Object.entries(normalizedHistory.messages ?? {}) as [string, any][]) {
+			if (!Array.isArray(message?.files) || message.files.length === 0) {
+				continue;
+			}
+
+			const normalizedFiles = [];
+			let messageChanged = false;
+
+			for (const file of message.files) {
+				if (file?.type === 'image') {
+					const normalizedFile = await uploadInlineImageForPersistence(file);
+					normalizedFiles.push(normalizedFile);
+					if (JSON.stringify(normalizedFile) !== JSON.stringify(file)) {
+						messageChanged = true;
+					}
+				} else {
+					normalizedFiles.push(structuredClone(file));
+				}
+			}
+
+			if (messageChanged) {
+				normalizedHistory.messages[messageId] = {
+					...message,
+					files: normalizedFiles
+				};
+				changed = true;
+			}
+		}
+
+		return {
+			history: changed ? normalizedHistory : historyState,
+			changed
+		};
+	};
 	let controlPane;
 	let controlPaneComponent;
 
@@ -155,6 +348,14 @@
 	let userHasScrolled = false;
 	let isAutoScrolling = false;
 	let _scrollResetRafId: number | null = null;
+	let _overviewFocusRafId: number | null = null;
+	let overviewPinnedMessageId: string | null = null;
+	let overviewNavigationInFlight = false;
+	let _overviewNavigationTimer: ReturnType<typeof setTimeout> | null = null;
+	let messageOutlineHideTimer: ReturnType<typeof setTimeout> | null = null;
+	let messageOutlineLastUserIntentAt = 0;
+	let messageOutlineScrollbarDragPrimedUntil = 0;
+	const messageOutlineVisibleStore = writable(false);
 
 	let navbarElement;
 
@@ -167,6 +368,7 @@
 	let eventCallback = null;
 
 	let chatIdUnsubscriber: Unsubscriber | undefined;
+	let selectedAssistantSceneUnsubscriber: Unsubscriber | undefined;
 
 	let selectedModels = [''];
 	let atSelectedModel: Model | undefined;
@@ -175,13 +377,18 @@
 	let activeAssistant: ChatAssistantSnapshot | null = null;
 
 	let selectedToolIds = [];
+	let toolSelectionTouched = false;
+	let selectedSkillIds = [];
+	let skillSelectionTouched = false;
 	let imageGenerationEnabled = false;
 	let imageGenerationOptions: {
 		image_size?: string | null;
 		aspect_ratio?: string | null;
+		resolution?: string | null;
 		n?: number | null;
 	} = {};
 	let webSearchMode: WebSearchMode = 'off';
+	let webSearchModeSource: WebSearchModeSource = 'default';
 	let codeInterpreterEnabled = false;
 
 	let chat = null;
@@ -191,6 +398,17 @@
 		messages: {},
 		currentId: null
 	};
+	let selectionThreads: PersistedSelectionThreads = createEmptySelectionThreads();
+	const selectionThreadsStore = writable<PersistedSelectionThreads>(selectionThreads);
+	const expandedSelectionThreadId = writable<string | null>(null);
+	let selectionThreadsPersistTimeout: ReturnType<typeof setTimeout> | null = null;
+	let composerStatePersistTimeout: ReturnType<typeof setTimeout> | null = null;
+	let pendingChatSave: Promise<void> = Promise.resolve();
+	let pendingComposerStateSave: Promise<void> = Promise.resolve();
+	let hasPersistedComposerState = false;
+	let composerStateSyncReady = false;
+	let lastRequestedChatIdProp = '';
+	let activeChatLoadToken = 0;
 
 	// J-3-01: O(1) model lookup map — rebuilt reactively when $models changes
 	let modelsMap: Map<string, Model> = new Map();
@@ -202,6 +420,51 @@
 		modelsMap = m;
 	}
 	const getModelById = (id: string): Model | undefined => modelsMap.get(id);
+	const getVisibleSkillIds = () =>
+		($skillsStore ?? []).map((skill) => String(skill?.id ?? '')).filter((id) => id);
+	const filterVisibleSkillIds = (ids: string[] = []) => {
+		const visible = new Set(getVisibleSkillIds());
+		return ids.filter((id) => visible.has(id));
+	};
+	const arraysEqual = (left: string[] = [], right: string[] = []) =>
+		left.length === right.length && left.every((value, index) => value === right[index]);
+	const extractSkillIdsFromText = (text: string) => {
+		const matches = [...String(text ?? '').matchAll(/<\$([\w.\-:/]+)(?:\|[^>]+)?>/g)];
+		return Array.from(
+			new Set(matches.map((match) => String(match?.[1] ?? '').trim()).filter(Boolean))
+		);
+	};
+	const stripSkillTagsFromText = (text: string) =>
+		String(text ?? '')
+			.replace(/<\$([\w.\-:/]+)(?:\|[^>]+)?>\s*/g, '')
+			.trim();
+	const collectRequestSkillIds = (messages: any[] = []) => {
+		const ids = new Set<string>(skillSelectionTouched ? selectedSkillIds : []);
+		for (const message of messages ?? []) {
+			if (message?.role !== 'user') {
+				continue;
+			}
+
+			const content = message?.content;
+			if (typeof content === 'string') {
+				for (const skillId of extractSkillIdsFromText(content)) {
+					ids.add(skillId);
+				}
+				continue;
+			}
+
+			if (Array.isArray(content)) {
+				for (const item of content) {
+					if (item?.type === 'text') {
+						for (const skillId of extractSkillIdsFromText(item?.text ?? '')) {
+							ids.add(skillId);
+						}
+					}
+				}
+			}
+		}
+		return Array.from(ids);
+	};
 
 	const normalizeReasoningEffortValue = (value: unknown): string | null => {
 		if (value === null || value === undefined) {
@@ -236,12 +499,99 @@
 	const getModelDefaultReasoningEffort = (model: Model | null | undefined): string | null =>
 		normalizeReasoningEffortValue((model as any)?.info?.params?.reasoning_effort ?? null);
 
+	const getResolvedSelectedWebSearchModels = (): Model[] => {
+		const ids = getResolvedSelectedModelIds();
+		if (ids.length === 0) {
+			return [];
+		}
+
+		const resolved = ids
+			.map((id) => getModelById(id))
+			.filter((model): model is Model => Boolean(model));
+		return resolved.length === ids.length ? resolved : [];
+	};
+
+	const getModelBuiltinWebSearchPreference = (model: Model | null | undefined): boolean | null => {
+		const value =
+			(model as any)?.info?.meta?.builtin_tool_config?.ENABLE_WEB_SEARCH_TOOL ??
+			(model as any)?.meta?.builtin_tool_config?.ENABLE_WEB_SEARCH_TOOL;
+		return typeof value === 'boolean' ? value : null;
+	};
+
+	const pickModelDefaultWebSearchMode = (selectedModels: Model[]): WebSearchMode => {
+		const availableModes = new Set(
+			buildWebSearchModeOptions(
+				(key, options) => get(i18n).t(key, options),
+				$config,
+				selectedModels
+			)
+				.filter((option) => option.disabled !== true)
+				.map((option) => option.value)
+		);
+
+		return (
+			(['auto', 'native', 'halo', 'off'] as WebSearchMode[]).find((mode) =>
+				availableModes.has(mode)
+			) ?? 'off'
+		);
+	};
+
+	const getSelectionDrivenWebSearchState = (): {
+		mode: WebSearchMode;
+		source: WebSearchModeSource;
+	} | null => {
+		const requestedIds = selectedModelIds.filter(
+			(id): id is string => typeof id === 'string' && id.trim() !== ''
+		);
+		const resolvedModels = getResolvedSelectedWebSearchModels();
+
+		if (requestedIds.length > 0 && resolvedModels.length !== requestedIds.length) {
+			return null;
+		}
+
+		const fallbackMode = getPreferredDefaultWebSearchMode();
+		if (resolvedModels.length === 0) {
+			return { mode: fallbackMode, source: 'default' };
+		}
+
+		const preferences = resolvedModels.map(getModelBuiltinWebSearchPreference);
+		if (resolvedModels.length > 1 && preferences.some((value) => value === false)) {
+			return { mode: 'off', source: 'model' };
+		}
+
+		if (preferences.some((value) => value === true)) {
+			return {
+				mode: pickModelDefaultWebSearchMode(resolvedModels),
+				source: 'model'
+			};
+		}
+
+		return { mode: fallbackMode, source: 'default' };
+	};
+
 	// J-3-01: Reactive flag to avoid calling createMessagesList just for emptiness check in template
 	let hasMessages = false;
 	$: hasMessages = history.currentId !== null;
+	$: {
+		const messageIds = new Set(Object.keys(history?.messages ?? {}));
+		const nextItems = selectionThreads.items.filter((thread) =>
+			messageIds.has(thread.sourceMessageId)
+		);
+
+		if (nextItems.length !== selectionThreads.items.length) {
+			updateSelectionThreads(
+				{
+					version: 1,
+					items: nextItems
+				},
+				{ immediate: true }
+			);
+		}
+	}
 
 	let taskIds = null;
 	let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
+	let branchingMessageId: string | null = null;
 
 	// Temporary instruction for regeneration with modifications (e.g. "more concise")
 	let _pendingInstruction: string | null = null;
@@ -253,10 +603,11 @@
 	let params = {};
 
 	let reasoningEffort: string | null = null;
-	let maxThinkingTokens: number | null = null;
-	let lastFreshChatRequest = '';
-	// Flag to prevent sessionStorage recovery from overriding a deliberate fresh chat reset
-	let freshChatActive = false;
+		let maxThinkingTokens: number | null = null;
+		let lastFreshChatRequest = '';
+		// Flag to prevent sessionStorage recovery from overriding a deliberate fresh chat reset
+		let freshChatActive = false;
+		let webSearchSelectionSyncReady = false;
 
 	// Bidirectional sync: Controls sidebar params ↔ inline ThinkingControl
 	// 用缓存值打断 reactive 级联：正向同步更新缓存 → 反向 onChange 检测到缓存一致则跳过
@@ -350,7 +701,7 @@
 			...params,
 			system: assistant.prompt
 		};
-		persistChatSessionState();
+		persistChatComposerState();
 	};
 
 	const deactivateAssistant = () => {
@@ -362,7 +713,7 @@
 			params = rest;
 		}
 
-		persistChatSessionState();
+		persistChatComposerState();
 	};
 
 	const getRequestStopTokens = () => {
@@ -413,7 +764,9 @@
 					}
 				: undefined,
 			...messages.map((message) => {
-				const textContent = message?.merged?.content ?? processDetails(message?.content ?? '');
+				const textContent = stripSkillTagsFromText(
+					message?.merged?.content ?? processDetails(message?.content ?? '')
+				);
 				const imageFiles = (message?.files ?? []).filter((file) => file.type === 'image');
 
 				return {
@@ -428,7 +781,7 @@
 									...imageFiles.map((file) => ({
 										type: 'image_url',
 										image_url: {
-											url: file.url
+											url: buildModelImageRequestUrl(file)
 										}
 									}))
 								]
@@ -473,11 +826,10 @@
 		}
 
 		const requestMessages = await buildFloatingRequestMessages(messages);
-		const requestedWebSearchMode =
-			$config?.features?.enable_web_search &&
-			($user?.role === 'admin' || $user?.permissions?.features?.web_search)
-				? normalizeWebSearchMode(webSearchMode, 'off')
-				: 'off';
+		const requestSkillIds = collectRequestSkillIds(messages);
+		const requestedWebSearchMode = canUseChatWebSearch()
+			? normalizeWebSearchMode(webSearchMode, 'off')
+			: 'off';
 		const requestFiles = collectFloatingRequestFiles(messages);
 
 		return {
@@ -497,6 +849,8 @@
 			},
 			files: requestFiles.length > 0 ? requestFiles : undefined,
 			tool_ids: selectedToolIds.length > 0 ? selectedToolIds : undefined,
+			skill_ids: requestSkillIds.length > 0 ? requestSkillIds : undefined,
+			skill_selection_touched: skillSelectionTouched ? true : undefined,
 			tool_servers: $toolServers,
 			features: {
 				memory: $settings?.memory ?? false,
@@ -547,6 +901,14 @@
 
 	const getPreferredDefaultWebSearchMode = (): WebSearchMode =>
 		getPreferredWebSearchMode($settings, 'off');
+
+	const isChatWebSearchFeatureEnabled = () =>
+		Boolean($config?.features?.enable_halo_web_search ?? $config?.features?.enable_web_search) ||
+		Boolean($config?.features?.enable_native_web_search);
+
+	const canUseChatWebSearch = () =>
+		isChatWebSearchFeatureEnabled() &&
+		($user?.role === 'admin' || $user?.permissions?.features?.web_search);
 
 	const decodeTokenUserId = (token: string | null | undefined): string | null => {
 		if (!token || typeof atob !== 'function') {
@@ -662,19 +1024,54 @@
 		return null;
 	})();
 
-	const resolveStoredWebSearchMode = (
-		value: { webSearchMode?: unknown; webSearchEnabled?: unknown } | null | undefined,
+	const resolveStoredWebSearchState = (
+		value:
+			| {
+					webSearchMode?: unknown;
+					webSearchEnabled?: unknown;
+					webSearchModeSource?: unknown;
+					webSearchModeTouched?: unknown;
+			  }
+			| null
+			| undefined,
 		fallback: WebSearchMode = getPreferredDefaultWebSearchMode()
-	): WebSearchMode => {
+	): { mode: WebSearchMode; source: WebSearchModeSource } => {
+		const hasLegacyState =
+			value?.webSearchMode !== undefined || value?.webSearchEnabled === true;
+
 		if (value?.webSearchMode !== undefined) {
-			return normalizeWebSearchMode(value.webSearchMode, fallback);
+			return {
+				mode: normalizeWebSearchMode(value.webSearchMode, fallback),
+				source:
+					value?.webSearchModeSource !== undefined
+						? normalizeWebSearchModeSource(value.webSearchModeSource, 'default')
+						: value?.webSearchModeTouched === true || hasLegacyState
+							? 'user'
+							: 'default'
+			};
 		}
 
 		if (value?.webSearchEnabled === true) {
-			return 'halo';
+			return {
+				mode: 'halo',
+				source:
+					value?.webSearchModeSource !== undefined
+						? normalizeWebSearchModeSource(value.webSearchModeSource, 'default')
+						: value?.webSearchModeTouched === true || hasLegacyState
+							? 'user'
+							: 'default'
+			};
 		}
 
-		return fallback;
+		return {
+			mode: fallback,
+			source:
+				value?.webSearchModeSource !== undefined
+					? normalizeWebSearchModeSource(value.webSearchModeSource, 'default')
+					: value?.webSearchModeTouched === true
+						? 'user'
+						: 'default'
+		};
 	};
 
 	const getLegacyChatSessionStateKey = (id: string | null | undefined = $chatId || chatIdProp) =>
@@ -704,6 +1101,149 @@
 		} catch {
 			return fallback;
 		}
+	};
+
+	const buildComposerStatePayload = () => ({
+		selected_tool_ids: selectedToolIds,
+		tool_selection_touched: toolSelectionTouched,
+		selected_skill_ids: selectedSkillIds,
+		skill_selection_touched: skillSelectionTouched,
+		web_search_mode: webSearchMode,
+		web_search_mode_source: webSearchModeSource,
+		image_generation_enabled: imageGenerationEnabled,
+		image_generation_options: imageGenerationOptions,
+		code_interpreter_enabled: codeInterpreterEnabled,
+		reasoning_effort: reasoningEffort,
+		max_thinking_tokens: maxThinkingTokens
+	});
+
+	const buildLocalChatSessionState = () => ({
+		...buildComposerStatePayload(),
+		webSearchMode: webSearchMode,
+		webSearchModeSource: webSearchModeSource,
+		webSearchModeTouched: webSearchModeSource === 'user',
+		selectedToolIds,
+		toolSelectionTouched,
+		selectedSkillIds,
+		skillSelectionTouched,
+		activeAssistant,
+		systemPrompt: typeof params?.system === 'string' ? params.system : null,
+		imageGenerationEnabled,
+		imageGenerationOptions,
+		codeInterpreterEnabled,
+		reasoningEffort,
+		maxThinkingTokens
+	});
+
+	const applyComposerState = (
+		state: Record<string, any> | null | undefined,
+		options: { markPersisted?: boolean } = {}
+	) => {
+		if (!state || typeof state !== 'object') {
+			return false;
+		}
+
+		const hasComposerKeys = [
+			'selected_tool_ids',
+			'selectedToolIds',
+			'selected_skill_ids',
+			'selectedSkillIds',
+			'web_search_mode',
+			'webSearchMode',
+			'image_generation_enabled',
+			'imageGenerationEnabled',
+			'code_interpreter_enabled',
+			'codeInterpreterEnabled',
+			'reasoning_effort',
+			'reasoningEffort',
+			'max_thinking_tokens',
+			'maxThinkingTokens'
+		].some((key) => key in state);
+		if (!hasComposerKeys) {
+			return false;
+		}
+
+		const restoredToolIds = state.selected_tool_ids ?? state.selectedToolIds;
+		if (Array.isArray(restoredToolIds)) {
+			selectedToolIds = restoredToolIds.map((id) => String(id ?? '').trim()).filter(Boolean);
+		}
+		if (
+			state.tool_selection_touched !== undefined ||
+			state.toolSelectionTouched !== undefined
+		) {
+			toolSelectionTouched = Boolean(
+				state.tool_selection_touched ?? state.toolSelectionTouched
+			);
+		}
+
+		const restoredSkillIds = state.selected_skill_ids ?? state.selectedSkillIds;
+		if (Array.isArray(restoredSkillIds)) {
+			selectedSkillIds = restoredSkillIds.map((id) => String(id ?? '').trim()).filter(Boolean);
+		}
+		if (
+			state.skill_selection_touched !== undefined ||
+			state.skillSelectionTouched !== undefined
+		) {
+			skillSelectionTouched = Boolean(
+				state.skill_selection_touched ?? state.skillSelectionTouched
+			);
+		}
+
+		const restoredWebSearchState = resolveStoredWebSearchState({
+			webSearchMode: state.web_search_mode ?? state.webSearchMode,
+			webSearchModeSource: state.web_search_mode_source ?? state.webSearchModeSource,
+			webSearchModeTouched:
+				state.web_search_mode_source !== undefined ||
+				state.webSearchModeSource !== undefined
+					? normalizeWebSearchModeSource(
+							state.web_search_mode_source ?? state.webSearchModeSource,
+							'default'
+						) === 'user'
+					: state.webSearchModeTouched
+		});
+		webSearchMode = restoredWebSearchState.mode;
+		webSearchModeSource = restoredWebSearchState.source;
+
+		if (
+			state.image_generation_enabled !== undefined ||
+			state.imageGenerationEnabled !== undefined
+		) {
+			imageGenerationEnabled = Boolean(
+				state.image_generation_enabled ?? state.imageGenerationEnabled
+			);
+		}
+		if (
+			state.image_generation_options !== undefined ||
+			state.imageGenerationOptions !== undefined
+		) {
+			imageGenerationOptions =
+				state.image_generation_options ?? state.imageGenerationOptions ?? {};
+		}
+		if (
+			state.code_interpreter_enabled !== undefined ||
+			state.codeInterpreterEnabled !== undefined
+		) {
+			codeInterpreterEnabled = Boolean(
+				state.code_interpreter_enabled ?? state.codeInterpreterEnabled
+			);
+		}
+		if (state.reasoning_effort !== undefined || state.reasoningEffort !== undefined) {
+			reasoningEffort =
+				normalizeReasoningEffortValue(
+					state.reasoning_effort ?? state.reasoningEffort ?? null
+				) ?? null;
+		}
+		if (
+			state.max_thinking_tokens !== undefined ||
+			state.maxThinkingTokens !== undefined
+		) {
+			maxThinkingTokens = normalizeThinkingTokenValue(
+				state.max_thinking_tokens ?? state.maxThinkingTokens ?? null
+			);
+		}
+
+		hasPersistedComposerState = options.markPersisted === true;
+		return true;
 	};
 
 	const readChatInputState = (id: string | null | undefined = $chatId || chatIdProp) => {
@@ -756,27 +1296,7 @@
 				return false;
 			}
 
-			webSearchMode = resolveStoredWebSearchMode(state);
-			if (state.selectedToolIds !== undefined) {
-				selectedToolIds = Array.isArray(state.selectedToolIds)
-					? state.selectedToolIds.filter((id) => typeof id === 'string' && id.trim() !== '')
-					: [];
-			}
-			if (state.reasoningEffort !== undefined) {
-				reasoningEffort = state.reasoningEffort ?? null;
-			}
-			if (state.maxThinkingTokens !== undefined) {
-				maxThinkingTokens = state.maxThinkingTokens ?? null;
-			}
-			if (state.imageGenerationEnabled !== undefined) {
-				imageGenerationEnabled = Boolean(state.imageGenerationEnabled);
-			}
-			if (state.imageGenerationOptions !== undefined) {
-				imageGenerationOptions = state.imageGenerationOptions ?? {};
-			}
-			if (state.codeInterpreterEnabled !== undefined) {
-				codeInterpreterEnabled = Boolean(state.codeInterpreterEnabled);
-			}
+			applyComposerState(state, { markPersisted: false });
 			activeAssistant = toChatAssistantSnapshot(state.activeAssistant ?? null);
 
 			if (typeof state.systemPrompt === 'string') {
@@ -800,25 +1320,83 @@
 	const persistChatSessionState = (id: string | null | undefined = $chatId || chatIdProp) => {
 		const scopedKey = getChatSessionStateKey(id);
 		const legacyKey = getLegacyChatSessionStateKey(id);
-		localStorage.setItem(
-			scopedKey,
-			JSON.stringify({
-				webSearchMode: resolveStoredWebSearchMode(
-					{ webSearchMode },
-					getPreferredDefaultWebSearchMode()
-				),
-				selectedToolIds,
-				activeAssistant,
-				systemPrompt: typeof params?.system === 'string' ? params.system : null,
-				imageGenerationEnabled,
-				imageGenerationOptions,
-				codeInterpreterEnabled,
-				reasoningEffort,
-				maxThinkingTokens
-			})
-		);
+		localStorage.setItem(scopedKey, JSON.stringify(buildLocalChatSessionState()));
 		if (legacyKey !== scopedKey) {
 			localStorage.removeItem(legacyKey);
+		}
+	};
+
+	const persistChatComposerState = (id: string | null | undefined = $chatId || chatIdProp) => {
+		persistChatSessionState(id);
+		if (!composerStateSyncReady || !id || $temporaryChatEnabled) {
+			return;
+		}
+
+		if (composerStatePersistTimeout) {
+			clearTimeout(composerStatePersistTimeout);
+			composerStatePersistTimeout = null;
+		}
+
+		composerStatePersistTimeout = setTimeout(() => {
+			pendingComposerStateSave = pendingComposerStateSave
+				.catch(() => undefined)
+				.then(async () => {
+					await updateChatComposerStateById(localStorage.token, id, buildComposerStatePayload());
+				})
+				.catch((error) => {
+					console.error(error);
+				});
+		}, 250);
+	};
+
+	const handleMessageInputChange = (input) => {
+		const newRE = normalizeReasoningEffortValue(input.reasoningEffort ?? null);
+		const newMT = normalizeThinkingTokenValue(input.maxThinkingTokens ?? null);
+		const oldRE = normalizeReasoningEffortValue(params?.reasoning_effort ?? null);
+		const oldMT = normalizeThinkingTokenValue(params?.max_thinking_tokens ?? null);
+		if (newRE !== oldRE || newMT !== oldMT) {
+			const finalMT = newRE ? null : newMT;
+			_lastSyncedEffort = newRE;
+			_lastSyncedTokens = finalMT;
+			params = {
+				...params,
+				reasoning_effort: newRE,
+				max_thinking_tokens: finalMT
+			};
+		}
+
+		const nextWebSearchState = resolveStoredWebSearchState(
+			{
+				webSearchMode: input.webSearchMode,
+				webSearchModeSource: input.webSearchModeSource,
+				webSearchModeTouched: input.webSearchModeTouched
+			},
+			getPreferredDefaultWebSearchMode()
+		);
+		webSearchMode = nextWebSearchState.mode;
+		webSearchModeSource = nextWebSearchState.source;
+		selectedToolIds = Array.isArray(input.selectedToolIds)
+			? input.selectedToolIds.map((id) => String(id ?? '').trim()).filter(Boolean)
+			: selectedToolIds;
+		toolSelectionTouched = Boolean(input.toolSelectionTouched ?? toolSelectionTouched);
+		selectedSkillIds = Array.isArray(input.selectedSkillIds)
+			? input.selectedSkillIds.map((id) => String(id ?? '').trim()).filter(Boolean)
+			: selectedSkillIds;
+		skillSelectionTouched = Boolean(input.skillSelectionTouched ?? skillSelectionTouched);
+		reasoningEffort = newRE;
+		maxThinkingTokens = newMT;
+
+		const persistedInput = {
+			...input,
+			webSearchMode: nextWebSearchState.mode,
+			webSearchModeSource: nextWebSearchState.source,
+			webSearchModeTouched: nextWebSearchState.source === 'user'
+		};
+
+		if (input.prompt) {
+			writeChatInputState(persistedInput, $chatId);
+		} else {
+			removeChatInputState($chatId);
 		}
 	};
 
@@ -850,13 +1428,196 @@
 		localStorage.removeItem(fromKey);
 	};
 
-	const buildPersistedChatData = (historyState, messages = createMessagesList(historyState, historyState.currentId)) => ({
+	const setSelectionThreadsState = (nextState: PersistedSelectionThreads) => {
+		selectionThreads = normalizeSelectionThreads(nextState);
+		selectionThreadsStore.set(selectionThreads);
+	};
+
+	const normalizeSelectionThreadsForRuntime = (nextState: PersistedSelectionThreads) =>
+		normalizeSelectionThreads(nextState, {
+			coerceStreamingToInterrupted: true
+		});
+
+	const setRuntimeSelectionThreadsState = (nextState: PersistedSelectionThreads) => {
+		selectionThreads = normalizeSelectionThreadsForRuntime(nextState);
+		selectionThreadsStore.set(selectionThreads);
+	};
+
+	const persistSelectionThreads = async () => {
+		if (selectionThreadsPersistTimeout) {
+			clearTimeout(selectionThreadsPersistTimeout);
+			selectionThreadsPersistTimeout = null;
+		}
+
+		if (!$chatId || $temporaryChatEnabled) {
+			return;
+		}
+
+		await saveChatHandler($chatId, history, {
+			selectionThreads
+		});
+	};
+
+	const scheduleSelectionThreadsPersist = (delay = 250) => {
+		if (selectionThreadsPersistTimeout) {
+			clearTimeout(selectionThreadsPersistTimeout);
+			selectionThreadsPersistTimeout = null;
+		}
+
+		if ($temporaryChatEnabled || !$chatId) {
+			return;
+		}
+
+		selectionThreadsPersistTimeout = setTimeout(() => {
+			void persistSelectionThreads();
+		}, delay);
+	};
+
+	const updateSelectionThreads = (
+		nextStateOrUpdater:
+			| PersistedSelectionThreads
+			| ((current: PersistedSelectionThreads) => PersistedSelectionThreads),
+		options: {
+			persist?: boolean;
+			immediate?: boolean;
+		} = {}
+	) => {
+		const { persist = true, immediate = false } = options;
+		const nextState =
+			typeof nextStateOrUpdater === 'function'
+				? nextStateOrUpdater(selectionThreads)
+				: nextStateOrUpdater;
+
+		setSelectionThreadsState(nextState);
+
+		if (!persist) {
+			return;
+		}
+
+		if (immediate) {
+			void persistSelectionThreads();
+		} else {
+			scheduleSelectionThreadsPersist();
+		}
+	};
+
+	setContext('selectionThreadManager', {
+		selectionThreadsStore,
+		expandedSelectionThreadId,
+		updateSelectionThreads,
+		persistSelectionThreads
+	});
+
+	const clearMessageOutlineHideTimer = () => {
+		if (messageOutlineHideTimer) {
+			clearTimeout(messageOutlineHideTimer);
+			messageOutlineHideTimer = null;
+		}
+	};
+
+	const revealMessageOutline = () => {
+		if ($mobile) {
+			return;
+		}
+
+		messageOutlineLastUserIntentAt = performance.now();
+		messageOutlineVisibleStore.set(true);
+		clearMessageOutlineHideTimer();
+		messageOutlineHideTimer = setTimeout(() => {
+			messageOutlineVisibleStore.set(false);
+			messageOutlineHideTimer = null;
+		}, MESSAGE_OUTLINE_IDLE_MS);
+	};
+
+	const primeMessageOutlineScrollbarDrag = () => {
+		messageOutlineScrollbarDragPrimedUntil =
+			performance.now() + MESSAGE_OUTLINE_SCROLLBAR_DRAG_PRIME_MS;
+	};
+
+	const clearMessageOutlineScrollbarDragPrime = () => {
+		messageOutlineScrollbarDragPrimedUntil = 0;
+	};
+
+	const shouldRevealMessageOutlineFromScroll = () => {
+		const now = performance.now();
+
+		return (
+			now - messageOutlineLastUserIntentAt <= MESSAGE_OUTLINE_SCROLL_INTENT_WINDOW_MS ||
+			messageOutlineScrollbarDragPrimedUntil >= now
+		);
+	};
+
+	const isEditableMessageOutlineTarget = (target: EventTarget | null) => {
+		if (!(target instanceof HTMLElement)) {
+			return false;
+		}
+
+		if (target.isContentEditable || target.closest('[contenteditable="true"]')) {
+			return true;
+		}
+
+		return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
+	};
+
+	const handleMessageOutlineWheel = () => {
+		revealMessageOutline();
+	};
+
+	const handleMessageOutlineTouchMove = () => {
+		revealMessageOutline();
+	};
+
+	const handleMessageOutlinePointerDown = (event: PointerEvent) => {
+		if (!messagesContainerElement || event.target !== messagesContainerElement) {
+			return;
+		}
+
+		primeMessageOutlineScrollbarDrag();
+	};
+
+	const handleMessageOutlineKeydown = (event: KeyboardEvent) => {
+		if (!messagesContainerElement || event.defaultPrevented) {
+			return;
+		}
+
+		if (!MESSAGE_OUTLINE_SCROLL_KEYS.has(event.key)) {
+			return;
+		}
+
+		if (isEditableMessageOutlineTarget(event.target)) {
+			return;
+		}
+
+		const activeElement = document.activeElement;
+		if (
+			activeElement &&
+			activeElement !== document.body &&
+			!messagesContainerElement.contains(activeElement)
+		) {
+			return;
+		}
+
+		revealMessageOutline();
+	};
+
+	setContext<MessageOutlineVisibilityContext>('messageOutlineVisibility', {
+		scrollVisibleStore: messageOutlineVisibleStore,
+		reveal: revealMessageOutline
+	});
+
+	const buildPersistedChatData = (
+		historyState,
+		messages = createMessagesList(historyState, historyState.currentId),
+		persistedSelectionThreads: PersistedSelectionThreads = selectionThreads
+	) => ({
 		models: selectedModels,
 		history: historyState,
 		messages,
 		params,
 		files: chatFiles,
-		assistant: activeAssistant ?? undefined
+		assistant: activeAssistant ?? undefined,
+		composer_state: buildComposerStatePayload(),
+		selectionThreads: persistedSelectionThreads
 	});
 
 	$: {
@@ -864,9 +1625,13 @@
 		currentSystemPrompt;
 		activeAssistant;
 
-		if (!chatIdProp) {
-			persistChatSessionState();
-		}
+		persistChatSessionState($chatId || chatIdProp);
+	}
+
+	$: {
+		const composerStateSignature = JSON.stringify(buildComposerStatePayload());
+		composerStateSignature;
+		persistChatComposerState($chatId || chatIdProp);
 	}
 
 	// 正向同步: Controls(params) → ThinkingControl(reasoningEffort/maxThinkingTokens)
@@ -903,43 +1668,80 @@
 		}
 	}
 
-	$: if (chatIdProp) {
+	$: {
+		const selectionDrivenState = getSelectionDrivenWebSearchState();
+		if (
+			webSearchSelectionSyncReady &&
+			webSearchModeSource !== 'user' &&
+			selectionDrivenState &&
+			(webSearchMode !== selectionDrivenState.mode ||
+				webSearchModeSource !== selectionDrivenState.source)
+		) {
+			webSearchMode = selectionDrivenState.mode;
+			webSearchModeSource = selectionDrivenState.source;
+			persistChatComposerState();
+		}
+	}
+
+	$: if (!chatIdProp) {
+		lastRequestedChatIdProp = '';
+	} else if (lastRequestedChatIdProp !== chatIdProp) {
+		lastRequestedChatIdProp = chatIdProp;
+		const targetChatId = chatIdProp;
+		const loadToken = ++activeChatLoadToken;
+
 		(async () => {
 			loading = true;
+			cancelPendingAutoScrollFrames();
+			composerStateSyncReady = false;
 			resetReasoningSelectionTracking();
+			webSearchSelectionSyncReady = false;
 
 			prompt = '';
 			files = [];
 			selectedToolIds = [];
+			toolSelectionTouched = false;
+			selectedSkillIds = [];
+			skillSelectionTouched = false;
+			hasPersistedComposerState = false;
 			webSearchMode = getPreferredDefaultWebSearchMode();
+			webSearchModeSource = 'default';
 			imageGenerationEnabled = false;
 			imageGenerationOptions = {};
 			reasoningEffort = null;
 			maxThinkingTokens = null;
 
-			if (chatIdProp && (await loadChat())) {
-				loading = false;
-				await tick();
-				restoreChatSessionState(chatIdProp);
+			const loaded = await loadChat(targetChatId);
 
-				const input = readChatInputState(chatIdProp);
-				if (input) {
-					try {
-						prompt = input.prompt;
-						files = input.files;
-						selectedToolIds = input.selectedToolIds;
-						imageGenerationEnabled = input.imageGenerationEnabled;
-						imageGenerationOptions = input.imageGenerationOptions ?? {};
-					} catch (e) {}
-				}
-
-				window.setTimeout(() => scrollToBottom(), 0);
-				const chatInput = document.getElementById('chat-input');
-				chatInput?.focus();
-				initializeReasoningSelectionTracking();
-			} else {
-				await goto('/');
+			if (loadToken !== activeChatLoadToken || targetChatId !== chatIdProp) {
+				return;
 			}
+
+			if (!loaded) {
+				await goto('/');
+				return;
+			}
+
+			if (!hasPersistedComposerState) {
+				restoreChatSessionState(targetChatId);
+			}
+
+			const input = readChatInputState(targetChatId);
+			if (input) {
+				try {
+					prompt = input.prompt;
+					files = input.files;
+				} catch (e) {}
+			}
+
+			loading = false;
+			await tick();
+			scrollToBottomImmediately();
+			const chatInput = document.getElementById('chat-input');
+			chatInput?.focus();
+			composerStateSyncReady = true;
+			webSearchSelectionSyncReady = true;
+			initializeReasoningSelectionTracking();
 		})();
 	}
 
@@ -1004,9 +1806,24 @@
 		}
 	}
 
+	$: if ($user && $skillsStore && (atSelectedModel || selectedModels)) {
+		setSkillIds();
+	}
+
+	$: if ($skillsStore?.length) {
+		const filteredSkillIds = filterVisibleSkillIds(selectedSkillIds);
+		if (!arraysEqual(filteredSkillIds, selectedSkillIds)) {
+			selectedSkillIds = filteredSkillIds;
+		}
+	}
+
 	const setToolIds = async () => {
 		if (!$tools) {
 			tools.set(await getTools(localStorage.token));
+		}
+
+		if (hasPersistedComposerState || toolSelectionTouched) {
+			return;
 		}
 
 		if (selectedModels.length !== 1 && !atSelectedModel) {
@@ -1021,9 +1838,71 @@
 		}
 	};
 
-	const showMessage = async (message) => {
+	let isLoadingSkills = false;
+	let hasResolvedSkills = false;
+	const setSkillIds = async () => {
+		if (!$user || !localStorage.token) {
+			return;
+		}
+
+		if (!hasResolvedSkills && (!$skillsStore || $skillsStore.length === 0)) {
+			if (isLoadingSkills) {
+				return;
+			}
+			isLoadingSkills = true;
+			try {
+				const latestSkills = (await getSkills(localStorage.token).catch(() => null)) ?? [];
+				hasResolvedSkills = true;
+				// 关键：仅在内容真正变化时 set，避免写入新数组引用触发响应式循环
+				const current = $skillsStore ?? [];
+				const changed =
+					latestSkills.length !== current.length ||
+					latestSkills.some((s, i) => s?.id !== current[i]?.id);
+				if (changed) {
+					skillsStore.set(latestSkills);
+				}
+				if (latestSkills.length === 0 && selectedSkillIds.length > 0) {
+					selectedSkillIds = [];
+				}
+			} finally {
+				isLoadingSkills = false;
+			}
+		}
+
+		if (hasPersistedComposerState || skillSelectionTouched) {
+			return;
+		}
+
+		if (selectedModels.length !== 1 && !atSelectedModel) {
+			return;
+		}
+
+		const model = atSelectedModel ?? getModelById(selectedModels[0]);
+		if (model) {
+			selectedSkillIds = filterVisibleSkillIds(model?.info?.meta?.skillIds ?? []);
+		}
+	};
+
+	const armOverviewNavigationEnd = (delay = 450) => {
+		if (_overviewNavigationTimer !== null) {
+			clearTimeout(_overviewNavigationTimer);
+		}
+
+		_overviewNavigationTimer = setTimeout(() => {
+			overviewNavigationInFlight = false;
+			_overviewNavigationTimer = null;
+		}, delay);
+	};
+
+	const showMessage = async (
+		message,
+		options: {
+			source?: 'overview' | 'default';
+		} = {}
+	) => {
 		const _chatId = $chatId;
 		let _messageId = message.id;
+		const isOverviewSource = options.source === 'overview';
 
 		let messageChildrenIds = [];
 		if (_messageId === null) {
@@ -1040,6 +1919,14 @@
 		}
 
 		history.currentId = _messageId;
+		if (isOverviewSource) {
+			overviewPinnedMessageId = message.id;
+			overviewNavigationInFlight = true;
+			armOverviewNavigationEnd();
+		} else {
+			overviewPinnedMessageId = null;
+		}
+		overviewFocusedMessageId.set(message.id);
 
 		await tick();
 		await tick();
@@ -1228,6 +2115,9 @@
 	onMount(async () => {
 		window.addEventListener('message', onMessageHandler);
 		window.addEventListener('chat:set-input', onSetInputHandler as EventListener);
+		window.addEventListener('keydown', handleMessageOutlineKeydown, true);
+		window.addEventListener('pointerup', clearMessageOutlineScrollbarDragPrime, true);
+		window.addEventListener('pointercancel', clearMessageOutlineScrollbarDragPrime, true);
 		$socket?.on('chat-events', chatEventHandler);
 
 		if (!chatIdProp && !$chatId) {
@@ -1249,19 +2139,22 @@
 				try {
 					prompt = input.prompt;
 					files = input.files;
-					selectedToolIds = input.selectedToolIds;
-					imageGenerationEnabled = input.imageGenerationEnabled;
-					imageGenerationOptions = input.imageGenerationOptions ?? {};
 				} catch (e) {
 					prompt = '';
 					files = [];
 					selectedToolIds = [];
+					toolSelectionTouched = false;
+					selectedSkillIds = [];
+					skillSelectionTouched = false;
 					webSearchMode = getPreferredDefaultWebSearchMode();
+					webSearchModeSource = 'default';
 					imageGenerationEnabled = false;
 					imageGenerationOptions = {};
 				}
 			}
 			restoreChatSessionState(chatIdProp);
+			composerStateSyncReady = true;
+			webSearchSelectionSyncReady = true;
 		}
 
 		showControls.subscribe(async (value) => {
@@ -1281,6 +2174,21 @@
 				showCallOverlay.set(false);
 				showOverview.set(false);
 				showArtifacts.set(false);
+			}
+		});
+
+		selectedAssistantSceneUnsubscriber = selectedAssistantScene.subscribe((assistantScene) => {
+			if (assistantScene && activeAssistant) {
+				deactivateAssistant();
+			}
+
+			if (
+				assistantScene?.id &&
+				!chatIdProp &&
+				!$chatId &&
+				JSON.stringify(selectedModels) !== JSON.stringify([assistantScene.id])
+			) {
+				selectedModels = [assistantScene.id];
 			}
 		});
 
@@ -1321,13 +2229,46 @@
 
 	onDestroy(() => {
 		chatIdUnsubscriber?.();
+		selectedAssistantSceneUnsubscriber?.();
+		clearMessageOutlineHideTimer();
+		messageOutlineVisibleStore.set(false);
+		if (selectionThreadsPersistTimeout) {
+			clearTimeout(selectionThreadsPersistTimeout);
+			selectionThreadsPersistTimeout = null;
+		}
+		if (composerStatePersistTimeout) {
+			clearTimeout(composerStatePersistTimeout);
+			composerStatePersistTimeout = null;
+		}
 		scrollObserver?.disconnect();
 		cancelScheduledScrollToBottom();
 		clearResponseAnimationControllers();
+		overviewPinnedMessageId = null;
+		overviewNavigationInFlight = false;
+		overviewFocusedMessageId.set(null);
 		window.removeEventListener('message', onMessageHandler);
 		window.removeEventListener('chat:set-input', onSetInputHandler as EventListener);
+		window.removeEventListener('keydown', handleMessageOutlineKeydown, true);
+		window.removeEventListener('pointerup', clearMessageOutlineScrollbarDragPrime, true);
+		window.removeEventListener('pointercancel', clearMessageOutlineScrollbarDragPrime, true);
 		$socket?.off('chat-events', chatEventHandler);
 	});
+
+	$: if ($showOverview) {
+		void tick().then(() => {
+			scheduleOverviewFocusedMessageSync();
+		});
+	} else {
+		overviewPinnedMessageId = null;
+		overviewNavigationInFlight = false;
+		overviewFocusedMessageId.set(null);
+	}
+
+	$: if ($showOverview && history.currentId) {
+		void tick().then(() => {
+			scheduleOverviewFocusedMessageSync();
+		});
+	}
 
 	// File upload functions
 
@@ -1570,7 +2511,9 @@
 	const initNewChat = async (options: { fresh?: boolean } = {}) => {
 		const fresh = options.fresh ?? false;
 		freshChatActive = fresh;
+		composerStateSyncReady = false;
 		resetReasoningSelectionTracking();
+		webSearchSelectionSyncReady = false;
 
 		if ($page.url.searchParams.get('models')) {
 			selectedModels = $page.url.searchParams.get('models')?.split(',');
@@ -1598,6 +2541,8 @@
 			} else {
 				selectedModels = urlModels;
 			}
+		} else if (!fresh && $selectedAssistantScene?.id) {
+			selectedModels = [$selectedAssistantScene.id];
 		} else if (!fresh) {
 			const scopedKey = getSelectedModelsStorageKey();
 			const legacyKey = getLegacySelectedModelsStorageKey();
@@ -1674,6 +2619,8 @@
 			messages: {},
 			currentId: null
 		};
+		setSelectionThreadsState(createEmptySelectionThreads());
+		expandedSelectionThreadId.set(null);
 		clearResponseAnimationControllers();
 
 		if (fresh) {
@@ -1686,6 +2633,10 @@
 			prompt = '';
 			files = [];
 			selectedToolIds = [];
+			toolSelectionTouched = false;
+			selectedSkillIds = [];
+			skillSelectionTouched = false;
+			hasPersistedComposerState = false;
 			imageGenerationEnabled = false;
 			imageGenerationOptions = {};
 			codeInterpreterEnabled = false;
@@ -1693,6 +2644,11 @@
 
 		chatFiles = [];
 		params = {};
+		hasPersistedComposerState = false;
+		selectedToolIds = [];
+		toolSelectionTouched = false;
+		selectedSkillIds = [];
+		skillSelectionTouched = false;
 
 		if (fresh) {
 			removeChatSessionState('');
@@ -1700,10 +2656,12 @@
 			reasoningEffort = null;
 			maxThinkingTokens = null;
 			webSearchMode = getPreferredDefaultWebSearchMode();
+			webSearchModeSource = 'default';
 		} else {
 			reasoningEffort = null;
 			maxThinkingTokens = null;
 			webSearchMode = getPreferredDefaultWebSearchMode();
+			webSearchModeSource = 'default';
 			restoreChatSessionState('');
 			if (reasoningEffort) {
 				params.reasoning_effort = reasoningEffort;
@@ -1720,6 +2678,7 @@
 		}
 		if ($page.url.searchParams.get('web-search') === 'true') {
 			webSearchMode = 'halo';
+			webSearchModeSource = 'user';
 		}
 
 		if ($page.url.searchParams.get('image-generation') === 'true') {
@@ -1732,12 +2691,30 @@
 				?.split(',')
 				.map((id) => id.trim())
 				.filter((id) => id);
+			toolSelectionTouched = true;
 		} else if ($page.url.searchParams.get('tool-ids')) {
 			selectedToolIds = $page.url.searchParams
 				.get('tool-ids')
 				?.split(',')
 				.map((id) => id.trim())
 				.filter((id) => id);
+			toolSelectionTouched = true;
+		}
+
+		if ($page.url.searchParams.get('skills')) {
+			selectedSkillIds = $page.url.searchParams
+				.get('skills')
+				?.split(',')
+				.map((id) => id.trim())
+				.filter((id) => id);
+			skillSelectionTouched = true;
+		} else if ($page.url.searchParams.get('skill-ids')) {
+			selectedSkillIds = $page.url.searchParams
+				.get('skill-ids')
+				?.split(',')
+				.map((id) => id.trim())
+				.filter((id) => id);
+			skillSelectionTouched = true;
 		}
 
 		if ($page.url.searchParams.get('call') === 'true') {
@@ -1772,6 +2749,7 @@
 
 		if (fresh && $page.url.searchParams.get('web-search') !== 'true') {
 			webSearchMode = getPreferredWebSearchMode(userSettings?.ui ?? $settings, 'off');
+			webSearchModeSource = 'default';
 		}
 
 		if (fresh) {
@@ -1784,6 +2762,7 @@
 			sessionStorage.removeItem(PENDING_ASSISTANT_STORAGE_KEY);
 
 			if (pendingAssistant) {
+				selectedAssistantScene.set(null);
 				activateAssistant(pendingAssistant);
 			}
 		}
@@ -1805,6 +2784,8 @@
 
 		const chatInput = document.getElementById('chat-input');
 		setTimeout(() => chatInput?.focus(), 0);
+		composerStateSyncReady = true;
+		webSearchSelectionSyncReady = true;
 		initializeReasoningSelectionTracking();
 
 		if (fresh && $page.url.searchParams.get('fresh-chat') === 'true') {
@@ -1832,20 +2813,17 @@
 		}
 	}
 
-	const loadChat = async () => {
-		const navigationId = chatIdProp;
-		chatId.set(chatIdProp);
+	const loadChat = async (targetChatId: string = chatIdProp) => {
+		const navigationId = targetChatId;
+		chatId.set(targetChatId);
 		tags = [];
 		taskIds = null;
-		const chatContextPromise = getChatContextById(localStorage.token, chatIdProp).catch(() => ({
+		const chatContextPromise = getChatContextById(localStorage.token, targetChatId).catch(() => ({
 			tags: [],
 			task_ids: []
 		}));
 
-		chat = await getChatById(localStorage.token, $chatId).catch(async (error) => {
-			await goto('/');
-			return null;
-		});
+		chat = await getChatById(localStorage.token, targetChatId).catch(() => null);
 
 		if (navigationId !== chatIdProp) return null;
 
@@ -1867,6 +2845,25 @@
 				params = chatContent?.params ?? {};
 				activeAssistant = toChatAssistantSnapshot(chatContent?.assistant ?? null);
 				chatFiles = chatContent?.files ?? [];
+				hasPersistedComposerState = false;
+				applyComposerState(chatContent?.composer_state, { markPersisted: true });
+				setRuntimeSelectionThreadsState(normalizeSelectionThreads(chatContent?.selectionThreads));
+				expandedSelectionThreadId.set(null);
+
+				if (chat.assistant_id) {
+					if ($models.length === 0) {
+						await ensureModels(localStorage.token, { reason: 'chat-assistant-scene' }).catch(() => {});
+						await tick();
+					}
+
+					const assistantScene =
+						getModelById(chat.assistant_id) ??
+						(await getWorkspaceModelById(localStorage.token, chat.assistant_id).catch(() => null));
+
+					selectedAssistantScene.set(assistantScene ?? null);
+				} else {
+					selectedAssistantScene.set(null);
+				}
 
 				void (async () => {
 					const nextContext = await chatContextPromise;
@@ -2090,6 +3087,93 @@
 		autoScroll = true;
 	};
 
+	const resolveOverviewFocusedMessageId = () => {
+		if (
+			overviewPinnedMessageId &&
+			history.messages?.[overviewPinnedMessageId] &&
+			(overviewNavigationInFlight || !messagesContainerElement)
+		) {
+			return overviewPinnedMessageId;
+		}
+
+		if (!messagesContainerElement) {
+			return history.currentId ?? null;
+		}
+
+		const containerRect = messagesContainerElement.getBoundingClientRect();
+		const visibleMessages = Array.from(
+			messagesContainerElement.querySelectorAll<HTMLElement>('[id^="message-"]')
+		)
+			.map((element) => {
+				const messageId = element.id.replace(/^message-/, '');
+				return {
+					messageId,
+					rect: element.getBoundingClientRect()
+				};
+			})
+			.filter(
+				({ messageId, rect }) =>
+					Boolean(history.messages?.[messageId]) &&
+					rect.bottom >= containerRect.top + 8 &&
+					rect.top <= containerRect.bottom - 8
+			);
+
+		if (visibleMessages.length === 0) {
+			if (overviewPinnedMessageId && history.messages?.[overviewPinnedMessageId]) {
+				return overviewPinnedMessageId;
+			}
+			return history.currentId ?? null;
+		}
+
+		if (
+			overviewPinnedMessageId &&
+			visibleMessages.some(({ messageId }) => messageId === overviewPinnedMessageId)
+		) {
+			return overviewPinnedMessageId;
+		}
+
+		const anchorPadding = Math.min(72, containerRect.height / 2);
+		const anchorY =
+			containerRect.top +
+			Math.min(
+				Math.max(containerRect.height * 0.32, anchorPadding),
+				containerRect.height - anchorPadding
+			);
+
+		const containingMessage = visibleMessages.find(
+			({ rect }) => rect.top <= anchorY && rect.bottom >= anchorY
+		);
+
+		if (containingMessage) {
+			return containingMessage.messageId;
+		}
+
+		return visibleMessages.reduce((closest, current) => {
+			const currentDistance = Math.abs((current.rect.top + current.rect.bottom) / 2 - anchorY);
+			const closestDistance = Math.abs((closest.rect.top + closest.rect.bottom) / 2 - anchorY);
+			return currentDistance < closestDistance ? current : closest;
+		}).messageId;
+	};
+
+	const syncOverviewFocusedMessage = () => {
+		if (!$showOverview) {
+			return;
+		}
+
+		overviewFocusedMessageId.set(resolveOverviewFocusedMessageId());
+	};
+
+	const scheduleOverviewFocusedMessageSync = () => {
+		if (!$showOverview || _overviewFocusRafId !== null) {
+			return;
+		}
+
+		_overviewFocusRafId = requestAnimationFrame(() => {
+			_overviewFocusRafId = null;
+			syncOverviewFocusedMessage();
+		});
+	};
+
 	const cancelScheduledScrollToBottom = () => {
 		if (_scrollRafId !== null) {
 			cancelAnimationFrame(_scrollRafId);
@@ -2099,6 +3183,14 @@
 			cancelAnimationFrame(_scrollResetRafId);
 			_scrollResetRafId = null;
 		}
+		if (_overviewFocusRafId !== null) {
+			cancelAnimationFrame(_overviewFocusRafId);
+			_overviewFocusRafId = null;
+		}
+		if (_overviewNavigationTimer !== null) {
+			clearTimeout(_overviewNavigationTimer);
+			_overviewNavigationTimer = null;
+		}
 	};
 
 	const handleMessagesScroll = () => {
@@ -2106,17 +3198,63 @@
 			return;
 		}
 
+		if (overviewNavigationInFlight) {
+			autoScroll = isNearBottom();
+			if (autoScroll) {
+				userHasScrolled = false;
+			}
+			armOverviewNavigationEnd(120);
+			return;
+		}
+
+		if (shouldRevealMessageOutlineFromScroll()) {
+			revealMessageOutline();
+		}
+
+		if (overviewPinnedMessageId) {
+			overviewPinnedMessageId = null;
+		}
+
 		if (isNearBottom()) {
 			userHasScrolled = false;
 			autoScroll = true;
+			scheduleOverviewFocusedMessageSync();
 			return;
 		}
 
 		userHasScrolled = true;
 		autoScroll = false;
+		scheduleOverviewFocusedMessageSync();
 	};
 
 	let _scrollRafId: number | null = null;
+	const cancelPendingAutoScrollFrames = () => {
+		if (_scrollRafId !== null) {
+			cancelAnimationFrame(_scrollRafId);
+			_scrollRafId = null;
+		}
+
+		if (_scrollResetRafId !== null) {
+			cancelAnimationFrame(_scrollResetRafId);
+			_scrollResetRafId = null;
+		}
+
+		isAutoScrolling = false;
+	};
+
+	const scrollToBottomImmediately = () => {
+		if (!messagesContainerElement) {
+			return;
+		}
+
+		cancelPendingAutoScrollFrames();
+		resetAutoScrollLock();
+		userHasScrolled = false;
+		autoScroll = true;
+		messagesContainerElement.scrollTop = messagesContainerElement.scrollHeight;
+		scheduleOverviewFocusedMessageSync();
+	};
+
 	const scrollToBottom = async (behavior: ScrollBehavior = 'auto') => {
 		if (_scrollRafId !== null) return;
 		resetAutoScrollLock();
@@ -2132,6 +3270,7 @@
 					_scrollResetRafId = null;
 					isAutoScrolling = false;
 					autoScroll = isNearBottom();
+					scheduleOverviewFocusedMessageSync();
 				});
 			}
 		});
@@ -2179,14 +3318,9 @@
 
 		if ($chatId == chatId) {
 			if (!$temporaryChatEnabled) {
-				chat = await updateChatById(
-					localStorage.token,
-					chatId,
-					buildPersistedChatData(history, messages)
-				);
-
-				currentChatPage.set(1);
-				await chats.set(await getChatList(localStorage.token, $currentChatPage));
+				await saveChatHandler(chatId, history, {
+					messages
+				});
 			}
 		}
 
@@ -2248,14 +3382,9 @@
 
 		if ($chatId == chatId) {
 			if (!$temporaryChatEnabled) {
-				chat = await updateChatById(
-					localStorage.token,
-					chatId,
-					buildPersistedChatData(history, messages)
-				);
-
-				currentChatPage.set(1);
-				await chats.set(await getChatList(localStorage.token, $currentChatPage));
+				await saveChatHandler(chatId, history, {
+					messages
+				});
 			}
 		}
 	};
@@ -2268,6 +3397,87 @@
 				chat_id: chatId
 			});
 		}, 1000);
+	};
+
+	const resolveBranchPointMessageId = (sourceMessageId: string): string | null => {
+		const sourceMessage = history.messages?.[sourceMessageId];
+		if (!sourceMessage) {
+			return null;
+		}
+
+		if (sourceMessage.role === 'assistant') {
+			return sourceMessageId;
+		}
+
+		const currentPath = createMessagesList(history, history.currentId);
+		const sourceIndex = currentPath.findIndex((message) => message.id === sourceMessageId);
+		const nextMessage = sourceIndex >= 0 ? currentPath[sourceIndex + 1] : null;
+
+		if (
+			nextMessage?.role === 'assistant' &&
+			nextMessage?.parentId === sourceMessageId &&
+			nextMessage?.done === true
+		) {
+			return nextMessage.id;
+		}
+
+		return sourceMessageId;
+	};
+
+	const branchMessageToCurrentChat = async (sourceMessageId: string) => {
+		if (
+			!sourceMessageId ||
+			branchingMessageId !== null ||
+			!$chatId ||
+			$chatId === 'local' ||
+			$temporaryChatEnabled
+		) {
+			return;
+		}
+
+		const branchPointMessageId = resolveBranchPointMessageId(sourceMessageId);
+		if (!branchPointMessageId) {
+			toast.error($i18n.t('Failed to create branch'));
+			return;
+		}
+
+		branchingMessageId = sourceMessageId;
+
+		try {
+			const branchedChat = await branchChatById(
+				localStorage.token,
+				$chatId,
+				branchPointMessageId
+			);
+
+			if (!branchedChat?.id) {
+				throw new Error($i18n.t('Failed to create branch'));
+			}
+
+			const targetUrl = `/c/${branchedChat.id}`;
+			chatTitle.set(branchedChat.title);
+			chatId.set(branchedChat.id);
+			chatListRefreshTarget.set({
+				id: branchedChat.id,
+				title: branchedChat.title,
+				updated_at: branchedChat.updated_at,
+				created_at: branchedChat.created_at,
+				assistant_id: branchedChat.assistant_id ?? null
+			});
+			chatListRefreshRevision.update((value) => value + 1);
+			await goto(targetUrl);
+			toast.success($i18n.t('Switched to new branch'));
+		} catch (error) {
+			toast.error(
+				typeof error === 'string' && error
+					? error
+					: error instanceof Error && error.message
+						? error.message
+						: $i18n.t('Failed to create branch')
+			);
+		} finally {
+			branchingMessageId = null;
+		}
 	};
 
 	const createMessagePair = async (userPrompt) => {
@@ -2616,7 +3826,7 @@
 		}
 		if (
 			validFiles.length > 0 &&
-			validFiles.filter((file) => file.type !== 'image' && file.status === 'uploading').length > 0
+			validFiles.filter((file) => file.status === 'uploading').length > 0
 		) {
 			toast.error(
 				$i18n.t(`Oops! There are files still uploading. Please wait for the upload to complete.`)
@@ -2639,7 +3849,7 @@
 		const hasRunningResponse = messages.length !== 0 && messages.at(-1).done != true;
 		if (hasPendingTask || hasRunningResponse) {
 			if ($settings?.enableMessageQueue ?? true) {
-				const queuedFiles = structuredClone(validFiles);
+				const queuedFiles = validFiles.map((file) => normalizeInputFileForMessage(file));
 				if (failedFiles.length > 0) {
 					toast.warning(buildIgnoredFailedFilesMessage(failedFiles, $i18n.t.bind($i18n)));
 				}
@@ -2669,7 +3879,7 @@
 			toast.warning(buildIgnoredFailedFilesMessage(failedFiles, $i18n.t.bind($i18n)));
 		}
 
-		const _files = structuredClone(validFiles);
+		const _files = validFiles.map((file) => normalizeInputFileForMessage(file));
 		chatFiles.push(..._files.filter((item) => ['doc', 'file', 'collection'].includes(item.type)));
 		chatFiles = chatFiles.filter(
 			// Remove duplicates
@@ -2913,9 +4123,45 @@
 			}))
 		].filter((message) => message);
 
+		// 自定义上下文条数：只保留最近 N 条非系统消息，系统提示词始终保留
+		const maxHistoryMessages =
+			params?.max_history_messages ??
+			$settings?.params?.max_history_messages ??
+			null;
+		if (typeof maxHistoryMessages === 'number' && maxHistoryMessages > 0) {
+			const hasSystem = messages[0]?.role === 'system';
+			const systemMsg = hasSystem ? messages[0] : null;
+			const historyOnly = (hasSystem ? messages.slice(1) : messages).filter(
+				(message, idx, arr) =>
+					!(
+						idx === arr.length - 1 &&
+						message?.id === responseMessageId &&
+						message?.role === 'assistant' &&
+						!`${message?.content ?? ''}`.trim()
+					)
+			);
+			const truncated = historyOnly.slice(-maxHistoryMessages);
+			const fallbackUserMessage = historyOnly.findLast((message) => message?.role === 'user');
+			const limitedHistory =
+				truncated.some((message) => message?.role === 'user')
+					? truncated
+					: fallbackUserMessage
+						? [
+								...(truncated.some((message) => message?.id === fallbackUserMessage.id)
+									? []
+									: [fallbackUserMessage]),
+								...truncated
+							]
+						: truncated;
+
+			messages = systemMsg ? [systemMsg, ...limitedHistory] : limitedHistory;
+		}
+
+		const requestSkillIds = collectRequestSkillIds(messages);
+
 		messages = messages
 			.map((message, idx, arr) => {
-				let textContent = message?.merged?.content ?? message.content;
+				let textContent = stripSkillTagsFromText(message?.merged?.content ?? message.content);
 
 				// Inject regeneration instruction into the last user message for API payload only
 				if (
@@ -2939,11 +4185,11 @@
 									...message.files
 										.filter((file) => file.type === 'image')
 										.map((file) => ({
-											type: 'image_url',
-											image_url: {
-												url: file.url
-											}
-										}))
+										type: 'image_url',
+										image_url: {
+											url: buildModelImageRequestUrl(file)
+										}
+									}))
 								]
 							}
 						: {
@@ -2953,11 +4199,9 @@
 			})
 			.filter((message) => message?.role === 'user' || message?.content?.trim());
 
-		const requestedWebSearchMode =
-			$config?.features?.enable_web_search &&
-			($user?.role === 'admin' || $user?.permissions?.features?.web_search)
-				? normalizeWebSearchMode(webSearchMode, 'off')
-				: 'off';
+		const requestedWebSearchMode = canUseChatWebSearch()
+			? normalizeWebSearchMode(webSearchMode, 'off')
+			: 'off';
 
 		const res = await generateOpenAIChatCompletion(
 			localStorage.token,
@@ -2985,6 +4229,8 @@
 
 				files: (files?.length ?? 0) > 0 ? files : undefined,
 				tool_ids: selectedToolIds.length > 0 ? selectedToolIds : undefined,
+				skill_ids: requestSkillIds.length > 0 ? requestSkillIds : undefined,
+				skill_selection_touched: skillSelectionTouched ? true : undefined,
 				tool_servers: $toolServers,
 
 				features: {
@@ -3580,7 +4826,7 @@
 				tags: [],
 				timestamp: Date.now(),
 				...buildPersistedChatData(history)
-			});
+			}, null, $selectedAssistantScene?.id ?? null);
 
 			_chatId = chat.id;
 			await chatId.set(_chatId);
@@ -3600,12 +4846,40 @@
 		return _chatId;
 	};
 
-	const saveChatHandler = async (_chatId, history) => {
+	const saveChatHandler = async (
+		_chatId,
+		historyState,
+		options: { selectionThreads?: PersistedSelectionThreads; messages?: any[] } = {}
+	) => {
 		if ($chatId == _chatId) {
 			if (!$temporaryChatEnabled) {
-				chat = await updateChatById(localStorage.token, _chatId, buildPersistedChatData(history));
-				currentChatPage.set(1);
-				await chats.set(await getChatList(localStorage.token, $currentChatPage));
+				const persistedSelectionThreads = options.selectionThreads ?? selectionThreads;
+				const { history: normalizedHistory, changed } =
+					await normalizeHistoryForPersistence(historyState);
+				const persistedMessages =
+					options.messages && !changed
+						? options.messages
+						: createMessagesList(normalizedHistory, normalizedHistory.currentId);
+
+				if (changed && history === historyState) {
+					history = normalizedHistory;
+				}
+
+				const payload = buildPersistedChatData(
+					normalizedHistory,
+					persistedMessages,
+					persistedSelectionThreads
+				);
+
+				pendingChatSave = pendingChatSave
+					.catch(() => undefined)
+					.then(async () => {
+						chat = await updateChatById(localStorage.token, _chatId, payload);
+						currentChatPage.set(1);
+						await chats.set(await getChatList(localStorage.token, $currentChatPage));
+					});
+
+				await pendingChatSave;
 			}
 		}
 	};
@@ -3683,11 +4957,14 @@
 				/>
 
 				<div class="flex flex-col flex-auto z-10 w-full min-w-0 @container">
-					{#if $settings?.landingPageMode === 'chat' || hasMessages}
+					{#if ($settings?.landingPageMode === 'chat' && !$selectedAssistantScene) || hasMessages}
 						<div
 							class=" pb-2.5 flex flex-col justify-between w-full flex-auto overflow-auto h-0 max-w-full z-10 scrollbar-hidden"
 							id="messages-container"
 							bind:this={messagesContainerElement}
+							on:wheel|passive={handleMessageOutlineWheel}
+							on:touchmove|passive={handleMessageOutlineTouchMove}
+							on:pointerdown={handleMessageOutlinePointerDown}
 							on:scroll={handleMessagesScroll}
 						>
 							<div class=" h-full w-full flex flex-col">
@@ -3706,6 +4983,9 @@
 									{mergeResponses}
 									{chatActionHandler}
 									{addMessages}
+									onBranchMessage={branchMessageToCurrentChat}
+									{branchingMessageId}
+									branchSupported={Boolean($chatId && $chatId !== 'local' && !$temporaryChatEnabled)}
 									bottomPadding={files.length > 0}
 								/>
 								<div bind:this={scrollSentinel} class="h-px w-full shrink-0" />
@@ -3739,10 +5019,14 @@
 								bind:prompt
 								bind:autoScroll
 								bind:selectedToolIds
+								bind:toolSelectionTouched
+								bind:selectedSkillIds
+								bind:skillSelectionTouched
 								bind:imageGenerationEnabled
 								bind:imageGenerationOptions
 								bind:codeInterpreterEnabled
 								bind:webSearchMode
+								{webSearchModeSource}
 								bind:atSelectedModel
 								bind:reasoningEffort
 								bind:maxThinkingTokens
@@ -3752,36 +5036,7 @@
 								transparentBackground={$settings?.backgroundImageUrl ?? false}
 								{stopResponse}
 								{createMessagePair}
-								onChange={(input) => {
-									// 反向同步: ThinkingControl → Controls(params)
-									const newRE = normalizeReasoningEffortValue(input.reasoningEffort ?? null);
-									const newMT = normalizeThinkingTokenValue(input.maxThinkingTokens ?? null);
-									const oldRE = normalizeReasoningEffortValue(params?.reasoning_effort ?? null);
-									const oldMT = normalizeThinkingTokenValue(params?.max_thinking_tokens ?? null);
-									if (newRE !== oldRE || newMT !== oldMT) {
-										const finalMT = newRE ? null : newMT;
-										_lastSyncedEffort = newRE;
-										_lastSyncedTokens = finalMT;
-										params = {
-											...params,
-											reasoning_effort: newRE,
-											max_thinking_tokens: finalMT
-										};
-									}
-									webSearchMode = resolveStoredWebSearchMode(
-										{ webSearchMode: input.webSearchMode },
-										getPreferredDefaultWebSearchMode()
-									);
-									reasoningEffort = newRE;
-									maxThinkingTokens = newMT;
-									persistChatSessionState();
-
-									if (input.prompt) {
-										writeChatInputState(input, $chatId);
-									} else {
-										removeChatInputState($chatId);
-									}
-								}}
+								onChange={handleMessageInputChange}
 								on:upload={async (e) => {
 									const { type, data } = e.detail;
 
@@ -3820,10 +5075,14 @@
 								bind:prompt
 								bind:autoScroll
 								bind:selectedToolIds
+								bind:toolSelectionTouched
+								bind:selectedSkillIds
+								bind:skillSelectionTouched
 								bind:imageGenerationEnabled
 								bind:imageGenerationOptions
 								bind:codeInterpreterEnabled
 								bind:webSearchMode
+								{webSearchModeSource}
 								bind:atSelectedModel
 								bind:reasoningEffort
 								bind:maxThinkingTokens
@@ -3834,6 +5093,7 @@
 								toolServers={$toolServers}
 								{stopResponse}
 								{createMessagePair}
+								onChange={handleMessageInputChange}
 								on:upload={async (e) => {
 									const { type, data } = e.detail;
 

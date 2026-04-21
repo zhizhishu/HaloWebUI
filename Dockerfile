@@ -52,67 +52,6 @@ ENV APP_BUILD_HASH=${BUILD_HASH} \
 
 RUN npm run build
 
-######## WebUI backend builder ########
-FROM python:3.11-slim-bookworm AS backend-builder
-
-ARG USE_CUDA
-ARG INSTALL_PROFILE
-ARG PRELOAD_LOCAL_MODELS
-ARG USE_CUDA_VER
-ARG USE_EMBEDDING_MODEL
-ARG USE_RERANKING_MODEL
-ARG USE_TIKTOKEN_ENCODING_NAME
-ARG HALO_RUNTIME_PROFILE
-
-ENV USE_CUDA_DOCKER=${USE_CUDA} \
-    USE_CUDA_DOCKER_VER=${USE_CUDA_VER} \
-    INSTALL_PROFILE=${INSTALL_PROFILE} \
-    PRELOAD_LOCAL_MODELS=${PRELOAD_LOCAL_MODELS} \
-    RAG_EMBEDDING_MODEL=${USE_EMBEDDING_MODEL} \
-    RAG_RERANKING_MODEL=${USE_RERANKING_MODEL} \
-    TIKTOKEN_ENCODING_NAME=${USE_TIKTOKEN_ENCODING_NAME} \
-    WHISPER_MODEL="base" \
-    WHISPER_MODEL_DIR="/app/backend/data/cache/whisper/models" \
-    SENTENCE_TRANSFORMERS_HOME="/app/backend/data/cache/embedding/models" \
-    TIKTOKEN_CACHE_DIR="/app/backend/data/cache/tiktoken" \
-    HF_HOME="/app/backend/data/cache/embedding/models" \
-    PATH="/opt/venv/bin:${PATH}"
-
-WORKDIR /app/backend
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc python3-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN python -m venv /opt/venv
-
-COPY ./backend/requirements ./requirements
-
-RUN set -eux; \
-    requirements_file="requirements/${INSTALL_PROFILE}.txt"; \
-    test -f "${requirements_file}"; \
-    pip install --no-cache-dir --upgrade pip; \
-    if [ "$INSTALL_PROFILE" = "local-rag" ] || [ "$INSTALL_PROFILE" = "local-audio" ] || [ "$INSTALL_PROFILE" = "full" ]; then \
-        if [ "$USE_CUDA" = "true" ]; then \
-            pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/${USE_CUDA_DOCKER_VER}" --no-cache-dir; \
-        else \
-            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu --no-cache-dir; \
-        fi; \
-    fi; \
-    pip install --no-cache-dir -r "${requirements_file}"; \
-    if [ "$HALO_RUNTIME_PROFILE" = "main" ]; then \
-        pip install --no-cache-dir uv; \
-    fi; \
-    if [ "$PRELOAD_LOCAL_MODELS" = "true" ]; then \
-        if [ "$INSTALL_PROFILE" = "local-rag" ] || [ "$INSTALL_PROFILE" = "full" ]; then \
-            python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ['RAG_EMBEDDING_MODEL'], device='cpu')"; \
-        fi; \
-        if [ "$INSTALL_PROFILE" = "local-audio" ] || [ "$INSTALL_PROFILE" = "full" ]; then \
-            python -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_MODEL'], device='cpu', compute_type='int8', download_root=os.environ['WHISPER_MODEL_DIR'])"; \
-        fi; \
-        python -c "import os; import tiktoken; tiktoken.get_encoding(os.environ['TIKTOKEN_ENCODING_NAME'])"; \
-    fi
-
 ######## WebUI backend runtime ########
 FROM python:3.11-slim-bookworm AS base
 
@@ -153,21 +92,18 @@ ENV ENV=prod \
     TIKTOKEN_CACHE_DIR="/app/backend/data/cache/tiktoken" \
     HF_HOME="/app/backend/data/cache/embedding/models" \
     HALO_RUNTIME_PROFILE=${HALO_RUNTIME_PROFILE} \
-    PATH="/opt/venv/bin:${PATH}" \
     HOME=/root
 
 WORKDIR /app/backend
 
-RUN if [ $UID -ne 0 ]; then \
-    if [ $GID -ne 0 ]; then \
-        addgroup --gid $GID app; \
-    fi; \
-    adduser --uid $UID --gid $GID --home $HOME --disabled-password --no-create-home app; \
-    fi
+COPY ./backend/requirements ./requirements
 
 RUN set -eux; \
     extra_apt_packages=""; \
+    build_apt_packages="gcc python3-dev"; \
     pg_client_packages=""; \
+    requirements_file="requirements/${INSTALL_PROFILE}.txt"; \
+    test -f "${requirements_file}"; \
     case "$INSTALL_PROFILE" in \
         local-audio) extra_apt_packages="ffmpeg libsm6 libxext6" ;; \
         docs-full|full) extra_apt_packages="pandoc ffmpeg libsm6 libxext6" ;; \
@@ -179,6 +115,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         curl \
         ca-certificates \
+        ${build_apt_packages} \
         ${extra_apt_packages}; \
     install -d /usr/share/postgresql-common/pgdg; \
     curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
@@ -194,12 +131,43 @@ RUN set -eux; \
     if [ "$USE_OLLAMA" = "true" ]; then \
         curl -fsSL https://ollama.com/install.sh | sh; \
     fi; \
+    pip install --no-cache-dir uv; \
+    if [ "$INSTALL_PROFILE" = "local-rag" ] || [ "$INSTALL_PROFILE" = "local-audio" ] || [ "$INSTALL_PROFILE" = "full" ]; then \
+        if [ "$USE_CUDA" = "true" ]; then \
+            pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/${USE_CUDA_DOCKER_VER}" --no-cache-dir; \
+        else \
+            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu --no-cache-dir; \
+        fi; \
+    fi; \
+    if [ "$INSTALL_PROFILE" = "core" ]; then \
+        uv pip install --system -r requirements/core.txt --no-cache-dir; \
+    else \
+        uv pip install --system -r "${requirements_file}" --no-cache-dir; \
+    fi; \
+    if [ "$HALO_RUNTIME_PROFILE" = "main" ]; then \
+        uv pip install --system -r requirements/storage-s3.txt --no-cache-dir; \
+    fi; \
+    if [ "$PRELOAD_LOCAL_MODELS" = "true" ]; then \
+        if [ "$INSTALL_PROFILE" = "local-rag" ] || [ "$INSTALL_PROFILE" = "full" ]; then \
+            python -c "import os; from sentence_transformers import SentenceTransformer; SentenceTransformer(os.environ['RAG_EMBEDDING_MODEL'], device='cpu')"; \
+        fi; \
+        if [ "$INSTALL_PROFILE" = "local-audio" ] || [ "$INSTALL_PROFILE" = "full" ]; then \
+            python -c "import os; from faster_whisper import WhisperModel; WhisperModel(os.environ['WHISPER_MODEL'], device='cpu', compute_type='int8', download_root=os.environ['WHISPER_MODEL_DIR'])"; \
+        fi; \
+        python -c "import os; import tiktoken; tiktoken.get_encoding(os.environ['TIKTOKEN_ENCODING_NAME'])"; \
+    fi; \
+    apt-get purge -y --auto-remove gcc python3-dev; \
     rm -rf /var/lib/apt/lists/*
+
+RUN if [ $UID -ne 0 ]; then \
+    if [ $GID -ne 0 ]; then \
+        addgroup --gid $GID app; \
+    fi; \
+    adduser --uid $UID --gid $GID --home $HOME --disabled-password --no-create-home app; \
+    fi
 
 RUN mkdir -p "$HOME/.cache/chroma" /app/backend/data
 RUN echo -n 00000000-0000-0000-0000-000000000000 > "$HOME/.cache/chroma/telemetry_user_id"
-
-COPY --from=backend-builder /opt/venv /opt/venv
 
 # copy built frontend files
 COPY --chown=$UID:$GID --from=frontend-build /app/build /app/build

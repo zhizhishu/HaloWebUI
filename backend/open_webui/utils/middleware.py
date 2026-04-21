@@ -98,8 +98,14 @@ from open_webui.utils.native_web_search import (
     strip_model_prefix,
 )
 from open_webui.utils.payload import merge_additive_payload_fields
+from open_webui.utils.skill_runtime import (
+    build_skill_system_prompt,
+    build_skill_tool_context,
+    get_selected_skill_context,
+)
 from open_webui.utils.task import (
     get_task_model_id,
+    prompt_template,
     rag_template,
     tools_function_calling_generation_template,
 )
@@ -137,6 +143,9 @@ from open_webui.utils.filter import (
     get_sorted_filter_ids,
     get_sorted_filters,
     process_filter_functions,
+)
+from open_webui.utils.shared_tool_runtime import (
+    ensure_selected_shared_tool_runtime_loaded,
 )
 from open_webui.utils.code_interpreter import execute_code_jupyter
 
@@ -327,13 +336,73 @@ def _extract_image_files_from_text(text: Any) -> tuple[str, list[dict]]:
     return cleaned.strip(), _merge_message_files(None, files)
 
 
-def _extract_stream_content_and_files(value: Any) -> tuple[str, list[dict]]:
+def _filter_response_image_files(
+    files: Any, *, allow_base64_image_url_conversion: bool = True
+) -> list[dict]:
+    normalized = _normalize_message_files(files)
+    if allow_base64_image_url_conversion:
+        return normalized
+
+    filtered: list[dict] = []
+    for file_item in normalized:
+        if not isinstance(file_item, dict):
+            continue
+
+        url = str(file_item.get("url") or "").strip()
+        if url.startswith("data:image/"):
+            continue
+        filtered.append(file_item)
+
+    return filtered
+
+
+def _extract_top_level_response_image_files(
+    value: Any, *, allow_base64_image_url_conversion: bool = True
+) -> list[dict]:
+    if not isinstance(value, dict):
+        return []
+
+    image_payloads: list[Any] = []
+
+    if "image_url" in value:
+        image_payloads.append({"type": "image_url", "image_url": value.get("image_url")})
+
+    raw_images = value.get("images")
+    if isinstance(raw_images, dict):
+        raw_images = [raw_images]
+    if isinstance(raw_images, list):
+        for image_item in raw_images:
+            if isinstance(image_item, dict):
+                image_type = str(image_item.get("type") or "").strip().lower()
+                if image_type in {"image", "image_url", "input_image", "output_image"}:
+                    image_payloads.append(image_item)
+                elif "image_url" in image_item:
+                    image_payloads.append(
+                        {"type": "image_url", "image_url": image_item.get("image_url")}
+                    )
+                elif image_item.get("url"):
+                    image_payloads.append({"type": "image", "url": image_item.get("url")})
+            elif isinstance(image_item, str):
+                image_payloads.append({"type": "image", "url": image_item})
+
+    return _filter_response_image_files(
+        image_payloads,
+        allow_base64_image_url_conversion=allow_base64_image_url_conversion,
+    )
+
+
+def _extract_stream_content_and_files(
+    value: Any, *, allow_base64_image_url_conversion: bool = True
+) -> tuple[str, list[dict]]:
     if isinstance(value, list):
         parts: list[str] = []
         files: list[dict] = []
 
         for item in value:
-            text_part, file_part = _extract_stream_content_and_files(item)
+            text_part, file_part = _extract_stream_content_and_files(
+                item,
+                allow_base64_image_url_conversion=allow_base64_image_url_conversion,
+            )
             if text_part:
                 parts.append(text_part)
             if file_part:
@@ -344,12 +413,24 @@ def _extract_stream_content_and_files(value: Any) -> tuple[str, list[dict]]:
     if isinstance(value, dict):
         item_type = str(value.get("type") or "").strip().lower()
         if item_type in {"image", "image_url", "input_image", "output_image"}:
-            files = _normalize_message_files(value)
+            files = _filter_response_image_files(
+                value,
+                allow_base64_image_url_conversion=allow_base64_image_url_conversion,
+            )
             return "", files
+
+        top_level_files = _extract_top_level_response_image_files(
+            value,
+            allow_base64_image_url_conversion=allow_base64_image_url_conversion,
+        )
 
         nested_content = value.get("content")
         if isinstance(nested_content, (list, dict)):
-            return _extract_stream_content_and_files(nested_content)
+            text_part, nested_files = _extract_stream_content_and_files(
+                nested_content,
+                allow_base64_image_url_conversion=allow_base64_image_url_conversion,
+            )
+            return text_part, _merge_message_files(top_level_files, nested_files)
 
         text_value = (
             value.get("text")
@@ -357,12 +438,54 @@ def _extract_stream_content_and_files(value: Any) -> tuple[str, list[dict]]:
             or value.get("value")
             or ""
         )
-        return _extract_stream_content_and_files(text_value)
+        text_part, nested_files = _extract_stream_content_and_files(
+            text_value,
+            allow_base64_image_url_conversion=allow_base64_image_url_conversion,
+        )
+        return text_part, _merge_message_files(top_level_files, nested_files)
 
     if isinstance(value, str):
         return _extract_image_files_from_text(value)
 
     return "", []
+
+
+def _has_nonempty_text_content(content_blocks: Any) -> bool:
+    if not isinstance(content_blocks, list):
+        return False
+
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+
+        block_type = str(block.get("type") or "").strip().lower()
+        if block_type in {"text", "reasoning"} and str(block.get("content") or "").strip():
+            return True
+
+    return False
+
+
+def _has_visible_message_files(message_files: Any) -> bool:
+    if not isinstance(message_files, list):
+        return False
+
+    for file_item in message_files:
+        if not isinstance(file_item, dict):
+            continue
+
+        if str(file_item.get("type") or "").strip().lower() != "image":
+            continue
+
+        if any(str(file_item.get(key) or "").strip() for key in ("url", "id", "name")):
+            return True
+
+    return False
+
+
+def _has_visible_assistant_output(content_blocks: Any, message_files: Any) -> bool:
+    return _has_nonempty_text_content(content_blocks) or _has_visible_message_files(
+        message_files
+    )
 
 
 def _consume_stream_image_delta(
@@ -2413,6 +2536,48 @@ async def chat_completion_tools_handler(
 async def chat_web_search_handler(
     request: Request, form_data: dict, extra_params: dict, user
 ):
+    def build_tavily_loader_fallback_notification(notice: dict) -> tuple[str, str] | None:
+        if not isinstance(notice, dict):
+            return None
+        if notice.get("type") != "tavily_loader_auth_fallback":
+            return None
+
+        is_admin = str(getattr(user, "role", "") or "").strip().lower() == "admin"
+        fallback_succeeded = bool(notice.get("fallback_succeeded"))
+        used_direct_docs = bool(notice.get("used_direct_docs"))
+
+        if fallback_succeeded:
+            if is_admin:
+                return (
+                    "warning",
+                    "Tavily 网页加载器鉴权失败，已临时切换备用方式。请到管理后台的联网搜索设置检查 Tavily API Key 和 Extract Base URL。",
+                )
+            return (
+                "warning",
+                "联网资料抓取服务暂时不可用，已自动切换备用方式继续回答，结果可能较少。",
+            )
+
+        if used_direct_docs:
+            if is_admin:
+                return (
+                    "warning",
+                    "Tavily 网页加载器鉴权失败，已尝试备用方式但仍无法抓取网页正文。本次将改用搜索摘要继续回答，请检查 Tavily API Key 和 Extract Base URL。",
+                )
+            return (
+                "warning",
+                "网页内容抓取失败，已尝试备用方式仍未成功。本次将改用搜索摘要继续回答，结果可能较少。",
+            )
+
+        if is_admin:
+            return (
+                "error",
+                "Tavily 网页加载器鉴权失败，已尝试备用方式仍未成功，本次无法获取网页正文。请到管理后台的联网搜索设置检查 Tavily API Key 和 Extract Base URL。",
+            )
+        return (
+            "error",
+            "网页内容抓取失败，已尝试备用方式仍未成功。",
+        )
+
     event_emitter = extra_params["__event_emitter__"]
     await event_emitter(
         {
@@ -2475,6 +2640,7 @@ async def chat_web_search_handler(
         return form_data
 
     all_results = []
+    emitted_loader_runtime_notices = set()
 
     for searchQuery in queries:
         await event_emitter(
@@ -2501,6 +2667,23 @@ async def chat_web_search_handler(
             )
 
             if results:
+                runtime_notice = results.get("loader_runtime_notice")
+                notification = build_tavily_loader_fallback_notification(runtime_notice)
+                if notification is not None:
+                    notice_key = json.dumps(runtime_notice, sort_keys=True, ensure_ascii=False)
+                    if notice_key not in emitted_loader_runtime_notices:
+                        emitted_loader_runtime_notices.add(notice_key)
+                        level, content = notification
+                        await event_emitter(
+                            {
+                                "type": "notification",
+                                "data": {
+                                    "type": level,
+                                    "content": content,
+                                },
+                            }
+                        )
+
                 all_results.append(results)
                 files = form_data.get("files", [])
 
@@ -3039,6 +3222,26 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 form_data["messages"],
             )
 
+    skill_ids = form_data.pop("skill_ids", None)
+    skill_selection_touched = bool(form_data.pop("skill_selection_touched", False))
+    model_skill_ids = (
+        (model.get("info", {}) or {}).get("meta", {}) or {}
+    ).get("skillIds", [])
+    skill_context = get_selected_skill_context(
+        user,
+        skill_ids,
+        [] if skill_selection_touched else model_skill_ids,
+    )
+    skill_system_prompt = build_skill_system_prompt(
+        skill_context["prompt_skills"],
+        requested_skill_ids=skill_context["requested_ids"],
+    )
+    if skill_system_prompt:
+        form_data["messages"] = add_or_update_system_message(
+            skill_system_prompt,
+            form_data.get("messages", []),
+        )
+
     tool_ids = form_data.pop("tool_ids", None)
     files = form_data.pop("files", None)
 
@@ -3048,6 +3251,19 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     metadata = {
         **metadata,
+        "selected_skill_ids": skill_context["resolved_ids"],
+        "selected_prompt_skills": [
+            {
+                "id": skill.id,
+                "name": skill.name,
+            }
+            for skill in skill_context["prompt_skills"]
+        ],
+        "selected_runnable_skills": build_skill_tool_context(
+            skill_context["runnable_skills"]
+        ),
+        "skill_selection_touched": skill_selection_touched,
+        "skill_ids": skill_context["resolved_ids"],
         "tool_ids": tool_ids,
         "files": files,
     }
@@ -3104,7 +3320,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     tool_calling_disabled = metadata.get("tool_calling_mode") == "off"
 
     if tool_ids and not tool_calling_disabled:
-        validate_tool_ids_access(tool_ids, user)
+        validate_tool_ids_access(tool_ids, user, request)
 
         # Ensure server-side toolkits are loaded before resolving tool_ids into callable specs.
         # This keeps /api/chat/completions robust even if /api/tools hasn't been called yet.
@@ -3146,6 +3362,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     strict_selected=True,
                 )
 
+        await ensure_selected_shared_tool_runtime_loaded(request, user, tool_ids)
+
         tools_dict = get_tools(
             request,
             tool_ids,
@@ -3178,6 +3396,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             or tool_ids
             or tool_servers
             or metadata.get("preview_tool_compat")
+            or (metadata.get("selected_runnable_skills") or {}).get("skill_ids")
         )
     ):
         builtin_tools = get_builtin_tools(request, user, metadata)
@@ -3555,6 +3774,13 @@ async def process_chat_response(
     # Non-streaming response
     if not isinstance(response, StreamingResponse):
         if event_emitter:
+            allow_base64_image_url_conversion = bool(
+                getattr(
+                    request.app.state.config,
+                    "ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION",
+                    False,
+                )
+            )
             if "error" in response:
                 error = response["error"].get("detail", response["error"])
                 Chats.upsert_message_to_chat_by_id_and_message_id(
@@ -3566,9 +3792,13 @@ async def process_chat_response(
                 )
 
             choices = response.get("choices", [])
-            if choices and choices[0].get("message", {}).get("content"):
-                raw_content = response["choices"][0]["message"]["content"]
-                content, message_files = _extract_stream_content_and_files(raw_content)
+            if choices and isinstance(choices[0], dict):
+                message_payload = choices[0].get("message", {}) or {}
+                content, message_files = _extract_stream_content_and_files(
+                    message_payload,
+                    allow_base64_image_url_conversion=allow_base64_image_url_conversion,
+                )
+                response_message = response["choices"][0].setdefault("message", {})
 
                 if message_files:
                     await event_emitter(
@@ -3578,9 +3808,10 @@ async def process_chat_response(
                         }
                     )
 
-                    response["choices"][0]["message"]["files"] = message_files
+                    response_message["files"] = message_files
 
-                response["choices"][0]["message"]["content"] = content
+                if isinstance(response_message, dict):
+                    response_message["content"] = content
 
                 if content or message_files:
                     completed_at = int(time.time())
@@ -3901,14 +4132,6 @@ async def process_chat_response(
                         if len(names) >= limit:
                             return names
                 return names
-
-            def has_nonempty_text_content(content_blocks):
-                for block in content_blocks:
-                    btype = block.get("type")
-                    if btype in ("text", "reasoning"):
-                        if str(block.get("content") or "").strip():
-                            return True
-                return False
 
             async def emit_tool_orchestration_status(stage: str, done: bool = False, **extra):
                 data = {
@@ -4305,6 +4528,14 @@ async def process_chat_response(
                             }
                         )
 
+                    allow_base64_image_url_conversion = bool(
+                        getattr(
+                            request.app.state.config,
+                            "ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION",
+                            False,
+                        )
+                    )
+
                     _stream_line_count = 0
                     _stream_data_count = 0
                     _stream_skip_count = 0
@@ -4646,7 +4877,8 @@ async def process_chat_response(
                                             tool_call_lookup[key] = resolved_idx
 
                                 value, streamed_files = _extract_stream_content_and_files(
-                                    delta.get("content")
+                                    delta,
+                                    allow_base64_image_url_conversion=allow_base64_image_url_conversion,
                                 )
                                 streamed_image = _consume_stream_image_delta(
                                     pending_stream_images,
@@ -6397,7 +6629,7 @@ async def process_chat_response(
                         low_gain_rounds=low_gain_rounds,
                     )
 
-                    if has_nonempty_text_content(content_blocks):
+                    if _has_nonempty_text_content(content_blocks):
                         consecutive_no_text_rounds = 0
                     else:
                         consecutive_no_text_rounds += 1
@@ -6556,14 +6788,14 @@ async def process_chat_response(
                             log.info(
                                 "[TOOL ORCH] round_stop round=%s has_text=%s pending_batches=%s",
                                 tool_call_retries,
-                                has_nonempty_text_content(content_blocks),
+                                _has_nonempty_text_content(content_blocks),
                                 len(tool_calls),
                             )
                             await emit_tool_orchestration_status(
                                 "round_stop",
                                 done=True,
                                 round=tool_call_retries,
-                                has_text=has_nonempty_text_content(content_blocks),
+                                has_text=_has_nonempty_text_content(content_blocks),
                                 pending_batches=len(tool_calls),
                             )
 
@@ -6744,16 +6976,18 @@ async def process_chat_response(
 
                 finalize_error_payload = None
 
-                if tool_call_retries > 0 and not has_nonempty_text_content(content_blocks):
+                if tool_call_retries > 0 and not _has_visible_assistant_output(
+                    content_blocks, message_files
+                ):
                     log.warning(
-                        "[TOOL ORCH] finalize_trigger reason=empty_text_after_tools tool_rounds=%s pending_batches=%s",
+                        "[TOOL ORCH] finalize_trigger reason=empty_output_after_tools tool_rounds=%s pending_batches=%s",
                         tool_call_retries,
                         len(tool_calls),
                     )
                     await emit_tool_orchestration_status(
                         "finalize_start",
                         done=False,
-                        reason="empty_text_after_tools",
+                        reason="empty_output_after_tools",
                         tool_rounds=tool_call_retries,
                         pending_batches=len(tool_calls),
                     )
@@ -6775,8 +7009,10 @@ async def process_chat_response(
                         if isinstance(res, StreamingResponse):
                             await stream_body_handler(res)
                             log.info(
-                                "[TOOL ORCH] finalize_stream_done has_text=%s",
-                                has_nonempty_text_content(content_blocks),
+                                "[TOOL ORCH] finalize_stream_done has_visible_output=%s",
+                                _has_visible_assistant_output(
+                                    content_blocks, message_files
+                                ),
                             )
                         else:
                             res_data = res
@@ -6839,8 +7075,10 @@ async def process_chat_response(
                     except Exception as e:
                         log.warning(f"[TOOL CALL] Final synthesis retry failed: {e}")
 
-                    final_has_text = has_nonempty_text_content(content_blocks)
-                    if not final_has_text:
+                    final_has_visible_output = _has_visible_assistant_output(
+                        content_blocks, message_files
+                    )
+                    if not final_has_visible_output:
                         recent_tool_names = collect_recent_tool_names(content_blocks)
                         tool_names_text = (
                             "、".join(recent_tool_names)
@@ -7100,7 +7338,9 @@ async def process_chat_response(
 
                 # Detect empty response (model returned 200 but no content).
                 # Common with reverse proxies / relay services that swallow errors.
-                if not finalize_error_payload and not has_nonempty_text_content(content_blocks):
+                if not finalize_error_payload and not _has_visible_assistant_output(
+                    content_blocks, message_files
+                ):
                     model_id_display = form_data.get("model", "unknown")
                     if _stream_api_error:
                         # Real API error caused the empty content — show truthful error

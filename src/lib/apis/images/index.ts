@@ -7,6 +7,7 @@ export type ImageGenerationRequest = {
 	size?: string;
 	image_size?: '512' | '1K' | '2K' | '4K' | string;
 	aspect_ratio?: string;
+	resolution?: string;
 	n?: number;
 	negative_prompt?: string;
 	credential_source?: 'auto' | 'personal' | 'shared';
@@ -17,10 +18,12 @@ export type ImageGenerationRequest = {
 
 export type ImageUsageConfig = {
 	enabled: boolean;
-	engine: 'openai' | 'gemini' | 'comfyui' | 'automatic1111' | string;
+	engine: 'openai' | 'gemini' | 'grok' | 'comfyui' | 'automatic1111' | string;
 	defaults: {
 		model?: string;
 		size?: string;
+		aspect_ratio?: string;
+		resolution?: string;
 		steps?: number;
 	};
 	shared_key: {
@@ -29,13 +32,15 @@ export type ImageUsageConfig = {
 	};
 	personal_key: {
 		supported: boolean;
-		provider: 'openai' | 'gemini' | null | string;
+		provider: 'openai' | 'gemini' | 'grok' | null | string;
 	};
 };
 
 export type ImageGenerationConfig = {
 	MODEL: string;
 	IMAGE_SIZE: string;
+	IMAGE_ASPECT_RATIO?: string;
+	IMAGE_RESOLUTION?: string;
 	IMAGE_STEPS: number;
 	IMAGE_MODEL_FILTER_REGEX?: string | null;
 };
@@ -43,12 +48,14 @@ export type ImageGenerationConfig = {
 export type ImageGenerationModel = {
 	id: string;
 	name?: string;
+	provider?: 'openai' | 'gemini' | 'grok' | string | null;
 	generation_mode?: string;
 	detection_method?: string;
 	supports_background?: boolean;
 	supports_batch?: boolean;
 	size_mode?: 'exact' | 'aspect_ratio' | 'unsupported' | string;
 	supports_image_size?: boolean;
+	supports_resolution?: boolean;
 	text_output_supported?: boolean;
 	source?: 'settings' | 'personal' | 'shared' | string | null;
 	connection_index?: number | null;

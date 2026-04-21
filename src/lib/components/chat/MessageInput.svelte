@@ -22,11 +22,18 @@
 	} from '$lib/stores';
 
 	import {
-		blobToFile,
 		compressImage,
 		convertHeicToJpeg,
 		createMessagesList,
+		extractInputVariables,
 		extractCurlyBraceWords,
+		getAge,
+		getCurrentDateTime,
+		getFormattedDate,
+		getFormattedTime,
+		getUserPosition,
+		getUserTimezone,
+		getWeekday,
 		isAnimatedImage,
 		isHeicFile
 	} from '$lib/utils';
@@ -39,6 +46,7 @@
 	import { uploadFile } from '$lib/apis/files';
 	import { generateAutoCompletion } from '$lib/apis';
 	import { deleteFileById } from '$lib/apis/files';
+	import { getSessionUser } from '$lib/apis/auths';
 
 	import { WEBUI_BASE_URL, WEBUI_API_BASE_URL, PASTED_TEXT_CHARACTER_LIMIT } from '$lib/constants';
 
@@ -47,10 +55,13 @@
 	import VoiceRecording from './MessageInput/VoiceRecording.svelte';
 	import FilesOverlay from './MessageInput/FilesOverlay.svelte';
 	import Commands from './MessageInput/Commands.svelte';
+	import InputVariablesModal from './MessageInput/InputVariablesModal.svelte';
 	import ThinkingControl from './MessageInput/ThinkingControl.svelte';
 	import SendMenu from './MessageInput/SendMenu.svelte';
+	import CommandSuggestionList from './MessageInput/CommandSuggestionList.svelte';
 
 	import RichTextInput from '../common/RichTextInput.svelte';
+	import { getSuggestionRenderer } from '../common/RichTextInput/suggestions';
 	import Tooltip from '../common/Tooltip.svelte';
 	import FileItem from '../common/FileItem.svelte';
 	import Image from '../common/Image.svelte';
@@ -60,11 +71,13 @@
 	import {
 		isWebSearchEnabled,
 		normalizeWebSearchMode,
-		type WebSearchMode
+		type WebSearchMode,
+		type WebSearchModeSource
 	} from '$lib/utils/web-search-mode';
 	import {
 		buildWebSearchModeOptions
 	} from '$lib/utils/native-web-search';
+	import { translateWithDefault } from '$lib/i18n';
 
 	import XMark from '../icons/XMark.svelte';
 	import Headphone from '../icons/Headphone.svelte';
@@ -74,6 +87,7 @@
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 	import ToolServersModal from './ToolServersModal.svelte';
 	import Wrench from '../icons/Wrench.svelte';
+	import Sparkles from '../icons/Sparkles.svelte';
 
 	const i18n = getContext('i18n');
 
@@ -102,14 +116,21 @@
 	export let toolServers = [];
 
 	export let selectedToolIds = [];
+	export let toolSelectionTouched = false;
+	export let selectedSkillIds = [];
+	export let skillSelectionTouched = false;
+	const tr = (key: string, defaultValue: string, options: Record<string, any> = {}) =>
+		translateWithDefault($i18n, key, defaultValue, options);
 
 	export let imageGenerationEnabled = false;
 	export let imageGenerationOptions: {
 		image_size?: string | null;
 		aspect_ratio?: string | null;
+		resolution?: string | null;
 		n?: number | null;
 	} = {};
 	export let webSearchMode: WebSearchMode = 'off';
+	export let webSearchModeSource: WebSearchModeSource = 'default';
 	export let codeInterpreterEnabled = false;
 
 	export let reasoningEffort: string | null = null;
@@ -119,12 +140,146 @@
 		prompt,
 		files,
 		selectedToolIds,
+		toolSelectionTouched,
+		selectedSkillIds,
+		skillSelectionTouched,
 		imageGenerationEnabled,
 		imageGenerationOptions,
 		webSearchMode,
+		webSearchModeSource,
+		webSearchModeTouched: webSearchModeSource === 'user',
 		reasoningEffort,
 		maxThinkingTokens
 	});
+
+	let suggestions = null;
+	let command = '';
+	let showInputVariablesModal = false;
+	let inputVariables = {};
+	let inputVariableValues = {};
+	let inputVariablesModalCallback = (_variableValues) => {};
+
+	const replaceVariablesInPlainText = (variables: Record<string, any>) => {
+		prompt = prompt.replace(/{{\s*([^|}]+)(?:\|[^}]*)?\s*}}/g, (match, varName) => {
+			const trimmedVarName = varName.trim();
+			return Object.prototype.hasOwnProperty.call(variables, trimmedVarName)
+				? String(variables[trimmedVarName])
+				: match;
+		});
+	};
+
+	const inputVariableHandler = async (text: string): Promise<string> => {
+		inputVariables = extractInputVariables(text);
+
+		if (Object.keys(inputVariables).length === 0) {
+			return text;
+		}
+
+		showInputVariablesModal = true;
+		return await new Promise<string>((resolve) => {
+			inputVariablesModalCallback = (variableValues) => {
+				inputVariableValues = { ...inputVariableValues, ...variableValues };
+				if (typeof chatInputElement?.replaceVariables === 'function') {
+					chatInputElement.replaceVariables(inputVariableValues);
+				} else {
+					replaceVariablesInPlainText(inputVariableValues);
+				}
+				showInputVariablesModal = false;
+				resolve(text);
+			};
+		});
+	};
+
+	const textVariableHandler = async (text: string) => {
+		if (text.includes('{{CLIPBOARD}}')) {
+			const clipboardText = await navigator.clipboard.readText().catch(() => {
+				toast.error($i18n.t('Failed to read clipboard contents'));
+				return '{{CLIPBOARD}}';
+			});
+
+			const clipboardItems = await navigator.clipboard.read().catch((error) => {
+				console.error('Failed to read clipboard items:', error);
+				return [];
+			});
+
+			for (const item of clipboardItems) {
+				for (const type of item.types) {
+					if (type.startsWith('image/')) {
+						const blob = await item.getType(type);
+						const file = new File([blob], `clipboard-image.${type.split('/')[1]}`, {
+							type
+						});
+						await inputFilesHandler([file]);
+					}
+				}
+			}
+
+			text = text.replaceAll('{{CLIPBOARD}}', clipboardText.replaceAll('\r\n', '\n'));
+		}
+
+		if (text.includes('{{USER_LOCATION}}')) {
+			let location;
+			try {
+				location = await getUserPosition();
+			} catch {
+				toast.error($i18n.t('Location access not allowed'));
+				location = 'LOCATION_UNKNOWN';
+			}
+			text = text.replaceAll('{{USER_LOCATION}}', String(location));
+		}
+
+		const sessionUser = await getSessionUser(localStorage.token).catch(() => null);
+
+		if (text.includes('{{USER_NAME}}')) {
+			text = text.replaceAll('{{USER_NAME}}', sessionUser?.name || 'User');
+		}
+
+		if (text.includes('{{USER_EMAIL}}') && sessionUser?.email) {
+			text = text.replaceAll('{{USER_EMAIL}}', sessionUser.email);
+		}
+
+		if (text.includes('{{USER_BIO}}') && sessionUser?.bio) {
+			text = text.replaceAll('{{USER_BIO}}', sessionUser.bio);
+		}
+
+		if (text.includes('{{USER_GENDER}}') && sessionUser?.gender) {
+			text = text.replaceAll('{{USER_GENDER}}', sessionUser.gender);
+		}
+
+		if (text.includes('{{USER_BIRTH_DATE}}') && sessionUser?.date_of_birth) {
+			text = text.replaceAll('{{USER_BIRTH_DATE}}', sessionUser.date_of_birth);
+		}
+
+		if (text.includes('{{USER_AGE}}') && sessionUser?.date_of_birth) {
+			text = text.replaceAll('{{USER_AGE}}', getAge(sessionUser.date_of_birth));
+		}
+
+		if (text.includes('{{USER_LANGUAGE}}')) {
+			text = text.replaceAll('{{USER_LANGUAGE}}', localStorage.getItem('locale') || 'en-US');
+		}
+
+		if (text.includes('{{CURRENT_DATE}}')) {
+			text = text.replaceAll('{{CURRENT_DATE}}', getFormattedDate());
+		}
+
+		if (text.includes('{{CURRENT_TIME}}')) {
+			text = text.replaceAll('{{CURRENT_TIME}}', getFormattedTime());
+		}
+
+		if (text.includes('{{CURRENT_DATETIME}}')) {
+			text = text.replaceAll('{{CURRENT_DATETIME}}', getCurrentDateTime());
+		}
+
+		if (text.includes('{{CURRENT_TIMEZONE}}')) {
+			text = text.replaceAll('{{CURRENT_TIMEZONE}}', getUserTimezone());
+		}
+
+		if (text.includes('{{CURRENT_WEEKDAY}}')) {
+			text = text.replaceAll('{{CURRENT_WEEKDAY}}', getWeekday());
+		}
+
+		return text;
+	};
 
 	$: normalizedWebSearchMode = normalizeWebSearchMode(webSearchMode, 'off');
 	$: webSearchActive = isWebSearchEnabled(normalizedWebSearchMode);
@@ -172,6 +327,11 @@
 		) {
 			webSearchMode = fallbackWebSearchMode;
 		}
+	};
+
+	const setWebSearchModeFromUser = (nextMode: WebSearchMode) => {
+		webSearchMode = normalizeWebSearchMode(nextMode, 'off');
+		webSearchModeSource = 'user';
 	};
 
 	afterUpdate(() => {
@@ -224,6 +384,7 @@
 
 	let inputFiles;
 	let dragged = false;
+	let dragCounter = 0;
 
 	let user = null;
 	export let placeholder = '';
@@ -239,6 +400,83 @@
 			top: element.scrollHeight,
 			behavior: 'auto'
 		});
+	};
+
+	const getCommand = () => {
+		const chatInput = document.getElementById('chat-input');
+		if (!chatInput) {
+			return '';
+		}
+
+		return chatInputElement?.getWordAtDocPos?.() ?? '';
+	};
+
+	const replaceCommandWithText = (text: string) => {
+		const chatInput = document.getElementById('chat-input');
+		if (!chatInput) {
+			return;
+		}
+
+		chatInputElement?.replaceCommandWithText?.(text);
+	};
+
+	const insertTextAtCursor = async (text: string) => {
+		const chatInput = document.getElementById('chat-input');
+		if (!chatInput) {
+			return;
+		}
+
+		text = await textVariableHandler(text);
+
+		if (command) {
+			replaceCommandWithText(text);
+		} else {
+			chatInputElement?.insertContent?.(text);
+		}
+
+		await tick();
+		text = await inputVariableHandler(text);
+		await tick();
+
+		const chatInputContainer = document.getElementById('chat-input-container');
+		if (chatInputContainer) {
+			chatInputContainer.scrollTop = chatInputContainer.scrollHeight;
+		}
+
+		await tick();
+		chatInputElement?.focus?.();
+		chatInput?.dispatchEvent(new Event('input'));
+	};
+
+	const replaceLastWordInTextarea = (replacement: string) => {
+		const lines = prompt.split('\n');
+		const lastLine = lines.pop() ?? '';
+		const words = lastLine.split(' ');
+		words.pop();
+
+		if (replacement) {
+			words.push(replacement);
+		}
+
+		lines.push(words.join(' '));
+		prompt = lines.join('\n');
+	};
+
+	const insertTextIntoTextareaPrompt = async (text: string) => {
+		const textarea = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+		if (!textarea) {
+			return;
+		}
+
+		text = await textVariableHandler(text);
+		replaceLastWordInTextarea(text);
+
+		await tick();
+		text = await inputVariableHandler(text);
+		await tick();
+
+		textarea.focus();
+		textarea.dispatchEvent(new Event('input'));
 	};
 
 	const screenCaptureHandler = async () => {
@@ -266,10 +504,14 @@
 			// bring back focus to this current tab, so that the user can see the screen capture
 			window.focus();
 
-			// Convert the canvas to a Base64 image URL
-			const imageUrl = canvas.toDataURL('image/png');
-			// Add the captured image to the files array to render it
-			files = [...files, { type: 'image', url: imageUrl }];
+			const imageBlob = await new Promise<Blob | null>((resolve) =>
+				canvas.toBlob(resolve, 'image/png')
+			);
+			if (!imageBlob) {
+				throw new Error('Failed to capture screen image');
+			}
+
+			await uploadImageFileHandler(createNamedImageFile(imageBlob, 'Screen_Capture'));
 			// Clean memory: Clear video srcObject
 			video.srcObject = null;
 		} catch (error) {
@@ -281,6 +523,30 @@
 	const getUploadLocalizeOptions = () => ({
 		isAdmin: $_user?.role === 'admin'
 	});
+
+	const IMAGE_INPUT_MIME_TYPES = [
+		'image/gif',
+		'image/webp',
+		'image/jpeg',
+		'image/png',
+		'image/avif'
+	];
+
+	const buildUploadedImageContentUrl = (id: string) => `${WEBUI_API_BASE_URL}/files/${id}/content`;
+
+	const revokePreviewUrl = (value: unknown) => {
+		if (typeof value === 'string' && value.startsWith('blob:')) {
+			URL.revokeObjectURL(value);
+		}
+	};
+
+	const createNamedImageFile = (blob: Blob, namePrefix: string) => {
+		const mimeType = blob.type || 'image/png';
+		const extension = mimeType.split('/').at(1)?.split('+').at(0) || 'png';
+		const existingName = blob instanceof File ? blob.name : '';
+		const filename = existingName || `${namePrefix}_${Date.now()}.${extension}`;
+		return new File([blob], filename, { type: mimeType });
+	};
 
 	const setUploadFailure = (tempItemId: string, error: unknown) => {
 		const localized = getLocalizedFileUploadDiagnostic(
@@ -310,6 +576,72 @@
 		);
 
 		toast.error(localizeFileUploadError(error, $i18n.t.bind($i18n), getUploadLocalizeOptions()));
+	};
+
+	const uploadImageFileHandler = async (file: File) => {
+		if ($_user?.role !== 'admin' && !($_user?.permissions?.chat?.file_upload ?? true)) {
+			toast.error($i18n.t('You do not have permission to upload files.'));
+			return null;
+		}
+
+		const tempItemId = uuidv4();
+		const previewUrl = URL.createObjectURL(file);
+		const fileItem = {
+			type: 'image',
+			id: null,
+			url: '',
+			name: file.name,
+			size: file.size,
+			content_type: file.type,
+			status: 'uploading',
+			error: '',
+			errorTitle: '',
+			errorHint: '',
+			diagnostic: null,
+			itemId: tempItemId,
+			preview_url: previewUrl
+		};
+
+		if (fileItem.size == 0) {
+			revokePreviewUrl(previewUrl);
+			toast.error($i18n.t('You cannot upload an empty file.'));
+			return null;
+		}
+
+		files = [...files, fileItem];
+
+		try {
+			const uploadedFile = await uploadFile(localStorage.token, file, {
+				process: false
+			});
+
+			if (uploadedFile) {
+				if (uploadedFile.error) {
+					toast.warning(
+						localizeFileUploadError(
+							uploadedFile.error,
+							$i18n.t.bind($i18n),
+							getUploadLocalizeOptions()
+						)
+					);
+				}
+
+				fileItem.status = 'uploaded';
+				fileItem.id = uploadedFile.id;
+				fileItem.name = uploadedFile?.meta?.name ?? file.name;
+				fileItem.size = uploadedFile?.meta?.size ?? file.size;
+				fileItem.content_type = uploadedFile?.meta?.content_type ?? file.type;
+				fileItem.url = buildUploadedImageContentUrl(uploadedFile.id);
+				revokePreviewUrl(fileItem.preview_url);
+				delete fileItem.preview_url;
+
+				files = files;
+			} else {
+				setUploadFailure(tempItemId, new Error($i18n.t('Failed to upload file.')));
+			}
+		} catch (e) {
+			setUploadFailure(tempItemId, e);
+		}
 	};
 
 	const uploadFileHandler = async (file, fullContext: boolean = false) => {
@@ -429,78 +761,131 @@
 			}
 
 			if (
-				['image/gif', 'image/webp', 'image/jpeg', 'image/png', 'image/avif'].includes(file['type'])
+				IMAGE_INPUT_MIME_TYPES.includes(file['type'])
 			) {
 				if (visionCapableModels.length === 0) {
 					toast.error($i18n.t('Selected model(s) do not support image inputs'));
 					continue;
 				}
-				let reader = new FileReader();
-				reader.onload = async (event) => {
-					let imageUrl = event.target.result;
+				if (($settings?.imageCompression ?? false) && !isAnimatedImage(file)) {
+					const width = $settings?.imageCompressionSize?.width ?? null;
+					const height = $settings?.imageCompressionSize?.height ?? null;
 
-					if (($settings?.imageCompression ?? false) && !isAnimatedImage(file)) {
-						const width = $settings?.imageCompressionSize?.width ?? null;
-						const height = $settings?.imageCompressionSize?.height ?? null;
-
-						if (width || height) {
-							imageUrl = await compressImage(imageUrl, width, height);
-						}
+					if (width || height) {
+						const tempPreviewUrl = URL.createObjectURL(file);
+						const imageUrl = await compressImage(tempPreviewUrl, width, height).finally(() => {
+							revokePreviewUrl(tempPreviewUrl);
+						});
+						const response = await fetch(imageUrl);
+						const imageBlob = await response.blob();
+						file = createNamedImageFile(imageBlob, file.name.replace(/\.[^.]+$/, '') || 'Image');
 					}
+				}
 
-					files = [
-						...files,
-						{
-							type: 'image',
-							url: `${imageUrl}`
-						}
-					];
-				};
-				reader.readAsDataURL(file);
+				await uploadImageFileHandler(file);
 			} else {
-				uploadFileHandler(file);
+				await uploadFileHandler(file);
 			}
 		}
+	};
+
+	const removeInputFile = async (fileIdx: number) => {
+		const file = files[fileIdx];
+		if (!file) {
+			return;
+		}
+
+		if (file.itemId && file.id && file.type !== 'collection' && !file?.collection) {
+			try {
+				await deleteFileById(localStorage.token, file.id);
+			} catch (error) {
+				console.error('Failed to delete uploaded file:', error);
+			}
+		}
+
+		revokePreviewUrl(file?.preview_url);
+		files.splice(fileIdx, 1);
+		files = files;
 	};
 
 	const handleKeyDown = (event: KeyboardEvent) => {
 		if (event.key === 'Escape') {
 			console.log('Escape');
+			dragCounter = 0;
 			dragged = false;
 		}
+	};
+
+	const onDragEnter = (e) => {
+		if (!e.dataTransfer?.types?.includes('Files')) return;
+		dragCounter++;
+		dragged = true;
 	};
 
 	const onDragOver = (e) => {
 		e.preventDefault();
-
-		// Check if a file is being dragged.
-		if (e.dataTransfer?.types?.includes('Files')) {
-			dragged = true;
-		} else {
-			dragged = false;
-		}
 	};
 
 	const onDragLeave = () => {
-		dragged = false;
+		if (dragCounter > 0) dragCounter--;
+		if (dragCounter === 0) dragged = false;
 	};
 
 	const onDrop = async (e) => {
 		e.preventDefault();
-		console.log(e);
+
+		dragCounter = 0;
+		dragged = false;
 
 		if (e.dataTransfer?.files) {
 			const inputFiles = Array.from(e.dataTransfer?.files);
 			if (inputFiles && inputFiles.length > 0) {
-				console.log(inputFiles);
-				inputFilesHandler(inputFiles);
+				await inputFilesHandler(inputFiles);
 			}
 		}
-
-		dragged = false;
 	};
 
 	onMount(async () => {
+		suggestions = ['@', '/', '#', '$'].map((char) => ({
+			char,
+			render: getSuggestionRenderer(CommandSuggestionList, {
+				i18n,
+				onSelect: (event) => {
+					const { type, data } = event;
+
+					if (type === 'model') {
+						atSelectedModel = data;
+					}
+
+					document.getElementById('chat-input')?.focus();
+				},
+				insertTextHandler: insertTextAtCursor,
+				onUpload: (event) => {
+					const { type, data } = event;
+
+					if (type === 'file') {
+						if (files.find((file) => file.id === data.id)) {
+							return;
+						}
+
+						files = [
+							...files,
+							{
+								...data,
+								status: 'processed'
+							}
+						];
+					} else {
+						if (files.find((file) => file.url === data || file.name === data)) {
+							return;
+						}
+
+						dispatch('upload', event);
+					}
+				}
+			})
+		}));
+
 		loaded = true;
 
 		window.setTimeout(() => {
@@ -514,6 +899,7 @@
 
 		const dropzoneElement = document.getElementById('chat-container');
 
+		dropzoneElement?.addEventListener('dragenter', onDragEnter);
 		dropzoneElement?.addEventListener('dragover', onDragOver);
 		dropzoneElement?.addEventListener('drop', onDrop);
 		dropzoneElement?.addEventListener('dragleave', onDragLeave);
@@ -525,16 +911,26 @@
 		const dropzoneElement = document.getElementById('chat-container');
 
 		if (dropzoneElement) {
+			dropzoneElement?.removeEventListener('dragenter', onDragEnter);
 			dropzoneElement?.removeEventListener('dragover', onDragOver);
 			dropzoneElement?.removeEventListener('drop', onDrop);
 			dropzoneElement?.removeEventListener('dragleave', onDragLeave);
+		}
+
+		for (const file of files) {
+			revokePreviewUrl(file?.preview_url);
 		}
 	});
 </script>
 
 <FilesOverlay show={dragged} />
 
-<ToolServersModal bind:show={showTools} {selectedToolIds} />
+<ToolServersModal bind:show={showTools} {selectedToolIds} {selectedSkillIds} />
+<InputVariablesModal
+	bind:show={showInputVariablesModal}
+	variables={inputVariables}
+	onSave={inputVariablesModalCallback}
+/>
 
 {#if loaded}
 	<div class="w-full font-primary">
@@ -574,7 +970,7 @@
 				</div>
 
 				<div class="w-full relative">
-					{#if atSelectedModel !== undefined || selectedToolIds.length > 0 || webSearchActive || imageGenerationEnabled || codeInterpreterEnabled}
+					{#if atSelectedModel !== undefined || selectedToolIds.length > 0 || selectedSkillIds.length > 0 || webSearchActive || imageGenerationEnabled || codeInterpreterEnabled}
 						<div
 							class="px-3 pb-0.5 pt-1.5 text-left w-full flex flex-col absolute bottom-0 left-0 right-0 bg-linear-to-t from-white dark:from-gray-900 z-10"
 						>
@@ -588,9 +984,7 @@
 												?.profile_image_url ??
 												$models.find((model) => model.id === atSelectedModel.id)?.meta
 													?.profile_image_url ??
-												($i18n.language === 'dg-DG'
-													? `/doge.png`
-													: `${WEBUI_BASE_URL}/static/favicon.png`)}
+												`${WEBUI_BASE_URL}/static/favicon.png`}
 										/>
 										<div class="translate-y-[0.5px]">
 											Talking to <span class=" font-medium"
@@ -613,24 +1007,26 @@
 						</div>
 					{/if}
 
-					<Commands
-						bind:this={commandsElement}
-						bind:prompt
-						bind:files
-						on:upload={(e) => {
-							dispatch('upload', e.detail);
-						}}
-						on:select={(e) => {
-							const data = e.detail;
+					{#if !($settings?.richTextInput ?? true)}
+						<Commands
+							bind:this={commandsElement}
+							bind:prompt
+							bind:files
+							insertTextHandler={insertTextIntoTextareaPrompt}
+							on:upload={(e) => {
+								dispatch('upload', e.detail);
+							}}
+							on:select={(e) => {
+								const data = e.detail;
 
-							if (data?.type === 'model') {
-								atSelectedModel = data.data;
-							}
+								if (data?.type === 'model') {
+									atSelectedModel = data.data;
+								}
 
-							const chatInputElement = document.getElementById('chat-input');
-							chatInputElement?.focus();
-						}}
-					/>
+								document.getElementById('chat-input')?.focus();
+							}}
+						/>
+					{/if}
 				</div>
 			</div>
 		</div>
@@ -651,7 +1047,7 @@
 						on:change={async () => {
 							if (inputFiles && inputFiles.length > 0) {
 								const _inputFiles = Array.from(inputFiles);
-								inputFilesHandler(_inputFiles);
+								await inputFilesHandler(_inputFiles);
 							} else {
 								toast.error($i18n.t(`File not found.`));
 							}
@@ -711,7 +1107,7 @@
 												<div class="relative group shrink-0">
 													<div class="relative flex items-center rounded-xl ring-1 ring-gray-200/60 dark:ring-white/10">
 														<Image
-															src={file.url}
+															src={file.preview_url || file.url}
 															alt="input"
 															imageClassName=" size-14 rounded-xl object-cover"
 														/>
@@ -745,9 +1141,8 @@
 														<button
 															class="bg-gray-900/70 dark:bg-gray-700/90 text-white border border-white/20 dark:border-gray-500/30 rounded-full group-hover:visible invisible transition backdrop-blur-sm p-px"
 															type="button"
-															on:click={() => {
-																files.splice(fileIdx, 1);
-																files = files;
+															on:click={async () => {
+																await removeInputFile(fileIdx);
 															}}
 														>
 															<svg
@@ -774,7 +1169,7 @@
 													dismissible={true}
 													edit={true}
 													on:dismiss={async () => {
-														if (file.type !== 'collection' && !file?.collection) {
+														if (file.itemId && file.type !== 'collection' && !file?.collection) {
 															if (file.id) {
 																// This will handle both file deletion and Chroma cleanup
 																await deleteFileById(localStorage.token, file.id);
@@ -802,7 +1197,7 @@
 										>
 											<RichTextInput
 												bind:this={chatInputElement}
-												bind:value={prompt}
+												value={prompt}
 												id="chat-input"
 												messageInput={true}
 												showFormattingToolbar={$settings?.showFormattingToolbar ?? false}
@@ -818,6 +1213,11 @@
 												largeTextAsFile={$settings?.largeTextAsFile ?? false}
 												autocomplete={$config?.features?.enable_autocomplete_generation &&
 													($settings?.promptAutocomplete ?? false)}
+												{suggestions}
+												onChange={(content) => {
+													prompt = content.md;
+													command = getCommand();
+												}}
 												generateAutoCompletion={async (text) => {
 													if (selectedModelIds.length === 0 || !selectedModelIds.at(0)) {
 														toast.error($i18n.t('Please select a model first.'));
@@ -844,15 +1244,14 @@
 												on:keydown={async (e) => {
 													e = e.detail.event;
 
-													const isCtrlPressed = e.ctrlKey || e.metaKey; // metaKey is for Cmd key on Mac
-													const commandsContainerElement =
-														document.getElementById('commands-container');
+													const isCtrlPressed = e.ctrlKey || e.metaKey;
+													const suggestionsContainerElement =
+														document.getElementById('suggestions-container');
 
 													if (e.key === 'Escape') {
 														stopResponse();
 													}
 
-													// Command/Ctrl + Shift + Enter to submit a message pair
 													if (isCtrlPressed && e.key === 'Enter' && e.shiftKey) {
 														e.preventDefault();
 														createMessagePair(prompt);
@@ -875,51 +1274,7 @@
 														}
 													}
 
-													if (commandsContainerElement) {
-														if (commandsContainerElement && e.key === 'ArrowUp') {
-															e.preventDefault();
-															commandsElement.selectUp();
-
-															const commandOptionButton = [
-																...document.getElementsByClassName('selected-command-option-button')
-															]?.at(-1);
-															commandOptionButton.scrollIntoView({ block: 'center' });
-														}
-
-														if (commandsContainerElement && e.key === 'ArrowDown') {
-															e.preventDefault();
-															commandsElement.selectDown();
-
-															const commandOptionButton = [
-																...document.getElementsByClassName('selected-command-option-button')
-															]?.at(-1);
-															commandOptionButton.scrollIntoView({ block: 'center' });
-														}
-
-														if (commandsContainerElement && e.key === 'Tab') {
-															e.preventDefault();
-
-															const commandOptionButton = [
-																...document.getElementsByClassName('selected-command-option-button')
-															]?.at(-1);
-
-															commandOptionButton?.click();
-														}
-
-														if (commandsContainerElement && e.key === 'Enter') {
-															e.preventDefault();
-
-															const commandOptionButton = [
-																...document.getElementsByClassName('selected-command-option-button')
-															]?.at(-1);
-
-															if (commandOptionButton) {
-																commandOptionButton?.click();
-															} else {
-																document.getElementById('send-message-button')?.click();
-															}
-														}
-													} else {
+													if (!suggestionsContainerElement) {
 														if (
 															!$mobile ||
 															!(
@@ -932,10 +1287,6 @@
 																return;
 															}
 
-															// Uses keyCode '13' for Enter key for chinese/japanese keyboards.
-															//
-															// Depending on the user's settings, it will send the message
-															// either when Enter is pressed or when Ctrl+Enter is pressed.
 															const enterPressed =
 																($settings?.ctrlEnterToSend ?? false)
 																	? (e.key === 'Enter' || e.keyCode === 13) && isCtrlPressed
@@ -950,17 +1301,18 @@
 														}
 													}
 
-													if (e.key === 'Escape') {
-														console.log('Escape');
-														atSelectedModel = undefined;
-														selectedToolIds = [];
-														webSearchMode = 'off';
-														imageGenerationEnabled = false;
-													}
-												}}
+															if (e.key === 'Escape') {
+																atSelectedModel = undefined;
+																selectedToolIds = [];
+																toolSelectionTouched = true;
+																selectedSkillIds = [];
+																skillSelectionTouched = true;
+																setWebSearchModeFromUser('off');
+																imageGenerationEnabled = false;
+															}
+													}}
 												on:paste={async (e) => {
 													e = e.detail.event;
-													console.log(e);
 
 													const clipboardData = e.clipboardData || window.clipboardData;
 
@@ -976,19 +1328,9 @@
 																		continue;
 																	}
 																}
-																const reader = new FileReader();
-
-																reader.onload = function (e) {
-																	files = [
-																		...files,
-																		{
-																			type: 'image',
-																			url: `${e.target.result}`
-																		}
-																	];
-																};
-
-																reader.readAsDataURL(blob);
+																await uploadImageFileHandler(
+																	createNamedImageFile(blob, 'Pasted_Image')
+																);
 															} else if (item.type === 'text/plain') {
 																if ($settings?.largeTextAsFile ?? false) {
 																	const text = clipboardData.getData('text/plain');
@@ -1153,14 +1495,17 @@
 													e.target.style.height = Math.min(e.target.scrollHeight, 320) + 'px';
 												}
 
-												if (e.key === 'Escape') {
-													console.log('Escape');
-													atSelectedModel = undefined;
-													selectedToolIds = [];
-													webSearchMode = 'off';
-													imageGenerationEnabled = false;
-												}
-											}}
+													if (e.key === 'Escape') {
+														console.log('Escape');
+														atSelectedModel = undefined;
+														selectedToolIds = [];
+														toolSelectionTouched = true;
+														selectedSkillIds = [];
+														skillSelectionTouched = true;
+														setWebSearchModeFromUser('off');
+														imageGenerationEnabled = false;
+													}
+												}}
 											rows="1"
 											on:input={async (e) => {
 												e.target.style.height = '';
@@ -1185,19 +1530,9 @@
 																	continue;
 																}
 															}
-															const reader = new FileReader();
-
-															reader.onload = function (e) {
-																files = [
-																	...files,
-																	{
-																		type: 'image',
-																		url: `${e.target.result}`
-																	}
-																];
-															};
-
-															reader.readAsDataURL(blob);
+															await uploadImageFileHandler(
+																createNamedImageFile(blob, 'Pasted_Image')
+															);
 														} else if (item.type === 'text/plain') {
 															if ($settings?.largeTextAsFile ?? false) {
 																const text = clipboardData.getData('text/plain');
@@ -1222,12 +1557,16 @@
 
 								<div class=" flex justify-between mt-1.5 mb-3 mx-0.5 max-w-full" dir="ltr">
 									<div class="ml-1 self-end flex items-center flex-1 max-w-[80%] gap-0.5">
-														<InputMenu
-															bind:selectedToolIds
-															bind:webSearchMode
-															{webSearchModeOptions}
-															bind:imageGenerationEnabled
-															bind:codeInterpreterEnabled
+										<InputMenu
+											bind:selectedToolIds
+											bind:toolSelectionTouched
+											bind:selectedSkillIds
+											bind:skillSelectionTouched
+											bind:webSearchMode
+											{webSearchModeOptions}
+											onWebSearchModeChange={setWebSearchModeFromUser}
+											bind:imageGenerationEnabled
+											bind:codeInterpreterEnabled
 											{screenCaptureHandler}
 											{inputFilesHandler}
 											uploadFilesHandler={() => {
@@ -1317,15 +1656,37 @@
 												</Tooltip>
 											{/if}
 
+											{#if selectedSkillIds.length > 0}
+												<Tooltip
+													content={`已选择 ${selectedSkillIds.length} 个技能`}
+												>
+													<button
+														class="translate-y-[0.5px] flex gap-1 items-center text-amber-700 dark:text-amber-300 hover:text-amber-800 dark:hover:text-amber-200 rounded-lg p-1 self-center transition"
+														aria-label="Selected Skills"
+														type="button"
+														on:click={() => {
+															showTools = !showTools;
+														}}
+													>
+														<Sparkles className="size-4" />
+														<span class="text-sm font-medium">
+															{selectedSkillIds.length}
+														</span>
+													</button>
+												</Tooltip>
+											{/if}
+
 											{#if activeAssistant}
 												<Tooltip
-													content={`当前助手：${activeAssistant.name}${activeAssistant.description ? `\n${activeAssistant.description}` : ''}`}
+													content={`${tr('当前助手', 'Current Assistant')}: ${activeAssistant.name}${activeAssistant.description ? `\n${activeAssistant.description}` : ''}`}
 													placement="top"
 												>
 													<button
 														type="button"
 														class={`${featureBadgeBaseClass} px-2.5 py-1.5 gap-1.5 max-w-[13rem]`}
-														aria-label={`关闭助手 ${activeAssistant.name}`}
+														aria-label={tr('关闭助手 {{name}}', 'Close assistant {{name}}', {
+															name: activeAssistant.name
+														})}
 														on:click={() => {
 															onDeactivateAssistant?.();
 														}}
@@ -1346,15 +1707,18 @@
 
 											{#if $_user}
 													{#if webSearchFeatureEnabled && ($_user.role === 'admin' || $_user?.permissions?.features?.web_search) && webSearchActive}
-													<Tooltip content={`${currentWebSearchTooltip}，点击关闭`} placement="top">
+													<Tooltip
+														content={`${currentWebSearchTooltip} ${tr('点击关闭', 'Click to disable')}`}
+														placement="top"
+													>
 														<button
 															type="button"
 															class={webSearchBadgeClass}
-															aria-label={$i18n.t('关闭联网搜索')}
-															on:click={() => {
-																webSearchMode = 'off';
-															}}
-														>
+																aria-label={$i18n.t('关闭联网搜索')}
+																on:click={() => {
+																	setWebSearchModeFromUser('off');
+																}}
+															>
 															<span class={featureBadgeIconSlotClass}>
 																<GlobeAlt
 																	className={`${webSearchIconClass} ${featureBadgePrimaryIconMotionClass}`}

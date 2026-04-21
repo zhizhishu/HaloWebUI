@@ -181,13 +181,14 @@ def test_get_tools_exposes_mcp_tool_and_routes_call(monkeypatch):
     user = SimpleNamespace(id="u1", role="admin")
 
     tools = tools_mod.get_tools(request, ["mcp:0"], user, extra_params={})
-    assert "mcp_0__foo_bar" in tools
-    spec = tools["mcp_0__foo_bar"]["spec"]
-    assert spec["name"] == "mcp_0__foo_bar"
+    tool_key = "mcp_tool_0__foo_bar"
+    assert tool_key in tools
+    spec = tools[tool_key]["spec"]
+    assert spec["name"] == tool_key
     assert spec["parameters"]["type"] == "object"
 
     async def run():
-        out = await tools["mcp_0__foo_bar"]["callable"](a="x")
+        out = await tools[tool_key]["callable"](a="x")
         return out
 
     out = asyncio.run(run())
@@ -1049,6 +1050,11 @@ def test_mcp_servers_config_get_includes_runtime_capabilities(monkeypatch):
 
     monkeypatch.setattr(
         configs_router,
+        "_attach_shared_connection_metadata",
+        lambda _user_id, _server_type, connections: connections,
+    )
+    monkeypatch.setattr(
+        configs_router,
         "get_user_mcp_server_connections",
         lambda _request, _user: [{"transport_type": "http", "url": "http://example.com"}],
     )
@@ -1062,7 +1068,7 @@ def test_mcp_servers_config_get_includes_runtime_capabilities(monkeypatch):
     async def run():
         return await configs_router.get_mcp_servers_config(
             SimpleNamespace(),
-            SimpleNamespace(role="admin"),
+            SimpleNamespace(id="u1", role="admin"),
         )
 
     result = asyncio.run(run())
@@ -1077,6 +1083,19 @@ def test_mcp_servers_config_post_includes_runtime_capabilities(monkeypatch):
 
     saved = {}
 
+    async def fake_sync_shared_connections(_user_id, _previous_connections, connections):
+        return connections
+
+    monkeypatch.setattr(
+        configs_router,
+        "_sync_shared_mcp_connections",
+        fake_sync_shared_connections,
+    )
+    monkeypatch.setattr(
+        configs_router,
+        "_attach_shared_connection_metadata",
+        lambda _user_id, _server_type, connections: connections,
+    )
     monkeypatch.setattr(
         configs_router,
         "set_user_mcp_server_connections",
@@ -1102,7 +1121,7 @@ def test_mcp_servers_config_post_includes_runtime_capabilities(monkeypatch):
         return await configs_router.set_mcp_servers_config(
             SimpleNamespace(),
             form_data,
-            user=SimpleNamespace(role="admin"),
+            user=SimpleNamespace(id="u1", role="admin"),
         )
 
     result = asyncio.run(run())
@@ -1117,6 +1136,19 @@ def test_mcp_servers_config_post_round_trips_headers(monkeypatch):
 
     saved = {}
 
+    async def fake_sync_shared_connections(_user_id, _previous_connections, connections):
+        return connections
+
+    monkeypatch.setattr(
+        configs_router,
+        "_sync_shared_mcp_connections",
+        fake_sync_shared_connections,
+    )
+    monkeypatch.setattr(
+        configs_router,
+        "_attach_shared_connection_metadata",
+        lambda _user_id, _server_type, connections: connections,
+    )
     monkeypatch.setattr(
         configs_router,
         "set_user_mcp_server_connections",
@@ -1140,7 +1172,7 @@ def test_mcp_servers_config_post_round_trips_headers(monkeypatch):
         return await configs_router.set_mcp_servers_config(
             SimpleNamespace(),
             form_data,
-            user=SimpleNamespace(role="admin"),
+            user=SimpleNamespace(id="u1", role="admin"),
         )
 
     result = asyncio.run(run())

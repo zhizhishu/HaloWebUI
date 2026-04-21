@@ -67,6 +67,7 @@ from open_webui.routers import (
     ollama,
     openai,
     gemini,
+    grok,
     anthropic,
     retrieval,
     tasks,
@@ -118,8 +119,12 @@ from open_webui.config import (
     OLLAMA_API_CONFIGS,
     # OpenAI
     ENABLE_OPENAI_API,
+    ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION,
+    CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE,
     # Gemini
     ENABLE_GEMINI_API,
+    # Grok
+    ENABLE_GROK_API,
     ONEDRIVE_CLIENT_ID,
     OPENAI_API_BASE_URLS,
     OPENAI_API_KEYS,
@@ -127,6 +132,9 @@ from open_webui.config import (
     GEMINI_API_BASE_URLS,
     GEMINI_API_KEYS,
     GEMINI_API_CONFIGS,
+    GROK_API_BASE_URLS,
+    GROK_API_KEYS,
+    GROK_API_CONFIGS,
     # Anthropic
     ENABLE_ANTHROPIC_API,
     ANTHROPIC_API_BASE_URLS,
@@ -191,6 +199,8 @@ from open_webui.config import (
     IMAGE_GENERATION_MODEL,
     IMAGE_MODEL_FILTER_REGEX,
     IMAGE_SIZE,
+    IMAGE_ASPECT_RATIO,
+    IMAGE_RESOLUTION,
     IMAGE_STEPS,
     IMAGES_OPENAI_API_BASE_URL,
     IMAGES_OPENAI_API_FORCE_MODE,
@@ -198,6 +208,8 @@ from open_webui.config import (
     IMAGES_GEMINI_API_BASE_URL,
     IMAGES_GEMINI_API_FORCE_MODE,
     IMAGES_GEMINI_API_KEY,
+    IMAGES_GROK_API_BASE_URL,
+    IMAGES_GROK_API_KEY,
     # Audio
     AUDIO_STT_ENGINE,
     AUDIO_STT_MODEL,
@@ -460,6 +472,7 @@ from open_webui.env import (
     WEBUI_ADMIN_NAME,
     ENABLE_API_RATE_LIMIT,
     API_RATE_LIMIT_RPM,
+    UVICORN_WORKERS,
     load_changelog,
 )
 
@@ -662,6 +675,12 @@ app.state.config.ENABLE_OPENAI_API = ENABLE_OPENAI_API
 app.state.config.OPENAI_API_BASE_URLS = OPENAI_API_BASE_URLS
 app.state.config.OPENAI_API_KEYS = OPENAI_API_KEYS
 app.state.config.OPENAI_API_CONFIGS = OPENAI_API_CONFIGS
+app.state.config.ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION = (
+    ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION
+)
+app.state.config.CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE = (
+    CHAT_STREAM_RESPONSE_CHUNK_MAX_BUFFER_SIZE
+)
 
 app.state.OPENAI_MODELS = {}
 
@@ -678,6 +697,19 @@ app.state.config.GEMINI_API_KEYS = GEMINI_API_KEYS
 app.state.config.GEMINI_API_CONFIGS = GEMINI_API_CONFIGS
 
 app.state.GEMINI_MODELS = {}
+
+########################################
+#
+# GROK
+#
+########################################
+
+app.state.config.ENABLE_GROK_API = ENABLE_GROK_API
+app.state.config.GROK_API_BASE_URLS = GROK_API_BASE_URLS
+app.state.config.GROK_API_KEYS = GROK_API_KEYS
+app.state.config.GROK_API_CONFIGS = GROK_API_CONFIGS
+
+app.state.GROK_MODELS = {}
 
 ########################################
 #
@@ -923,6 +955,8 @@ app.state.config.RAG_OLLAMA_API_KEY = RAG_OLLAMA_API_KEY
 
 app.state.config.PDF_EXTRACT_IMAGES = PDF_EXTRACT_IMAGES
 app.state.config.PDF_LOADING_MODE = PDF_LOADING_MODE
+# Legacy alias kept for older clients still sending/reading `PDF_LOADER_MODE`.
+app.state.config.PDF_LOADER_MODE = PDF_LOADING_MODE
 
 app.state.config.YOUTUBE_LOADER_LANGUAGE = YOUTUBE_LOADER_LANGUAGE
 app.state.config.YOUTUBE_LOADER_PROXY_URL = YOUTUBE_LOADER_PROXY_URL
@@ -1046,6 +1080,9 @@ app.state.config.IMAGES_GEMINI_API_BASE_URL = IMAGES_GEMINI_API_BASE_URL
 app.state.config.IMAGES_GEMINI_API_FORCE_MODE = IMAGES_GEMINI_API_FORCE_MODE
 app.state.config.IMAGES_GEMINI_API_KEY = IMAGES_GEMINI_API_KEY
 
+app.state.config.IMAGES_GROK_API_BASE_URL = IMAGES_GROK_API_BASE_URL
+app.state.config.IMAGES_GROK_API_KEY = IMAGES_GROK_API_KEY
+
 app.state.config.IMAGE_GENERATION_MODEL = IMAGE_GENERATION_MODEL
 app.state.config.IMAGE_MODEL_FILTER_REGEX = IMAGE_MODEL_FILTER_REGEX
 
@@ -1060,6 +1097,8 @@ app.state.config.COMFYUI_WORKFLOW = COMFYUI_WORKFLOW
 app.state.config.COMFYUI_WORKFLOW_NODES = COMFYUI_WORKFLOW_NODES
 
 app.state.config.IMAGE_SIZE = IMAGE_SIZE
+app.state.config.IMAGE_ASPECT_RATIO = IMAGE_ASPECT_RATIO
+app.state.config.IMAGE_RESOLUTION = IMAGE_RESOLUTION
 app.state.config.IMAGE_STEPS = IMAGE_STEPS
 
 
@@ -1288,6 +1327,7 @@ app.mount("/ws", socket_app)
 app.include_router(ollama.router, prefix="/ollama", tags=["ollama"])
 app.include_router(openai.router, prefix="/openai", tags=["openai"])
 app.include_router(gemini.router, prefix="/gemini", tags=["gemini"])
+app.include_router(grok.router, prefix="/grok", tags=["grok"])
 app.include_router(anthropic.router, prefix="/anthropic", tags=["anthropic"])
 
 
@@ -1506,6 +1546,7 @@ async def chat_completion(
             "preview_tool_compat": preview_tool_compat,
             "tool_calling_mode": effective_tool_calling_mode,
             "tool_ids": form_data.get("tool_ids", None),
+            "skill_ids": form_data.get("skill_ids", None),
             "tool_servers": form_data.pop("tool_servers", None),
             "files": form_data.get("files", None),
             "features": form_data.get("features", None),
@@ -1521,6 +1562,7 @@ async def chat_completion(
         form_data, metadata, events = await process_chat_payload(
             request, form_data, user, metadata, model
         )
+        request.state.metadata = metadata
 
     except Exception as e:
         log.debug(f"Error processing chat payload: {e}")
@@ -1835,6 +1877,19 @@ async def get_app_config(request: Request):
     if user is None:
         onboarding = user_count == 0
 
+    database_restore_support = {
+        "backend": "sqlite" if engine.name == "sqlite" else engine.name,
+        "worker_count": UVICORN_WORKERS,
+        "supported": engine.name == "sqlite" and UVICORN_WORKERS == 1,
+        "reason": (
+            "backend_not_sqlite"
+            if engine.name != "sqlite"
+            else (
+                "multiple_workers_not_supported" if UVICORN_WORKERS != 1 else None
+            )
+        ),
+    }
+
     return {
         **({"onboarding": True} if onboarding else {}),
         "status": True,
@@ -1875,6 +1930,10 @@ async def get_app_config(request: Request):
                     "enable_admin_chat_access": ENABLE_ADMIN_CHAT_ACCESS,
                     "enable_google_drive_integration": app.state.config.ENABLE_GOOGLE_DRIVE_INTEGRATION,
                     "enable_onedrive_integration": app.state.config.ENABLE_ONEDRIVE_INTEGRATION,
+                    "database_backend": database_restore_support["backend"],
+                    "database_restore_supported": database_restore_support["supported"],
+                    "database_restore_reason": database_restore_support["reason"],
+                    "uvicorn_workers": database_restore_support["worker_count"],
                 }
                 if user is not None
                 else {}

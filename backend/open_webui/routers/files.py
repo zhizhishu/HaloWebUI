@@ -37,6 +37,7 @@ from open_webui.retrieval.document_processing import (
 from open_webui.retrieval.vector.connector import VECTOR_DB_CLIENT
 from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_admin_user, get_verified_user
+from open_webui.utils.access_control import has_access
 from open_webui.utils.file_upload_diagnostics import (
     build_file_upload_error_detail,
     classify_file_upload_error,
@@ -104,6 +105,24 @@ def has_access_to_file(
     return has_access
 
 
+def _user_can_access_file(
+    file: Optional[FileModel], user, access_type: str = "read"
+) -> bool:
+    if not file:
+        return False
+
+    if file.user_id == user.id or user.role == "admin":
+        return True
+
+    explicit_access = file.access_control
+    if explicit_access is not None and has_access(
+        user.id, access_type, explicit_access
+    ):
+        return True
+
+    return has_access_to_file(file.id, access_type, user)
+
+
 ############################
 # Upload File
 ############################
@@ -160,7 +179,7 @@ def upload_file(
         id = str(uuid.uuid4())
         name = filename
         filename = f"{id}_{filename}"
-        contents, file_path = Storage.upload_file(file.file, filename)
+        file_size, file_path = Storage.upload_file(file.file, filename)
         requested_processing_mode = resolve_file_processing_mode_from_config(
             request.app.state.config, processing_mode
         )
@@ -175,7 +194,7 @@ def upload_file(
                     "meta": {
                         "name": name,
                         "content_type": file.content_type,
-                        "size": len(contents),
+                        "size": file_size,
                         "data": file_metadata,
                         "processing_mode": requested_processing_mode,
                         "resolved_processing_mode": requested_processing_mode,
@@ -204,7 +223,7 @@ def upload_file(
                         ),
                         user=user,
                     )
-                elif file.content_type not in ["image/png", "image/jpeg", "image/gif"]:
+                elif not str(file.content_type or "").startswith("image/"):
                     process_result = process_file(
                         request,
                         ProcessFileForm(
@@ -390,11 +409,7 @@ async def get_file_by_id(id: str, user=Depends(get_verified_user)):
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
 
-    if (
-        file.user_id == user.id
-        or user.role == "admin"
-        or has_access_to_file(id, "read", user)
-    ):
+    if _user_can_access_file(file, user, "read"):
         return file
     else:
         raise HTTPException(
@@ -418,11 +433,7 @@ async def get_file_data_content_by_id(id: str, user=Depends(get_verified_user)):
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
 
-    if (
-        file.user_id == user.id
-        or user.role == "admin"
-        or has_access_to_file(id, "read", user)
-    ):
+    if _user_can_access_file(file, user, "read"):
         return {"content": file.data.get("content", "")}
     else:
         raise HTTPException(
@@ -452,11 +463,7 @@ async def update_file_data_content_by_id(
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
 
-    if (
-        file.user_id == user.id
-        or user.role == "admin"
-        or has_access_to_file(id, "write", user)
-    ):
+    if _user_can_access_file(file, user, "write"):
         try:
             process_file(
                 request,
@@ -493,11 +500,7 @@ async def get_file_content_by_id(
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
 
-    if (
-        file.user_id == user.id
-        or user.role == "admin"
-        or has_access_to_file(id, "read", user)
-    ):
+    if _user_can_access_file(file, user, "read"):
         try:
             file_path = Storage.get_file(file.path)
             file_path = Path(file_path)
@@ -561,11 +564,7 @@ async def get_html_file_content_by_id(id: str, user=Depends(get_verified_user)):
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
 
-    if (
-        file.user_id == user.id
-        or user.role == "admin"
-        or has_access_to_file(id, "read", user)
-    ):
+    if _user_can_access_file(file, user, "read"):
         try:
             file_path = Storage.get_file(file.path)
             file_path = Path(file_path)
@@ -603,11 +602,7 @@ async def get_file_content_by_id(id: str, user=Depends(get_verified_user)):
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
 
-    if (
-        file.user_id == user.id
-        or user.role == "admin"
-        or has_access_to_file(id, "read", user)
-    ):
+    if _user_can_access_file(file, user, "read"):
         file_path = file.path
 
         # Handle Unicode filenames
@@ -665,11 +660,7 @@ async def delete_file_by_id(id: str, user=Depends(get_verified_user)):
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
 
-    if (
-        file.user_id == user.id
-        or user.role == "admin"
-        or has_access_to_file(id, "write", user)
-    ):
+    if _user_can_access_file(file, user, "write"):
         # We should add Chroma cleanup here
 
         result = Files.delete_file_by_id(id)

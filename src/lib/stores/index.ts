@@ -56,7 +56,18 @@ export const activeChatIds: Writable<Set<string>> = writable(new Set());
 export const channels = writable([]);
 export const chats = writable(null);
 export const pinnedChats = writable([]);
+export const chatListRefreshRevision = writable(0);
+export const chatListRefreshTarget = writable<{
+	id: string;
+	title: string;
+	updated_at: number;
+	created_at: number;
+	assistant_id?: string | null;
+} | null>(null);
 export const tags = writable([]);
+export const folders = writable([]);
+export const selectedFolder = writable(null);
+export const selectedAssistantScene = writable(null);
 
 export const models: Writable<Model[]> = writable([]);
 export const modelsStatus: Writable<'idle' | 'loading' | 'ready' | 'error'> = writable('idle');
@@ -79,6 +90,7 @@ export const settingsRevision = writable(0);
 export const ollamaConfigCache = writable(null);
 export const openaiConfigCache = writable(null);
 export const geminiConfigCache = writable(null);
+export const grokConfigCache = writable(null);
 export const anthropicConfigCache = writable(null);
 export const connectionsConfigCache = writable(null);
 
@@ -88,8 +100,10 @@ export const showChangelog = writable(false);
 
 export const showControls = writable(false);
 export const showOverview = writable(false);
+export const overviewFocusedMessageId: Writable<string | null> = writable(null);
 export const showArtifacts = writable(false);
 export const showCallOverlay = writable(false);
+export const artifactAutoOpenDismissedMessageId: Writable<string | null> = writable(null);
 export const artifactPreviewTarget: Writable<
 	{ messageId?: string; type?: 'svg' | 'iframe'; content?: string } | null
 > = writable(null);
@@ -233,7 +247,9 @@ type Settings = {
 	regenerateMenu?: boolean;
 	collapseCodeBlocks?: boolean;
 	collapseHistoricalLongResponses?: boolean;
+	showInlineCitations?: boolean;
 	showMessageOutline?: boolean;
+	showFormulaQuickCopyButton?: boolean;
 	expandDetails?: boolean;
 	renderMarkdownInPreviews?: boolean;
 	displayMultiModelResponsesInTabs?: boolean;

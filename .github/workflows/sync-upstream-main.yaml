@@ -47,11 +47,40 @@ jobs:
       - name: Generate upstream change report
         run: |
           mkdir -p .reports
-          bash scripts/generate-upstream-change-report.sh \
-            "${{ steps.sync.outputs.prev_main_sha }}" \
-            "${{ steps.sync.outputs.new_main_sha }}" \
-            "upstream/main" \
-            ".reports/upstream-change-report.md"
+          PREV_SHA="${{ steps.sync.outputs.prev_main_sha }}"
+          NEW_SHA="${{ steps.sync.outputs.new_main_sha }}"
+          UPSTREAM_SHA="$(git rev-parse upstream/main)"
+          UPSTREAM_TIME="$(git show -s --format='%ci' "$UPSTREAM_SHA")"
+          PREV_TIME="$(git show -s --format='%ci' "$PREV_SHA")"
+          NEW_TIME="$(git show -s --format='%ci' "$NEW_SHA")"
+          COMMIT_COUNT="$(git rev-list --count "${PREV_SHA}..${NEW_SHA}")"
+
+          {
+            echo "# 上游同步变更报告"
+            echo
+            echo "- 上游锚点: ${UPSTREAM_SHA}"
+            echo "- 上游时间: ${UPSTREAM_TIME}"
+            echo "- 起始基线: ${PREV_SHA} (${PREV_TIME})"
+            echo "- 本轮结果: ${NEW_SHA} (${NEW_TIME})"
+            echo "- 新增提交数: ${COMMIT_COUNT}"
+            echo
+            echo "## 作者更新清单"
+            if [ "${COMMIT_COUNT}" -eq 0 ]; then
+              echo "- （无新增提交）"
+            else
+              git log --oneline --reverse "${PREV_SHA}..${NEW_SHA}" | sed 's/^/- /'
+            fi
+            echo
+            echo "## 影响目录"
+            if [ "${COMMIT_COUNT}" -eq 0 ]; then
+              echo "- （无目录变更）"
+            else
+              git diff --name-only "${PREV_SHA}..${NEW_SHA}" \
+                | awk -F/ 'NF { print $1 }' \
+                | sort -u \
+                | sed 's/^/- /'
+            fi
+          } > ".reports/upstream-change-report.md"
           cat .reports/upstream-change-report.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload upstream change report artifact

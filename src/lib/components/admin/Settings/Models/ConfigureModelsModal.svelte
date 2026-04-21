@@ -16,6 +16,7 @@
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import ChevronUp from '$lib/components/icons/ChevronUp.svelte';
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
+	import { getModelChatDisplayName } from '$lib/utils/model-display';
 
 	export let show = false;
 	export let initHandler = () => {};
@@ -28,6 +29,24 @@
 
 	let loading = false;
 	let showResetModal = false;
+	const modelListCollator = new Intl.Collator(undefined, {
+		numeric: true,
+		sensitivity: 'base'
+	});
+
+	const getModelDisplayName = (modelId) => {
+		const model = $models.find((item) => item.id === modelId);
+		return (getModelChatDisplayName(model) ?? model?.name ?? model?.id ?? modelId).toString();
+	};
+
+	const compareModelIdsByDisplayName = (leftId, rightId, order = 'asc') => {
+		const result = modelListCollator.compare(
+			getModelDisplayName(leftId),
+			getModelDisplayName(rightId)
+		);
+
+		return order === 'desc' ? -result : result;
+	};
 
 	$: if (show) {
 		init();
@@ -44,8 +63,8 @@
 		modelIds = [
 			// Add all IDs from MODEL_ORDER_LIST that exist in allModelIds
 			...modelOrderList.filter((id) => orderedSet.has(id) && allModelIds.includes(id)),
-			// Add remaining IDs not in MODEL_ORDER_LIST, sorted alphabetically
-			...allModelIds.filter((id) => !orderedSet.has(id)).sort((a, b) => a.localeCompare(b))
+			// Add remaining IDs not in MODEL_ORDER_LIST, sorted by the same display name users see elsewhere.
+			...allModelIds.filter((id) => !orderedSet.has(id)).sort((a, b) => compareModelIdsByDisplayName(a, b))
 		];
 
 		sortKey = '';
@@ -129,22 +148,12 @@
 						type="button"
 						on:click={() => {
 							sortKey = 'model';
-
-							if (sortOrder === 'asc') {
-								sortOrder = 'desc';
-							} else {
-								sortOrder = 'asc';
-							}
+							const nextSortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+							sortOrder = nextSortOrder;
 
 							modelIds = modelIds
 								.filter((id) => id !== '')
-								.sort((a, b) => {
-									const nameA = $models.find((model) => model.id === a)?.name || a;
-									const nameB = $models.find((model) => model.id === b)?.name || b;
-									return sortOrder === 'desc'
-										? nameA.localeCompare(nameB)
-										: nameB.localeCompare(nameA);
-								});
+								.sort((a, b) => compareModelIdsByDisplayName(a, b, nextSortOrder));
 						}}
 					>
 						<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-3.5">
