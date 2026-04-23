@@ -3193,7 +3193,7 @@ async def _select_runtime_image_provider_source(
 
 
 def _apply_image_model_regex_filter(request: Request, models: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    regex = request.app.state.config.IMAGE_MODEL_FILTER_REGEX
+    regex = getattr(request.app.state.config, "IMAGE_MODEL_FILTER_REGEX", "")
     if not regex or not models:
         return models
 
