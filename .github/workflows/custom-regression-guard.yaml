@@ -1,12 +1,19 @@
 name: Custom Regression Guard
 
 on:
+  workflow_dispatch:
+  schedule:
+    # 每天 03:40 UTC 巡检（默认分支）
+    - cron: "40 3 * * *"
   push:
     branches:
       - custom
       - future
     paths:
       - 'backend/**'
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/custom-regression-guard.yaml'
   pull_request:
     branches:
@@ -14,7 +21,14 @@ on:
       - future
     paths:
       - 'backend/**'
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
       - '.github/workflows/custom-regression-guard.yaml'
+
+concurrency:
+  group: custom-regression-guard-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   mcp-core-regression:
@@ -72,12 +86,14 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           exit 0
 
-      - name: Upload MCP regression logs
+      - name: Upload backend MCP regression logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mcp-core-regression-${{ github.run_id }}
-          path: .reports/*
+          name: mcp-backend-regression-${{ github.run_id }}
+          path: |
+            .reports/mcp-core-regression.log
+            .reports/mcp-core-regression.junit.xml
           if-no-files-found: warn
           retention-days: 7
 
@@ -85,3 +101,62 @@ jobs:
         if: steps.mcp_core.outputs.exit_code != '0'
         run: |
           echo "::warning::MCP regression failed (non-blocking). Please download artifact 'mcp-core-regression-${{ github.run_id }}' and inspect Job Summary."
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend MCP regression tests (observable, non-blocking)
+        id: mcp_frontend
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .reports
+          LOG_FILE=".reports/mcp-frontend-regression.log"
+
+          npx vitest run \
+            src/lib/utils/mcp-headers.test.ts \
+            src/lib/utils/connection-provider-state.test.ts 2>&1 | tee "${LOG_FILE}"
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "exit_code=${EXIT_CODE}" >> "$GITHUB_OUTPUT"
+
+          if [ "${EXIT_CODE}" -eq 0 ]; then
+            {
+              echo "## Frontend MCP Regression"
+              echo "- Status: PASS"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "## Frontend MCP Regression"
+            echo "- Status: FAIL (non-blocking)"
+            echo "- Exit code: ${EXIT_CODE}"
+            echo ""
+            echo "<details><summary>Failure tail (last 120 lines)</summary>"
+            echo ""
+            echo '```text'
+            tail -n 120 "${LOG_FILE}"
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - name: Annotate frontend MCP regression failure
+        if: steps.mcp_frontend.outputs.exit_code != '0'
+        run: |
+          echo "::warning::Frontend MCP regression failed (non-blocking). Please inspect Job Summary and artifact logs."
+
+      - name: Upload frontend MCP regression logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-frontend-regression-${{ github.run_id }}
+          path: .reports/mcp-frontend-regression.log
+          if-no-files-found: warn
+          retention-days: 7
