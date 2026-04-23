@@ -1,22 +1,22 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
 	import { DropdownMenu } from 'bits-ui';
-	import { getContext, tick } from 'svelte';
+	import { getContext } from 'svelte';
 
 	import fileSaver from 'file-saver';
 	const { saveAs } = fileSaver;
 
-	import ChatPdfPreview from '$lib/components/chat/ChatPdfPreview.svelte';
 	import { copyToClipboard, createMessagesList } from '$lib/utils';
-	import { exportChatPdfFromElement, type ChatPdfExportMode } from '$lib/utils/chat-pdf-export';
+	import { buildPdfExportMessages, buildPdfFileName } from '$lib/utils/chat-pdf-document';
+	import { downloadChatAsPDF } from '$lib/apis/utils';
+	import { getErrorDetail } from '$lib/apis/response';
 
 	import {
 		showOverview,
 		showControls,
 		showArtifacts,
 		mobile,
-		temporaryChatEnabled,
-		settings
+		temporaryChatEnabled
 	} from '$lib/stores';
 	import { flyAndScale } from '$lib/utils/transitions';
 
@@ -38,11 +38,6 @@
 
 	export let chat;
 	export let onClose: Function = () => {};
-	let showPdfPreview = false;
-	let pdfPreviewMode: ChatPdfExportMode = 'stylized';
-	let pdfPreviewContainer: HTMLDivElement | null = null;
-	let pdfPreviewChat = null;
-	let pdfPreviewDarkMode = false;
 
 	const getChatAsText = async () => {
 		const history = chat.chat.history;
@@ -83,35 +78,22 @@
 			return;
 		}
 
-		pdfPreviewMode = $settings?.stylizedPdfExport ?? true ? 'stylized' : 'compact';
-		pdfPreviewDarkMode =
-			pdfPreviewMode === 'stylized' && document.documentElement.classList.contains('dark');
-		pdfPreviewChat = targetChat;
-		showPdfPreview = true;
-
-		await tick();
-
-		if (!pdfPreviewContainer) {
-			showPdfPreview = false;
-			pdfPreviewChat = null;
-			toast.error($i18n.t('Failed to export PDF'));
-			return;
-		}
-
 		try {
-			await exportChatPdfFromElement({
-				sourceElement: pdfPreviewContainer,
-				title: targetChat?.chat?.title,
-				mode: pdfPreviewMode,
-				darkMode: pdfPreviewDarkMode
-			});
+			const messages = buildPdfExportMessages(targetChat);
+			const blob = await downloadChatAsPDF(
+				localStorage.token,
+				targetChat?.chat?.title ?? 'chat',
+				messages
+			);
+
+			if (!blob) {
+				throw new Error('Failed to export PDF');
+			}
+
+			saveAs(blob, buildPdfFileName(targetChat?.chat?.title));
 		} catch (error) {
 			console.error('Error generating PDF', error);
-			toast.error($i18n.t('Failed to export PDF'));
-		} finally {
-			showPdfPreview = false;
-			pdfPreviewChat = null;
-			pdfPreviewContainer = null;
+			toast.error(getErrorDetail(error, $i18n.t('Failed to export PDF')));
 		}
 	};
 
@@ -154,14 +136,6 @@ code{font-size:0.9em;}</style></head><body><h1>${title}</h1>`;
 		saveAs(blob, `${title.replace(/[^a-zA-Z0-9]/g, '_')}-${Date.now()}.html`);
 	};
 </script>
-
-<ChatPdfPreview
-	bind:container={pdfPreviewContainer}
-	chat={pdfPreviewChat}
-	visible={showPdfPreview}
-	mode={pdfPreviewMode}
-	darkMode={pdfPreviewDarkMode}
-/>
 
 <Dropdown
 	on:change={(e) => {
