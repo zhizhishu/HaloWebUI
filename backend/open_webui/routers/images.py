@@ -1688,7 +1688,7 @@ async def _select_runtime_image_provider_source(
 
 
 def _apply_image_model_regex_filter(request: Request, models: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    regex = request.app.state.config.IMAGE_MODEL_FILTER_REGEX
+    regex = getattr(request.app.state.config, "IMAGE_MODEL_FILTER_REGEX", "")
     if not regex or not models:
         return models
 
@@ -2426,6 +2426,7 @@ def _load_generated_image_from_value(
     headers: Optional[dict[str, str]] = None,
     allowed_base_urls: Optional[list[str]] = None,
     mime_type_hint: Optional[str] = None,
+    allow_short_base64: bool = False,
 ) -> Optional[tuple[bytes, str]]:
     if not isinstance(value, str):
         return None
@@ -2442,6 +2443,8 @@ def _load_generated_image_from_value(
             raw_value, headers=headers, allowed_base_urls=allowed_base_urls
         )
     elif _looks_like_base64_image(raw_value):
+        loaded = load_b64_image_data(raw_value)
+    elif allow_short_base64:
         loaded = load_b64_image_data(raw_value)
 
     if loaded and mime_type_hint:
@@ -2500,6 +2503,7 @@ def _extract_generated_image_payload(
             headers=headers,
             allowed_base_urls=allowed_base_urls,
             mime_type_hint=mime_type_hint,
+            allow_short_base64=True,
         )
         if loaded:
             return loaded
