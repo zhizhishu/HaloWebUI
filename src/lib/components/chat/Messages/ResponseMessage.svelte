@@ -21,7 +21,6 @@
 		user
 	} from '$lib/stores';
 	import { synthesizeOpenAISpeech } from '$lib/apis/audio';
-	import { imageGenerations } from '$lib/apis/images';
 	// [REACTION_FEATURE] Commented out - reaction feature disabled for now
 	// import {
 	// 	addChatMessageReaction,
@@ -57,7 +56,6 @@
 		GitBranchPlus,
 		Volume2,
 		VolumeX,
-		ImagePlus,
 		Info,
 		PlayCircle,
 		RefreshCw,
@@ -363,7 +361,6 @@
 	let speakingIdx: number | undefined;
 
 	let loadingSpeech = false;
-	let generatingImage = false;
 
 	// Global audio queue: stop this message's TTS if another message starts playing
 	$: if (speaking && $activeAudioId !== null && $activeAudioId !== messageId) {
@@ -693,52 +690,6 @@
 		edit = false;
 		editedContent = '';
 		await tick();
-	};
-
-	const formatImageGenerationError = (error: unknown) => {
-		if (typeof error === 'string' && error.trim()) {
-			return error;
-		}
-
-		if (error && typeof error === 'object') {
-			if ('detail' in error) {
-				const detail = error.detail;
-				if (typeof detail === 'string' && detail.trim()) {
-					return detail;
-				}
-				if (detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string') {
-					return detail.message;
-				}
-			}
-
-			if ('message' in error && typeof error.message === 'string' && error.message.trim()) {
-				return error.message;
-			}
-		}
-
-		return `${error}`;
-	};
-
-	const generateImage = async (message: MessageType) => {
-		generatingImage = true;
-		const res = await imageGenerations(localStorage.token, message.content).catch((error) => {
-			toast.error(formatImageGenerationError(error));
-		});
-		console.log(res);
-
-		if (res) {
-			const files = res.map((image) => ({
-				type: 'image',
-				url: `${image.url}`
-			}));
-
-			saveMessage(message.id, {
-				...message,
-				files: files
-			});
-		}
-
-		generatingImage = false;
 	};
 
 	const deleteMessageHandler = async () => {
@@ -1524,57 +1475,6 @@
 													<VolumeX class="w-4 h-4" strokeWidth={2} />
 												{:else}
 													<Volume2 class="w-4 h-4" strokeWidth={2} />
-												{/if}
-											</button>
-										</Tooltip>
-									{/if}
-
-									{#if $config?.features.enable_image_generation && ($user?.role === 'admin' || $user?.permissions?.features?.image_generation) && !readOnly}
-										<Tooltip content={$i18n.t('Generate Image')} placement="bottom">
-											<button
-												class="{isLastMessage
-													? 'visible'
-													: 'invisible group-hover:visible'}  p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl dark:hover:text-white hover:text-black transition-all duration-200 hover:scale-110 active:scale-95"
-												on:click={() => {
-													if (!generatingImage) {
-														generateImage(message);
-													}
-												}}
-											>
-												{#if generatingImage}
-													<svg
-														class=" w-4 h-4"
-														fill="currentColor"
-														viewBox="0 0 24 24"
-														xmlns="http://www.w3.org/2000/svg"
-													>
-														<style>
-															.spinner_S1WN {
-																animation: spinner_MGfb 0.8s linear infinite;
-																animation-delay: -0.8s;
-															}
-
-															.spinner_Km9P {
-																animation-delay: -0.65s;
-															}
-
-															.spinner_JApP {
-																animation-delay: -0.5s;
-															}
-
-															@keyframes spinner_MGfb {
-																93.75%,
-																100% {
-																	opacity: 0.2;
-																}
-															}
-														</style>
-														<circle class="spinner_S1WN" cx="4" cy="12" r="3" />
-														<circle class="spinner_S1WN spinner_Km9P" cx="12" cy="12" r="3" />
-														<circle class="spinner_S1WN spinner_JApP" cx="20" cy="12" r="3" />
-													</svg>
-												{:else}
-													<ImagePlus class="w-4 h-4" strokeWidth={2} />
 												{/if}
 											</button>
 										</Tooltip>
