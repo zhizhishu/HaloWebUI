@@ -6,7 +6,7 @@ const ASSET_CACHE = `${CACHE_PREFIX}-assets-${BUILD_HASH}`;
 
 const PRECACHE_URLS = [
 	'/',
-	'/settings/about',
+	'/settings',
 	'/settings/interface',
 	'/manifest.json',
 	'/static/favicon.png',
@@ -98,7 +98,7 @@ const handleNavigationRequest = async (request) => {
 		return (
 			(await cache.match(request, { ignoreSearch: true })) ||
 			(await cache.match('/')) ||
-			(await cache.match('/settings/about'))
+			(await cache.match('/settings'))
 		);
 	}
 };
