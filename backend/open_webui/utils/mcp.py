@@ -379,9 +379,18 @@ def _validate_stdio_command(connection: Dict[str, Any]) -> str:
 def _resolve_stdio_command(connection: Dict[str, Any], command: str) -> Optional[str]:
     env = _build_stdio_env(connection)
 
-    resolved = shutil.which(command, path=env.get("PATH"))
+    env_path = env.get("PATH")
+    resolved = shutil.which(command, path=env_path)
     if resolved:
         return resolved
+
+    if env_path:
+        for directory in str(env_path).split(os.pathsep):
+            if not directory:
+                continue
+            candidate = os.path.join(directory, os.path.basename(command))
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
 
     home = env.get("HOME")
     if not home:
