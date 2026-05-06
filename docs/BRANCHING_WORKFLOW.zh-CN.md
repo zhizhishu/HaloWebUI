@@ -5,7 +5,8 @@
 ## 分支职责
 
 - `main`
-  - 仅用于同步上游 `upstream/main`。
+  - 仅用于镜像同步上游 `upstream/main`。
+  - 允许被自动同步工作流强制对齐到上游最新指针。
   - 不直接承载本仓库二改功能。
 - `custom`
   - 稳定分支，线上部署默认使用。
@@ -19,10 +20,15 @@
 
 ## 同步策略
 
-1. 上游同步：`main` 由工作流自动与 `upstream/main` 对齐。
+1. 上游同步：`main` 由工作流自动镜像 `upstream/main`，以 `reset --hard upstream/main` 对齐作者最新指针。
 2. 定期集成：将 `main` 合并到 `future`，处理冲突并完成回归。
 3. 发布节奏：`future` 稳定后，再合并到 `custom`。
 4. 热修复：若直接在 `custom` 修复，需 `cherry-pick` 回 `future`。
+
+说明：
+- `main` 是纯上游镜像分支，不处理二改冲突，也不保留 fork 私有提交。
+- 若作者 `upstream/main` 发生非快进更新，`main` 仍以作者最新指针为准直接对齐。
+- 二改冲突只在 `main -> future` 集成时处理，避免污染 `main` 的上游镜像职责。
 
 ## 镜像策略
 
@@ -274,9 +280,9 @@ uv run pytest \
 ```bash
 # 更新 main（若未依赖自动同步）
 git checkout main
-git fetch upstream
-git merge --ff-only upstream/main || git merge --no-edit upstream/main
-git push origin main
+git fetch upstream main
+git reset --hard upstream/main
+git push --force-with-lease origin main:main
 
 # main 合到 future
 git checkout future
