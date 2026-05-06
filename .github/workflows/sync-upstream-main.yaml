@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # Every day at 03:20 UTC
-    - cron: "20 3 * * *"
+    - cron: '20 3 * * *'
 
 permissions:
   contents: write
@@ -34,12 +34,13 @@ jobs:
           git remote add upstream https://github.com/ztx888/HaloWebUI.git
           git fetch upstream main
 
-      - name: Sync upstream/main into main
+      - name: Mirror upstream/main into main
         id: sync
         run: |
-          git checkout main
           PREV_MAIN_SHA=$(git rev-parse main)
-          git merge --ff-only upstream/main || git merge --no-edit upstream/main
+          git checkout main
+          # main is a pure mirror of upstream/main, so forced upstream updates must be reset instead of merged.
+          git reset --hard upstream/main
           NEW_MAIN_SHA=$(git rev-parse main)
           echo "prev_main_sha=${PREV_MAIN_SHA}" >> "$GITHUB_OUTPUT"
           echo "new_main_sha=${NEW_MAIN_SHA}" >> "$GITHUB_OUTPUT"
@@ -62,7 +63,7 @@ jobs:
           if-no-files-found: error
 
       - name: Push main
-        run: git push origin main
+        run: git push --force-with-lease origin main:main
 
       - name: Ensure future branch exists
         run: |
