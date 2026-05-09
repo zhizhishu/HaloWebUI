@@ -181,13 +181,13 @@ def test_get_tools_exposes_mcp_tool_and_routes_call(monkeypatch):
     user = SimpleNamespace(id="u1", role="admin")
 
     tools = tools_mod.get_tools(request, ["mcp:0"], user, extra_params={})
-    assert "mcp_0__foo_bar" in tools
-    spec = tools["mcp_0__foo_bar"]["spec"]
-    assert spec["name"] == "mcp_0__foo_bar"
+    assert "mcp_tool_0__foo_bar" in tools
+    spec = tools["mcp_tool_0__foo_bar"]["spec"]
+    assert spec["name"] == "mcp_tool_0__foo_bar"
     assert spec["parameters"]["type"] == "object"
 
     async def run():
-        out = await tools["mcp_0__foo_bar"]["callable"](a="x")
+        out = await tools["mcp_tool_0__foo_bar"]["callable"](a="x")
         return out
 
     out = asyncio.run(run())
@@ -1062,7 +1062,7 @@ def test_mcp_servers_config_get_includes_runtime_capabilities(monkeypatch):
     async def run():
         return await configs_router.get_mcp_servers_config(
             SimpleNamespace(),
-            SimpleNamespace(role="admin"),
+            SimpleNamespace(id="admin-user", role="admin"),
         )
 
     result = asyncio.run(run())
@@ -1102,7 +1102,7 @@ def test_mcp_servers_config_post_includes_runtime_capabilities(monkeypatch):
         return await configs_router.set_mcp_servers_config(
             SimpleNamespace(),
             form_data,
-            user=SimpleNamespace(role="admin"),
+            user=SimpleNamespace(id="admin-user", role="admin"),
         )
 
     result = asyncio.run(run())
@@ -1140,7 +1140,7 @@ def test_mcp_servers_config_post_round_trips_headers(monkeypatch):
         return await configs_router.set_mcp_servers_config(
             SimpleNamespace(),
             form_data,
-            user=SimpleNamespace(role="admin"),
+            user=SimpleNamespace(id="admin-user", role="admin"),
         )
 
     result = asyncio.run(run())

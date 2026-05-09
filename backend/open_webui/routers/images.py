@@ -828,7 +828,7 @@ def _extract_openai_image_routes_from_endpoint_blob(endpoint_blob: str) -> set[s
     if (
         "/responses" in normalized
         or "openai-response" in normalized
-        or re.search(r"(^|[\/._:-])responses([\/._:-]|$)", normalized)
+        or re.search(r"(?<![a-z0-9])responses(?![a-z0-9])", normalized)
     ):
         routes.add(OPENAI_IMAGE_ROUTE_RESPONSES)
     return routes

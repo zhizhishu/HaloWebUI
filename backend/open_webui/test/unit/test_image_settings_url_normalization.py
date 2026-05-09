@@ -1645,7 +1645,7 @@ def test_openai_gpt_image_edit_payload_uses_single_image_without_streaming(monke
         )
     )
 
-    assert result == [{"url": "/api/v1/files/generated"}]
+    assert result == [{"url": "/api/v1/files/generated", "usage": {"total_duration": 10000000}}]
     assert captured["request_kind"] == "multipart"
     assert captured["url"] == "https://relay.example.com/v1/images/edits"
     assert captured["files"][0]["field_name"] == "image"
@@ -1696,7 +1696,7 @@ def test_openai_compatible_dedicated_image_edit_payload_uses_single_image(monkey
         )
     )
 
-    assert result == [{"url": "/api/v1/files/generated"}]
+    assert result == [{"url": "/api/v1/files/generated", "usage": {"total_duration": 10000000}}]
     assert captured["files"][0]["field_name"] == "image"
     assert captured["form_fields"]["response_format"] == "b64_json"
 
@@ -1964,15 +1964,15 @@ def test_chat_image_generation_uses_model_ref_to_pick_prefixed_openai_connection
 
     captured = {}
 
-    async def fake_images_endpoint(_request, _user, **kwargs):
+    async def fake_edit_endpoint(_request, _user, **kwargs):
         captured.update(kwargs)
         return [{"url": "/api/v1/files/generated"}]
 
     monkeypatch.setattr(images_router, "_discover_image_models_for_source", fake_discover)
     monkeypatch.setattr(
         images_router,
-        "_generate_via_openai_images_endpoint",
-        fake_images_endpoint,
+        "_generate_via_openai_image_edits_endpoint",
+        fake_edit_endpoint,
     )
 
     result = asyncio.run(
@@ -1995,6 +1995,7 @@ def test_chat_image_generation_uses_model_ref_to_pick_prefixed_openai_connection
 
     assert result == [{"url": "/api/v1/files/generated"}]
     assert captured["model_id"] == "gpt-image-2"
+    assert captured["image_url"] == "/api/v1/files/source/content"
     assert captured["source"]["connection_index"] == 1
     assert captured["source"]["base_url"] == relay_base_url
     assert captured["source"]["key"] == "relay-key"

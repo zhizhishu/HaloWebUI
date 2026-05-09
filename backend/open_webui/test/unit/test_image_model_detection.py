@@ -109,7 +109,7 @@ def test_openai_official_gpt_image_family_prefers_images_endpoint_mode():
         },
         base_url="https://api.openai.com/v1",
         api_config={},
-        source={"effective_source": "shared"},
+        source={"effective_source": "shared", "base_url": "https://api.openai.com/v1"},
     )
 
     assert classified is not None
@@ -204,8 +204,9 @@ def test_openai_edit_only_endpoint_does_not_gain_generation_route():
 
     assert classified is not None
     assert classified["generation_mode"] == "openai_images"
-    assert classified["supported_image_routes"] == ["edits"]
-    assert classified["default_image_route"] == ""
+    assert classified["supported_image_routes"] == ["chat", "edits"]
+    assert classified["default_image_route"] == "chat"
+    assert classified["reference_image_default_route"] == "edits"
 
 
 def test_openai_supported_endpoint_types_detect_image_and_responses_routes():
