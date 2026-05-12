@@ -564,6 +564,17 @@ def get_user_connections(user: Optional[UserModel]) -> dict:
     )
 
 
+def get_user_connection_provider_config(
+    request, user: Optional[UserModel], provider: str
+) -> dict:
+    """
+    Return one provider's effective user-level config, including read-only legacy migration.
+    """
+    migrated_user = maybe_migrate_user_connections(request, user) if user else user
+    connections = get_user_connections(migrated_user)
+    return deepcopy(_as_dict(connections.get(provider)))
+
+
 def set_user_connection_provider_config(
     user_id: str, provider: str, provider_config: Optional[dict]
 ) -> Optional[UserModel]:

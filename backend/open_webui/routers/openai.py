@@ -36,7 +36,9 @@ from open_webui.env import (
 from open_webui.models.users import UserModel
 from open_webui.storage.provider import Storage
 from open_webui.utils.user_connections import (
+    get_user_connection_provider_config,
     get_user_connections,
+    set_user_connection_provider_config,
 )
 
 from open_webui.constants import ERROR_MESSAGES
@@ -1349,11 +1351,12 @@ router = APIRouter()
 
 @router.get("/config")
 async def get_config(request: Request, user=Depends(get_admin_user)):
+    provider_config = get_user_connection_provider_config(request, user, "openai")
     return {
         "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
-        "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
-        "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
-        "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
+        "OPENAI_API_BASE_URLS": provider_config.get("OPENAI_API_BASE_URLS", []),
+        "OPENAI_API_KEYS": provider_config.get("OPENAI_API_KEYS", []),
+        "OPENAI_API_CONFIGS": provider_config.get("OPENAI_API_CONFIGS", {}),
     }
 
 
@@ -1487,11 +1490,31 @@ async def update_config(
     request.app.state.MODELS = {}
     invalidate_base_model_cache(user.id)
 
+    updated_user = set_user_connection_provider_config(
+        user.id,
+        "openai",
+        {
+            "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
+            "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
+            "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
+        },
+    ) or user
+    provider_config = get_user_connection_provider_config(
+        request, updated_user, "openai"
+    )
+    request.app.state.config.OPENAI_API_BASE_URLS = provider_config.get(
+        "OPENAI_API_BASE_URLS", []
+    )
+    request.app.state.config.OPENAI_API_KEYS = provider_config.get("OPENAI_API_KEYS", [])
+    request.app.state.config.OPENAI_API_CONFIGS = provider_config.get(
+        "OPENAI_API_CONFIGS", {}
+    )
+
     return {
         "ENABLE_OPENAI_API": request.app.state.config.ENABLE_OPENAI_API,
-        "OPENAI_API_BASE_URLS": request.app.state.config.OPENAI_API_BASE_URLS,
-        "OPENAI_API_KEYS": request.app.state.config.OPENAI_API_KEYS,
-        "OPENAI_API_CONFIGS": request.app.state.config.OPENAI_API_CONFIGS,
+        "OPENAI_API_BASE_URLS": provider_config.get("OPENAI_API_BASE_URLS", []),
+        "OPENAI_API_KEYS": provider_config.get("OPENAI_API_KEYS", []),
+        "OPENAI_API_CONFIGS": provider_config.get("OPENAI_API_CONFIGS", {}),
     }
 
 

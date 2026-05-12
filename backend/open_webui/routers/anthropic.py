@@ -49,7 +49,9 @@ from open_webui.models.files import Files
 from open_webui.models.models import Models
 from open_webui.models.users import UserModel
 from open_webui.utils.user_connections import (
+    get_user_connection_provider_config,
     get_user_connections,
+    set_user_connection_provider_config,
 )
 from open_webui.storage.provider import Storage
 from open_webui.retrieval.document_processing import FILE_PROCESSING_MODE_NATIVE_FILE
@@ -1004,17 +1006,16 @@ class AnthropicConfigForm(BaseModel):
 
 @router.get("/config")
 async def get_config(request: Request, user=Depends(get_admin_user)):
+    provider_config = get_user_connection_provider_config(request, user, "anthropic")
     return {
         "ENABLE_ANTHROPIC_API": getattr(
             request.app.state.config, "ENABLE_ANTHROPIC_API", False
         ),
-        "ANTHROPIC_API_BASE_URLS": getattr(
-            request.app.state.config, "ANTHROPIC_API_BASE_URLS", []
+        "ANTHROPIC_API_BASE_URLS": provider_config.get(
+            "ANTHROPIC_API_BASE_URLS", []
         ),
-        "ANTHROPIC_API_KEYS": getattr(request.app.state.config, "ANTHROPIC_API_KEYS", []),
-        "ANTHROPIC_API_CONFIGS": getattr(
-            request.app.state.config, "ANTHROPIC_API_CONFIGS", {}
-        ),
+        "ANTHROPIC_API_KEYS": provider_config.get("ANTHROPIC_API_KEYS", []),
+        "ANTHROPIC_API_CONFIGS": provider_config.get("ANTHROPIC_API_CONFIGS", {}),
     }
 
 
@@ -1123,7 +1124,38 @@ async def update_config(
     request.app.state.MODELS = {}
     invalidate_base_model_cache(user.id)
 
-    return await get_config(request, user=user)
+    updated_user = set_user_connection_provider_config(
+        user.id,
+        "anthropic",
+        {
+            "ANTHROPIC_API_BASE_URLS": request.app.state.config.ANTHROPIC_API_BASE_URLS,
+            "ANTHROPIC_API_KEYS": request.app.state.config.ANTHROPIC_API_KEYS,
+            "ANTHROPIC_API_CONFIGS": request.app.state.config.ANTHROPIC_API_CONFIGS,
+        },
+    ) or user
+    provider_config = get_user_connection_provider_config(
+        request, updated_user, "anthropic"
+    )
+    request.app.state.config.ANTHROPIC_API_BASE_URLS = provider_config.get(
+        "ANTHROPIC_API_BASE_URLS", []
+    )
+    request.app.state.config.ANTHROPIC_API_KEYS = provider_config.get(
+        "ANTHROPIC_API_KEYS", []
+    )
+    request.app.state.config.ANTHROPIC_API_CONFIGS = provider_config.get(
+        "ANTHROPIC_API_CONFIGS", {}
+    )
+
+    return {
+        "ENABLE_ANTHROPIC_API": getattr(
+            request.app.state.config, "ENABLE_ANTHROPIC_API", False
+        ),
+        "ANTHROPIC_API_BASE_URLS": provider_config.get(
+            "ANTHROPIC_API_BASE_URLS", []
+        ),
+        "ANTHROPIC_API_KEYS": provider_config.get("ANTHROPIC_API_KEYS", []),
+        "ANTHROPIC_API_CONFIGS": provider_config.get("ANTHROPIC_API_CONFIGS", {}),
+    }
 
 
 class ConnectionVerificationForm(BaseModel):

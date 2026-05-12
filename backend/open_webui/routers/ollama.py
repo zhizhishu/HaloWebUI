@@ -52,7 +52,9 @@ from open_webui.utils.payload import (
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_access
 from open_webui.utils.user_connections import (
+    get_user_connection_provider_config,
     get_user_connections,
+    set_user_connection_provider_config,
 )
 from open_webui.utils.model_identity import derive_connection_id, parse_selection_id
 
@@ -512,10 +514,11 @@ async def health_check_connection(
 
 @router.get("/config")
 async def get_config(request: Request, user=Depends(get_admin_user)):
+    provider_config = get_user_connection_provider_config(request, user, "ollama")
     return {
         "ENABLE_OLLAMA_API": request.app.state.config.ENABLE_OLLAMA_API,
-        "OLLAMA_BASE_URLS": request.app.state.config.OLLAMA_BASE_URLS,
-        "OLLAMA_API_CONFIGS": request.app.state.config.OLLAMA_API_CONFIGS,
+        "OLLAMA_BASE_URLS": provider_config.get("OLLAMA_BASE_URLS", []),
+        "OLLAMA_API_CONFIGS": provider_config.get("OLLAMA_API_CONFIGS", {}),
     }
 
 
@@ -625,10 +628,28 @@ async def update_config(
     request.app.state.MODELS = {}
     invalidate_base_model_cache(user.id)
 
+    updated_user = set_user_connection_provider_config(
+        user.id,
+        "ollama",
+        {
+            "OLLAMA_BASE_URLS": request.app.state.config.OLLAMA_BASE_URLS,
+            "OLLAMA_API_CONFIGS": request.app.state.config.OLLAMA_API_CONFIGS,
+        },
+    ) or user
+    provider_config = get_user_connection_provider_config(
+        request, updated_user, "ollama"
+    )
+    request.app.state.config.OLLAMA_BASE_URLS = provider_config.get(
+        "OLLAMA_BASE_URLS", []
+    )
+    request.app.state.config.OLLAMA_API_CONFIGS = provider_config.get(
+        "OLLAMA_API_CONFIGS", {}
+    )
+
     return {
         "ENABLE_OLLAMA_API": request.app.state.config.ENABLE_OLLAMA_API,
-        "OLLAMA_BASE_URLS": request.app.state.config.OLLAMA_BASE_URLS,
-        "OLLAMA_API_CONFIGS": request.app.state.config.OLLAMA_API_CONFIGS,
+        "OLLAMA_BASE_URLS": provider_config.get("OLLAMA_BASE_URLS", []),
+        "OLLAMA_API_CONFIGS": provider_config.get("OLLAMA_API_CONFIGS", {}),
     }
 
 

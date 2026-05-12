@@ -29,7 +29,9 @@ from pydantic import BaseModel
 from open_webui.models.models import Models
 from open_webui.models.users import UserModel
 from open_webui.utils.user_connections import (
+    get_user_connection_provider_config,
     get_user_connections,
+    set_user_connection_provider_config,
 )
 
 from open_webui.env import (
@@ -963,11 +965,12 @@ router = APIRouter()
 @router.get("/config")
 async def get_config(request: Request, user=Depends(get_admin_user)):
     """Get Gemini API configuration."""
+    provider_config = get_user_connection_provider_config(request, user, "gemini")
     return {
         "ENABLE_GEMINI_API": request.app.state.config.ENABLE_GEMINI_API,
-        "GEMINI_API_BASE_URLS": request.app.state.config.GEMINI_API_BASE_URLS,
-        "GEMINI_API_KEYS": request.app.state.config.GEMINI_API_KEYS,
-        "GEMINI_API_CONFIGS": request.app.state.config.GEMINI_API_CONFIGS,
+        "GEMINI_API_BASE_URLS": provider_config.get("GEMINI_API_BASE_URLS", []),
+        "GEMINI_API_KEYS": provider_config.get("GEMINI_API_KEYS", []),
+        "GEMINI_API_CONFIGS": provider_config.get("GEMINI_API_CONFIGS", {}),
     }
 
 
@@ -1090,11 +1093,31 @@ async def update_config(
     request.app.state.MODELS = {}
     invalidate_base_model_cache(user.id)
 
+    updated_user = set_user_connection_provider_config(
+        user.id,
+        "gemini",
+        {
+            "GEMINI_API_BASE_URLS": request.app.state.config.GEMINI_API_BASE_URLS,
+            "GEMINI_API_KEYS": request.app.state.config.GEMINI_API_KEYS,
+            "GEMINI_API_CONFIGS": request.app.state.config.GEMINI_API_CONFIGS,
+        },
+    ) or user
+    provider_config = get_user_connection_provider_config(
+        request, updated_user, "gemini"
+    )
+    request.app.state.config.GEMINI_API_BASE_URLS = provider_config.get(
+        "GEMINI_API_BASE_URLS", []
+    )
+    request.app.state.config.GEMINI_API_KEYS = provider_config.get("GEMINI_API_KEYS", [])
+    request.app.state.config.GEMINI_API_CONFIGS = provider_config.get(
+        "GEMINI_API_CONFIGS", {}
+    )
+
     return {
         "ENABLE_GEMINI_API": request.app.state.config.ENABLE_GEMINI_API,
-        "GEMINI_API_BASE_URLS": request.app.state.config.GEMINI_API_BASE_URLS,
-        "GEMINI_API_KEYS": request.app.state.config.GEMINI_API_KEYS,
-        "GEMINI_API_CONFIGS": request.app.state.config.GEMINI_API_CONFIGS,
+        "GEMINI_API_BASE_URLS": provider_config.get("GEMINI_API_BASE_URLS", []),
+        "GEMINI_API_KEYS": provider_config.get("GEMINI_API_KEYS", []),
+        "GEMINI_API_CONFIGS": provider_config.get("GEMINI_API_CONFIGS", {}),
     }
 
 

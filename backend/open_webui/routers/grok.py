@@ -14,7 +14,11 @@ from open_webui.routers import openai as openai_router
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.error_handling import build_error_detail
 from open_webui.utils.model_identity import decorate_provider_model_identity
-from open_webui.utils.user_connections import get_user_connections
+from open_webui.utils.user_connections import (
+    get_user_connection_provider_config,
+    get_user_connections,
+    set_user_connection_provider_config,
+)
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MAIN"])
@@ -200,11 +204,12 @@ def _get_grok_user_config(connection_user) -> tuple[list[str], list[str], dict]:
 
 @router.get("/config")
 async def get_config(request: Request, user=Depends(get_admin_user)):
+    provider_config = get_user_connection_provider_config(request, user, "grok")
     return {
         "ENABLE_GROK_API": request.app.state.config.ENABLE_GROK_API,
-        "GROK_API_BASE_URLS": request.app.state.config.GROK_API_BASE_URLS,
-        "GROK_API_KEYS": request.app.state.config.GROK_API_KEYS,
-        "GROK_API_CONFIGS": request.app.state.config.GROK_API_CONFIGS,
+        "GROK_API_BASE_URLS": provider_config.get("GROK_API_BASE_URLS", []),
+        "GROK_API_KEYS": provider_config.get("GROK_API_KEYS", []),
+        "GROK_API_CONFIGS": provider_config.get("GROK_API_CONFIGS", {}),
     }
 
 
@@ -325,11 +330,29 @@ async def update_config(
     request.app.state.config.GROK_API_CONFIGS = normalized_configs
     request.app.state.GROK_MODELS = {}
 
+    updated_user = set_user_connection_provider_config(
+        user.id,
+        "grok",
+        {
+            "GROK_API_BASE_URLS": request.app.state.config.GROK_API_BASE_URLS,
+            "GROK_API_KEYS": request.app.state.config.GROK_API_KEYS,
+            "GROK_API_CONFIGS": request.app.state.config.GROK_API_CONFIGS,
+        },
+    ) or user
+    provider_config = get_user_connection_provider_config(request, updated_user, "grok")
+    request.app.state.config.GROK_API_BASE_URLS = provider_config.get(
+        "GROK_API_BASE_URLS", []
+    )
+    request.app.state.config.GROK_API_KEYS = provider_config.get("GROK_API_KEYS", [])
+    request.app.state.config.GROK_API_CONFIGS = provider_config.get(
+        "GROK_API_CONFIGS", {}
+    )
+
     return {
         "ENABLE_GROK_API": request.app.state.config.ENABLE_GROK_API,
-        "GROK_API_BASE_URLS": request.app.state.config.GROK_API_BASE_URLS,
-        "GROK_API_KEYS": request.app.state.config.GROK_API_KEYS,
-        "GROK_API_CONFIGS": request.app.state.config.GROK_API_CONFIGS,
+        "GROK_API_BASE_URLS": provider_config.get("GROK_API_BASE_URLS", []),
+        "GROK_API_KEYS": provider_config.get("GROK_API_KEYS", []),
+        "GROK_API_CONFIGS": provider_config.get("GROK_API_CONFIGS", {}),
     }
 
 
