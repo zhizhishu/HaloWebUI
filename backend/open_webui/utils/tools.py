@@ -45,6 +45,7 @@ from open_webui.utils.shared_tool_servers import (
     can_use_direct_tool_servers,
     validate_requested_shared_tool_ids_access,
 )
+from open_webui.utils.user_tools import can_user_use_mcp_server_tools
 
 import copy
 
@@ -65,9 +66,15 @@ def validate_tool_ids_access(
     if request is not None:
         validate_requested_shared_tool_ids_access(request, tool_ids, user)
         if any(
-            str(tool_id or "").strip().startswith(("server:", "mcp:"))
-            for tool_id in tool_ids
+            str(tool_id or "").strip().startswith("server:") for tool_id in tool_ids
         ) and not can_use_direct_tool_servers(request, user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+            )
+        if any(
+            str(tool_id or "").strip().startswith("mcp:") for tool_id in tool_ids
+        ) and not can_user_use_mcp_server_tools(request, user):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ERROR_MESSAGES.ACCESS_PROHIBITED,

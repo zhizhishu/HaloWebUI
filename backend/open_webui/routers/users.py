@@ -35,12 +35,17 @@ from open_webui.utils.user_connections import (
     maybe_migrate_user_connections,
     normalize_connections_payload,
 )
-from open_webui.utils.user_tools import maybe_migrate_user_tool_settings
+from open_webui.utils.user_tools import (
+    get_admin_mcp_inheritance_connections,
+    maybe_migrate_user_tool_settings,
+)
 from open_webui.utils.user_resource_inheritance import (
     RESOURCE_INHERITANCE_KEY,
+    build_admin_mcp_server_resource_id,
     normalize_resource_inheritance,
 )
 from open_webui.utils.access_control import get_permissions
+from open_webui.utils.mcp import get_mcp_server_display_metadata
 
 
 log = logging.getLogger(__name__)
@@ -404,6 +409,100 @@ class UserResponse(BaseModel):
     name: str
     profile_image_url: str
     active: Optional[bool] = None
+
+
+@router.get("/resource-inheritance/options")
+async def get_resource_inheritance_options(
+    request: Request, session_user=Depends(get_admin_user)
+):
+    admins = [
+        candidate
+        for candidate in Users.get_users()
+        if getattr(candidate, "role", None) == "admin"
+    ]
+    admin_by_id = {admin.id: admin for admin in admins}
+
+    model_options_by_id: dict[str, dict] = {}
+    try:
+        from open_webui.models.models import Models
+        from open_webui.utils.models import get_all_base_models
+
+        for admin in admins:
+            owner = maybe_migrate_user_connections(request, admin)
+            for model in await get_all_base_models(request, user=owner) or []:
+                if not isinstance(model, dict):
+                    continue
+                model_id = str(model.get("id") or model.get("model") or "").strip()
+                if not model_id or model_id in model_options_by_id:
+                    continue
+                model_options_by_id[model_id] = {
+                    "id": model_id,
+                    "name": str(model.get("name") or model_id),
+                    "owner_id": admin.id,
+                    "owner_name": admin.name,
+                    "source": "base",
+                }
+
+        for model in Models.get_all_models():
+            owner = admin_by_id.get(getattr(model, "user_id", None))
+            if not owner or not getattr(model, "is_active", True):
+                continue
+            model_id = str(getattr(model, "id", "") or "").strip()
+            if not model_id or model_id in model_options_by_id:
+                continue
+            model_options_by_id[model_id] = {
+                "id": model_id,
+                "name": str(getattr(model, "name", None) or model_id),
+                "owner_id": owner.id,
+                "owner_name": owner.name,
+                "source": "workspace",
+                "base_model_id": getattr(model, "base_model_id", None),
+            }
+    except Exception as e:
+        log.warning("Failed to load admin model inheritance options: %s", e)
+
+    mcp_options_by_id: dict[str, dict] = {}
+    try:
+        for idx, connection in enumerate(get_admin_mcp_inheritance_connections(request)):
+            if not isinstance(connection, dict):
+                continue
+            if str(connection.get("transport_type") or "http").lower() == "stdio":
+                continue
+            server_id = str(connection.get("_inherit_id") or "").strip()
+            if not server_id:
+                server_id = build_admin_mcp_server_resource_id(
+                    connection.get("_inherited_from_user_id") or "admin",
+                    idx,
+                )
+            if server_id in mcp_options_by_id:
+                continue
+
+            owner_id = connection.get("_inherited_from_user_id") or "legacy"
+            owner = admin_by_id.get(owner_id)
+            title, description = get_mcp_server_display_metadata(
+                connection, index=idx
+            )
+            mcp_options_by_id[server_id] = {
+                "id": server_id,
+                "name": title,
+                "description": description,
+                "owner_id": owner_id,
+                "owner_name": getattr(owner, "name", None) or "Legacy Global Config",
+                "transport_type": str(connection.get("transport_type") or "http").lower(),
+                "tool_count": connection.get("tool_count"),
+                "verified_at": connection.get("verified_at"),
+            }
+    except Exception as e:
+        log.warning("Failed to load admin MCP inheritance options: %s", e)
+
+    return {
+        "admin_models": sorted(
+            model_options_by_id.values(), key=lambda item: item["name"].lower()
+        ),
+        "admin_mcp_servers": sorted(
+            mcp_options_by_id.values(), key=lambda item: item["name"].lower()
+        ),
+    }
 
 
 @router.get("/{user_id}", response_model=UserResponse)

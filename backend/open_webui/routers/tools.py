@@ -33,6 +33,7 @@ from open_webui.utils.mcp import (
     get_mcp_servers_cached_meta,
 )
 from open_webui.utils.user_tools import (
+    can_user_use_mcp_server_tools,
     get_user_mcp_server_connections,
     get_user_tool_server_connections,
 )
@@ -85,6 +86,7 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
     # Workspace tools are already scoped via access_control and/or ownership.
     tools = Tools.get_tools_list_by_user_id(user.id, permission="read")
     direct_tool_servers_enabled = can_use_direct_tool_servers(request, user)
+    mcp_server_tools_enabled = can_user_use_mcp_server_tools(request, user)
 
     tool_server_connections = []
     mcp_server_connections = []
@@ -92,26 +94,30 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
     mcp_servers_data = []
     shared_tool_servers = []
 
-    if direct_tool_servers_enabled:
-        tool_server_connections = get_user_tool_server_connections(request, user)
-        mcp_server_connections = get_user_mcp_server_connections(request, user)
+    if direct_tool_servers_enabled or mcp_server_tools_enabled:
+        if direct_tool_servers_enabled:
+            tool_server_connections = get_user_tool_server_connections(request, user)
+        if mcp_server_tools_enabled:
+            mcp_server_connections = get_user_mcp_server_connections(request, user)
 
         # Resolve per-user server-side tools (OpenAPI / MCP). Do NOT store these on app.state,
         # otherwise configs leak across accounts.
-        tool_servers_data = await get_tool_servers_data(
-            tool_server_connections,
-            session_token=request.state.token.credentials,
-        )
-        mcp_servers_data = [
-            server
-            for server in get_mcp_servers_cached_meta(mcp_server_connections)
-            if (server.get("config") or {}).get("enable", True)
-        ]
-        shared_tool_servers = [
-            shared_tool_server
-            for shared_tool_server in get_accessible_shared_tool_servers(request, user)
-            if shared_tool_server.owner_user_id != user.id
-        ]
+        if direct_tool_servers_enabled:
+            tool_servers_data = await get_tool_servers_data(
+                tool_server_connections,
+                session_token=request.state.token.credentials,
+            )
+            shared_tool_servers = [
+                shared_tool_server
+                for shared_tool_server in get_accessible_shared_tool_servers(request, user)
+                if shared_tool_server.owner_user_id != user.id
+            ]
+        if mcp_server_tools_enabled:
+            mcp_servers_data = [
+                server
+                for server in get_mcp_servers_cached_meta(mcp_server_connections)
+                if (server.get("config") or {}).get("enable", True)
+            ]
 
     for server in tool_servers_data:
         tools.append(

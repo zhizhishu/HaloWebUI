@@ -17,7 +17,10 @@ from open_webui.models.models import Models
 
 from open_webui.utils.plugin import load_function_module_by_id
 from open_webui.utils.access_control import has_access
-from open_webui.utils.user_resource_inheritance import can_user_inherit_admin_models
+from open_webui.utils.user_resource_inheritance import (
+    can_user_inherit_admin_models,
+    is_admin_model_allowed_for_user,
+)
 from open_webui.utils.model_identity import (
     build_model_lookup,
     decorate_provider_model_identity,
@@ -332,6 +335,13 @@ async def get_all_models(request, user: UserModel = None):
                 for owner_model in owner_models or []:
                     if not isinstance(owner_model, dict):
                         continue
+                    if not is_admin_model_allowed_for_user(
+                        user,
+                        owner_model.get("id"),
+                        owner_model.get("model"),
+                        owner_model.get("name"),
+                    ):
+                        continue
                     inherited = _mark_model_inherited_from_admin(
                         copy.deepcopy(owner_model), candidate.id
                     )
@@ -375,7 +385,12 @@ async def get_all_models(request, user: UserModel = None):
         if _is_admin_owned_model_inheritance(
             user, model_row.user_id, admin_user_ids
         ):
-            return True
+            return is_admin_model_allowed_for_user(
+                user,
+                getattr(model_row, "id", None),
+                getattr(model_row, "base_model_id", None),
+                getattr(model_row, "name", None),
+            )
         return has_access(user.id, type="read", access_control=model_row.access_control)
 
     # For shared models (owned by other users), we may need to fetch a small subset of

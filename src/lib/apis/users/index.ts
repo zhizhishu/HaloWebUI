@@ -353,6 +353,50 @@ export const deleteUserById = async (token: string, userId: string) => {
 	return res;
 };
 
+export type ResourceInheritanceOption = {
+	id: string;
+	name: string;
+	description?: string;
+	owner_id?: string;
+	owner_name?: string;
+	source?: string;
+	base_model_id?: string | null;
+	transport_type?: string;
+	tool_count?: number | null;
+	verified_at?: string | null;
+};
+
+export type ResourceInheritanceOptions = {
+	admin_models: ResourceInheritanceOption[];
+	admin_mcp_servers: ResourceInheritanceOption[];
+};
+
+export const getResourceInheritanceOptions = async (
+	token: string
+): Promise<ResourceInheritanceOptions> => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/users/resource-inheritance/options`, {
+		method: 'GET',
+		headers: {
+			'Content-Type': 'application/json',
+			Authorization: `Bearer ${token}`
+		}
+	})
+		.then(parseJsonResponse)
+		.catch((err) => {
+			console.log(err);
+			error = err.detail;
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res ?? { admin_models: [], admin_mcp_servers: [] };
+};
+
 type UserUpdateForm = {
 	profile_image_url: string;
 	email: string;

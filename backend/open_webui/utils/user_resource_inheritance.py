@@ -8,10 +8,14 @@ from open_webui.models.users import UserModel
 RESOURCE_INHERITANCE_KEY = "resource_inheritance"
 INHERIT_ADMIN_MODELS_KEY = "admin_models"
 INHERIT_ADMIN_MCP_SERVERS_KEY = "admin_mcp_servers"
+ADMIN_MODEL_IDS_KEY = "admin_model_ids"
+ADMIN_MCP_SERVER_IDS_KEY = "admin_mcp_server_ids"
 
 DEFAULT_RESOURCE_INHERITANCE = {
     INHERIT_ADMIN_MODELS_KEY: True,
     INHERIT_ADMIN_MCP_SERVERS_KEY: True,
+    ADMIN_MODEL_IDS_KEY: None,
+    ADMIN_MCP_SERVER_IDS_KEY: None,
 }
 
 
@@ -28,11 +32,42 @@ def _get_settings_dict(user: Optional[UserModel]) -> dict:
         return _as_dict(getattr(user, "settings", None))
 
 
+def _normalize_optional_ids(value: Any) -> Optional[list[str]]:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return None
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        item = str(item or "").strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return normalized
+
+
 def normalize_resource_inheritance(value: Any) -> dict:
     raw = _as_dict(value)
     return {
-        key: bool(raw.get(key, default))
-        for key, default in DEFAULT_RESOURCE_INHERITANCE.items()
+        INHERIT_ADMIN_MODELS_KEY: bool(
+            raw.get(
+                INHERIT_ADMIN_MODELS_KEY,
+                DEFAULT_RESOURCE_INHERITANCE[INHERIT_ADMIN_MODELS_KEY],
+            )
+        ),
+        INHERIT_ADMIN_MCP_SERVERS_KEY: bool(
+            raw.get(
+                INHERIT_ADMIN_MCP_SERVERS_KEY,
+                DEFAULT_RESOURCE_INHERITANCE[INHERIT_ADMIN_MCP_SERVERS_KEY],
+            )
+        ),
+        ADMIN_MODEL_IDS_KEY: _normalize_optional_ids(raw.get(ADMIN_MODEL_IDS_KEY)),
+        ADMIN_MCP_SERVER_IDS_KEY: _normalize_optional_ids(
+            raw.get(ADMIN_MCP_SERVER_IDS_KEY)
+        ),
     }
 
 
@@ -51,3 +86,35 @@ def can_user_inherit_admin_mcp_servers(user: Optional[UserModel]) -> bool:
     if not user or getattr(user, "role", None) == "admin":
         return False
     return bool(get_user_resource_inheritance(user)[INHERIT_ADMIN_MCP_SERVERS_KEY])
+
+
+def get_allowed_admin_model_ids(user: Optional[UserModel]) -> Optional[set[str]]:
+    value = get_user_resource_inheritance(user).get(ADMIN_MODEL_IDS_KEY)
+    return set(value) if isinstance(value, list) else None
+
+
+def get_allowed_admin_mcp_server_ids(user: Optional[UserModel]) -> Optional[set[str]]:
+    value = get_user_resource_inheritance(user).get(ADMIN_MCP_SERVER_IDS_KEY)
+    return set(value) if isinstance(value, list) else None
+
+
+def _is_allowed(allowed_ids: Optional[set[str]], candidates: list[Any]) -> bool:
+    if allowed_ids is None:
+        return True
+    return any(str(candidate or "").strip() in allowed_ids for candidate in candidates)
+
+
+def is_admin_model_allowed_for_user(
+    user: Optional[UserModel], *candidate_ids: Any
+) -> bool:
+    return _is_allowed(get_allowed_admin_model_ids(user), list(candidate_ids))
+
+
+def is_admin_mcp_server_allowed_for_user(
+    user: Optional[UserModel], server_id: Any
+) -> bool:
+    return _is_allowed(get_allowed_admin_mcp_server_ids(user), [server_id])
+
+
+def build_admin_mcp_server_resource_id(owner_id: Any, index: int) -> str:
+    return f"{str(owner_id or 'admin').strip()}:{int(index)}"

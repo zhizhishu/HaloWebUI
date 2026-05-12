@@ -29,8 +29,11 @@ from copy import deepcopy
 from typing import Any, Optional
 
 from open_webui.models.users import UserModel, UserSettings, Users
+from open_webui.utils.access_control import has_permission
 from open_webui.utils.user_resource_inheritance import (
+    build_admin_mcp_server_resource_id,
     can_user_inherit_admin_mcp_servers,
+    is_admin_mcp_server_allowed_for_user,
 )
 
 
@@ -205,31 +208,91 @@ def _is_mcp_inherit_from_admin_enabled(request) -> bool:
         return False
 
 
-def _get_admin_mcp_seed_connections(request) -> list[dict]:
+def _can_use_own_direct_tool_servers(request, user: Optional[UserModel]) -> bool:
+    if not user:
+        return False
+    if getattr(user, "role", None) == "admin":
+        return True
+
+    cfg = getattr(getattr(request, "app", None), "state", None)
+    cfg = getattr(cfg, "config", None)
+    permissions = getattr(cfg, "USER_PERMISSIONS", {}) if cfg is not None else {}
+    try:
+        user_id = getattr(user, "id", None)
+        if not user_id:
+            return False
+        return has_permission(user_id, "features.direct_tool_servers", permissions)
+    except Exception:
+        return False
+
+
+def can_user_use_inherited_admin_mcp_servers(request, user: Optional[UserModel]) -> bool:
+    return (
+        bool(user)
+        and getattr(user, "role", None) != "admin"
+        and _is_mcp_inherit_from_admin_enabled(request)
+        and can_user_inherit_admin_mcp_servers(user)
+    )
+
+
+def can_user_use_mcp_server_tools(request, user: Optional[UserModel]) -> bool:
+    return _can_use_own_direct_tool_servers(
+        request, user
+    ) or can_user_use_inherited_admin_mcp_servers(request, user)
+
+
+def _get_admin_mcp_seed_connections(
+    request, target_user: Optional[UserModel] = None
+) -> list[dict]:
     """
     Resolve inherited MCP connections source for regular users.
     Priority:
-    1) The first admin user that has per-user MCP settings.
+    1) Admin users' per-user MCP settings.
     2) Legacy global MCP_SERVER_CONNECTIONS config.
     """
+    inherited_connections: list[dict] = []
     try:
         for candidate in Users.get_users():
             if getattr(candidate, "role", None) != "admin":
+                continue
+            candidate_id = getattr(candidate, "id", None) or "admin"
+            if candidate_id == getattr(target_user, "id", None):
                 continue
 
             tools = _get_tools_settings(candidate)
             if MCP_SERVER_CONNECTIONS_KEY in tools:
                 admin_connections = _as_list(tools.get(MCP_SERVER_CONNECTIONS_KEY))
-                if admin_connections:
-                    return deepcopy(admin_connections)
+                for idx, connection in enumerate(admin_connections):
+                    server_id = build_admin_mcp_server_resource_id(candidate_id, idx)
+                    if not is_admin_mcp_server_allowed_for_user(target_user, server_id):
+                        continue
+                    inherited = deepcopy(connection)
+                    inherited["_inherit_id"] = server_id
+                    inherited["_inherited_from_user_id"] = candidate_id
+                    inherited_connections.append(inherited)
     except Exception:
         pass
+    if inherited_connections:
+        return inherited_connections
 
     cfg = getattr(getattr(request, "app", None), "state", None)
     cfg = getattr(cfg, "config", None)
     legacy = getattr(cfg, "MCP_SERVER_CONNECTIONS", None) if cfg is not None else None
     legacy = legacy if isinstance(legacy, list) else []
-    return deepcopy(legacy)
+    legacy_connections: list[dict] = []
+    for idx, connection in enumerate(legacy):
+        server_id = build_admin_mcp_server_resource_id("legacy", idx)
+        if not is_admin_mcp_server_allowed_for_user(target_user, server_id):
+            continue
+        inherited = deepcopy(connection)
+        inherited["_inherit_id"] = server_id
+        inherited["_inherited_from_user_id"] = "legacy"
+        legacy_connections.append(inherited)
+    return legacy_connections
+
+
+def get_admin_mcp_inheritance_connections(request) -> list[dict]:
+    return _get_admin_mcp_seed_connections(request, None)
 
 
 def get_user_mcp_server_connections(request, user: Optional[UserModel]) -> list[dict]:
@@ -245,25 +308,21 @@ def get_user_mcp_server_connections(request, user: Optional[UserModel]) -> list[
             if str(connection.get("transport_type") or "http").lower() != "stdio"
         ]
 
-    can_inherit = (
-        user
-        and role != "admin"
-        and _is_mcp_inherit_from_admin_enabled(request)
-        and can_user_inherit_admin_mcp_servers(user)
-    )
+    can_use_own = _can_use_own_direct_tool_servers(request, user)
+    can_inherit = can_user_use_inherited_admin_mcp_servers(request, user)
 
-    if MCP_SERVER_CONNECTIONS_KEY in tools:
+    if MCP_SERVER_CONNECTIONS_KEY in tools and can_use_own:
         own_connections = _filter_stdio(_as_list(tools.get(MCP_SERVER_CONNECTIONS_KEY)))
         if own_connections or not can_inherit:
             return own_connections
 
-        inherited = _get_admin_mcp_seed_connections(request)
+        inherited = _get_admin_mcp_seed_connections(request, user)
         if inherited:
             return _filter_stdio(inherited)
         return []
 
     if can_inherit:
-        inherited = _get_admin_mcp_seed_connections(request)
+        inherited = _get_admin_mcp_seed_connections(request, user)
         if inherited:
             return _filter_stdio(inherited)
 

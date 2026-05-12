@@ -6,7 +6,12 @@
 	import type { Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';
 
-	import { updateUserById } from '$lib/apis/users';
+	import {
+		getResourceInheritanceOptions,
+		updateUserById,
+		type ResourceInheritanceOption,
+		type ResourceInheritanceOptions
+	} from '$lib/apis/users';
 	import { WEBUI_BASE_URL } from '$lib/constants';
 
 	import Modal from '$lib/components/common/Modal.svelte';
@@ -22,7 +27,7 @@
 	export let selectedUser;
 	export let sessionUser;
 
-	let _user = {
+	let _user: any = {
 		id: '',
 		profile_image_url: '',
 		name: '',
@@ -32,20 +37,90 @@
 		settings: {
 			resource_inheritance: {
 				admin_models: true,
-				admin_mcp_servers: true
+				admin_model_ids: null,
+				admin_mcp_servers: true,
+				admin_mcp_server_ids: null
 			}
 		}
 	};
 
 	const DEFAULT_RESOURCE_INHERITANCE = {
 		admin_models: true,
-		admin_mcp_servers: true
+		admin_model_ids: null,
+		admin_mcp_servers: true,
+		admin_mcp_server_ids: null
 	};
 
 	const getResourceInheritance = (settings: any = {}) => ({
 		...DEFAULT_RESOURCE_INHERITANCE,
 		...(settings?.resource_inheritance ?? {})
 	});
+
+	let inheritanceOptions: ResourceInheritanceOptions = {
+		admin_models: [],
+		admin_mcp_servers: []
+	};
+	let inheritanceOptionsLoading = false;
+
+	const loadInheritanceOptions = async () => {
+		if (selectedUser?.role === 'admin') {
+			return;
+		}
+
+		inheritanceOptionsLoading = true;
+		const res = await getResourceInheritanceOptions(localStorage.token).catch((error) => {
+			toast.error(`${error}`);
+			return null;
+		});
+		if (res) {
+			inheritanceOptions = {
+				admin_models: res.admin_models ?? [],
+				admin_mcp_servers: res.admin_mcp_servers ?? []
+			};
+		}
+		inheritanceOptionsLoading = false;
+	};
+
+	const isAllInherited = (key: 'admin_model_ids' | 'admin_mcp_server_ids') =>
+		_user.settings.resource_inheritance[key] === null ||
+		_user.settings.resource_inheritance[key] === undefined;
+
+	const getSelectedResourceIds = (
+		key: 'admin_model_ids' | 'admin_mcp_server_ids',
+		options: ResourceInheritanceOption[]
+	) => {
+		const value = _user.settings.resource_inheritance[key];
+		if (Array.isArray(value)) {
+			return value;
+		}
+		return options.map((option) => option.id);
+	};
+
+	const setAllInherited = (
+		key: 'admin_model_ids' | 'admin_mcp_server_ids',
+		all: boolean,
+		options: ResourceInheritanceOption[]
+	) => {
+		_user.settings.resource_inheritance[key] = all ? null : options.map((option) => option.id);
+		_user = _user;
+	};
+
+	const toggleInheritedResource = (
+		key: 'admin_model_ids' | 'admin_mcp_server_ids',
+		options: ResourceInheritanceOption[],
+		id: string
+	) => {
+		const selected = new Set(getSelectedResourceIds(key, options));
+		if (selected.has(id)) {
+			selected.delete(id);
+		} else {
+			selected.add(id);
+		}
+		_user.settings.resource_inheritance[key] = options
+			.map((option) => option.id)
+			.filter((optionId) => selected.has(optionId));
+		_user = _user;
+	};
 
 	const createEditableUser = (user: any) => ({
 		id: user?.id ?? '',
@@ -96,6 +171,7 @@
 		if (selectedUser) {
 			_user = createEditableUser(selectedUser);
 		}
+		loadInheritanceOptions();
 	});
 </script>
 
@@ -213,6 +289,73 @@
 							<Switch bind:state={_user.settings.resource_inheritance.admin_models} />
 						</div>
 
+						{#if _user.settings.resource_inheritance.admin_models}
+							<div class="rounded-xl border border-gray-100/80 dark:border-gray-800/80 p-3">
+								<div class="flex items-start justify-between gap-4">
+									<div>
+										<div class="text-xs font-medium text-gray-600 dark:text-gray-300">
+											{$i18n.t('All Admin Models')}
+										</div>
+										<div class="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
+											{$i18n.t('Automatically include current and future admin models.')}
+										</div>
+									</div>
+									<Switch
+										state={isAllInherited('admin_model_ids')}
+										on:change={(event) =>
+											setAllInherited(
+												'admin_model_ids',
+												event.detail,
+												inheritanceOptions.admin_models
+											)}
+									/>
+								</div>
+
+								{#if !isAllInherited('admin_model_ids')}
+									<div class="mt-3 space-y-1 max-h-32 overflow-y-auto pr-1">
+										{#if inheritanceOptionsLoading}
+											<div class="text-xs text-gray-400 dark:text-gray-500">
+												{$i18n.t('Loading...')}
+											</div>
+										{:else if inheritanceOptions.admin_models.length === 0}
+											<div class="text-xs text-gray-400 dark:text-gray-500">
+												{$i18n.t('No admin models available.')}
+											</div>
+										{:else}
+											{#each inheritanceOptions.admin_models as option}
+												<label
+													class="flex items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-gray-50 dark:hover:bg-gray-800/40"
+												>
+													<input
+														type="checkbox"
+														class="mt-0.5"
+														checked={getSelectedResourceIds(
+															'admin_model_ids',
+															inheritanceOptions.admin_models
+														).includes(option.id)}
+														on:change={() =>
+															toggleInheritedResource(
+																'admin_model_ids',
+																inheritanceOptions.admin_models,
+																option.id
+															)}
+													/>
+													<span class="min-w-0">
+														<span class="block truncate text-xs font-medium text-gray-700 dark:text-gray-200">
+															{option.name}
+														</span>
+														<span class="block truncate text-[11px] text-gray-400 dark:text-gray-500">
+															{option.id}
+														</span>
+													</span>
+												</label>
+											{/each}
+										{/if}
+									</div>
+								{/if}
+							</div>
+						{/if}
+
 						<div class="flex items-start justify-between gap-4">
 							<div>
 								<div class="text-sm font-medium text-gray-700 dark:text-gray-200">
@@ -224,6 +367,75 @@
 							</div>
 							<Switch bind:state={_user.settings.resource_inheritance.admin_mcp_servers} />
 						</div>
+
+						{#if _user.settings.resource_inheritance.admin_mcp_servers}
+							<div class="rounded-xl border border-gray-100/80 dark:border-gray-800/80 p-3">
+								<div class="flex items-start justify-between gap-4">
+									<div>
+										<div class="text-xs font-medium text-gray-600 dark:text-gray-300">
+											{$i18n.t('All Admin MCP Servers')}
+										</div>
+										<div class="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
+											{$i18n.t('Automatically include current and future admin MCP servers.')}
+										</div>
+									</div>
+									<Switch
+										state={isAllInherited('admin_mcp_server_ids')}
+										on:change={(event) =>
+											setAllInherited(
+												'admin_mcp_server_ids',
+												event.detail,
+												inheritanceOptions.admin_mcp_servers
+											)}
+									/>
+								</div>
+
+								{#if !isAllInherited('admin_mcp_server_ids')}
+									<div class="mt-3 space-y-1 max-h-32 overflow-y-auto pr-1">
+										{#if inheritanceOptionsLoading}
+											<div class="text-xs text-gray-400 dark:text-gray-500">
+												{$i18n.t('Loading...')}
+											</div>
+										{:else if inheritanceOptions.admin_mcp_servers.length === 0}
+											<div class="text-xs text-gray-400 dark:text-gray-500">
+												{$i18n.t('No admin MCP servers available.')}
+											</div>
+										{:else}
+											{#each inheritanceOptions.admin_mcp_servers as option}
+												<label
+													class="flex items-start gap-2 rounded-lg px-2 py-1.5 hover:bg-gray-50 dark:hover:bg-gray-800/40"
+												>
+													<input
+														type="checkbox"
+														class="mt-0.5"
+														checked={getSelectedResourceIds(
+															'admin_mcp_server_ids',
+															inheritanceOptions.admin_mcp_servers
+														).includes(option.id)}
+														on:change={() =>
+															toggleInheritedResource(
+																'admin_mcp_server_ids',
+																inheritanceOptions.admin_mcp_servers,
+																option.id
+															)}
+													/>
+													<span class="min-w-0">
+														<span class="block truncate text-xs font-medium text-gray-700 dark:text-gray-200">
+															{option.name}
+														</span>
+														<span class="block truncate text-[11px] text-gray-400 dark:text-gray-500">
+															{option.transport_type?.toUpperCase?.() ?? 'HTTP'}{option.tool_count
+																? ` - ${option.tool_count} tools`
+																: ''}
+														</span>
+													</span>
+												</label>
+											{/each}
+										{/if}
+									</div>
+								{/if}
+							</div>
+						{/if}
 					</div>
 				{/if}
 			</div>
