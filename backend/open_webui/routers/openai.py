@@ -708,6 +708,7 @@ def _build_upstream_headers(
 
     lower = {k.lower(): k for k in headers.keys()}
     auth_type = str((api_config or {}).get("auth_type") or "").strip().lower()
+    key = str(key or "").strip()
     if key and ("authorization" not in lower) and ("api-key" not in lower):
         if auth_type in {"none", "custom", "custom_headers_only"}:
             pass

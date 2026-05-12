@@ -83,6 +83,16 @@ def test_azure_headers_default_to_api_key_auth():
     assert "Authorization" not in headers
 
 
+def test_openai_headers_trim_copied_api_key_whitespace():
+    headers = _build_upstream_headers(
+        "https://api.openai.com/v1",
+        "  sk-test\n",
+        {"auth_type": "bearer"},
+    )
+
+    assert headers["Authorization"] == "Bearer sk-test"
+
+
 def test_azure_chat_attempts_add_legacy_deployment_fallback_without_model_field():
     attempts = _build_chat_completion_request_attempts(
         url="https://example-resource.openai.azure.com",
