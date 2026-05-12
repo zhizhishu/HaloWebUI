@@ -36,6 +36,10 @@ from open_webui.utils.user_connections import (
     normalize_connections_payload,
 )
 from open_webui.utils.user_tools import maybe_migrate_user_tool_settings
+from open_webui.utils.user_resource_inheritance import (
+    RESOURCE_INHERITANCE_KEY,
+    normalize_resource_inheritance,
+)
 from open_webui.utils.access_control import get_permissions
 
 
@@ -441,6 +445,7 @@ async def get_user_by_id(user_id: str, user=Depends(get_verified_user)):
 
 @router.post("/{user_id}/update", response_model=Optional[UserModel])
 async def update_user_by_id(
+    request: Request,
     user_id: str,
     form_data: UserUpdateForm,
     session_user=Depends(get_admin_user),
@@ -473,6 +478,25 @@ async def update_user_by_id(
             user_id,
             update_data,
         )
+
+        settings_patch = _as_dict(form_data.settings)
+        if RESOURCE_INHERITANCE_KEY in settings_patch:
+            updated_user = Users.patch_user_settings_by_id(
+                user_id,
+                {
+                    RESOURCE_INHERITANCE_KEY: normalize_resource_inheritance(
+                        settings_patch.get(RESOURCE_INHERITANCE_KEY)
+                    )
+                },
+            )
+            if updated_user:
+                invalidate_cached_user(user_id)
+
+                from open_webui.utils.models import invalidate_base_model_cache
+
+                request.app.state.BASE_MODELS = None
+                request.app.state.MODELS = {}
+                invalidate_base_model_cache(user_id)
 
         if updated_user:
             return updated_user

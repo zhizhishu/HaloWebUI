@@ -92,6 +92,70 @@ def test_regular_user_does_not_inherit_when_disabled(monkeypatch):
     assert result == []
 
 
+def test_regular_user_resource_setting_disables_admin_mcp_inheritance(monkeypatch):
+    from open_webui.utils import user_tools as user_tools_mod
+
+    admin_user = SimpleNamespace(
+        role="admin",
+        settings=_Settings(
+            {
+                "tools": {
+                    "mcp_server_connections": [
+                        {"transport_type": "http", "url": "https://mcp.example.com"}
+                    ]
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(user_tools_mod.Users, "get_users", lambda: [admin_user])
+
+    request = _build_request(inherit_enabled=True)
+    regular_user = SimpleNamespace(
+        role="user",
+        settings=_Settings(
+            {
+                "resource_inheritance": {
+                    "admin_models": True,
+                    "admin_mcp_servers": False,
+                }
+            }
+        ),
+    )
+
+    result = user_tools_mod.get_user_mcp_server_connections(request, regular_user)
+
+    assert result == []
+
+
+def test_regular_user_empty_own_mcp_connections_can_still_inherit(monkeypatch):
+    from open_webui.utils import user_tools as user_tools_mod
+
+    admin_user = SimpleNamespace(
+        role="admin",
+        settings=_Settings(
+            {
+                "tools": {
+                    "mcp_server_connections": [
+                        {"transport_type": "http", "url": "https://mcp.example.com"}
+                    ]
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(user_tools_mod.Users, "get_users", lambda: [admin_user])
+
+    request = _build_request(inherit_enabled=True)
+    regular_user = SimpleNamespace(
+        role="user",
+        settings=_Settings({"tools": {"mcp_server_connections": []}}),
+    )
+
+    result = user_tools_mod.get_user_mcp_server_connections(request, regular_user)
+
+    assert len(result) == 1
+    assert result[0]["url"] == "https://mcp.example.com"
+
+
 def test_regular_user_own_connections_override_admin_inheritance(monkeypatch):
     from open_webui.utils import user_tools as user_tools_mod
 

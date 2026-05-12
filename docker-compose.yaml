@@ -9,7 +9,7 @@ services:
         ENABLE_PYODIDE: ${ENABLE_PYODIDE-false}
         VITE_SOURCEMAP: ${VITE_SOURCEMAP-false}
         HALO_RUNTIME_PROFILE: ${HALO_RUNTIME_PROFILE-main}
-    image: ghcr.io/ztx888/halowebui:${WEBUI_DOCKER_TAG-main}
+    image: ghcr.io/zhizhishu/halowebui:${WEBUI_DOCKER_TAG-custom}
     container_name: open-webui
     volumes:
       - open-webui:/app/backend/data

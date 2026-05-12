@@ -5,12 +5,19 @@
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import HaloSelect from '$lib/components/common/HaloSelect.svelte';
 	import InlineDirtyActions from './InlineDirtyActions.svelte';
-	import { WEBUI_BUILD_HASH, WEBUI_VERSION } from '$lib/constants';
+	import {
+		WEBUI_BUILD_HASH,
+		WEBUI_FORK_REPO_URL,
+		WEBUI_FORK_VERSION,
+		WEBUI_VERSION
+	} from '$lib/constants';
 	import { config, showChangelog } from '$lib/stores';
 	import { onMount, getContext } from 'svelte';
+	import type { Writable } from 'svelte/store';
+	import type { i18n as i18nType } from 'i18next';
 	import { toast } from 'svelte-sonner';
 
-	const i18n = getContext('i18n');
+	const i18n = getContext('i18n') as Writable<i18nType>;
 
 	export let saveHandler: Function;
 
@@ -212,11 +219,16 @@
 							<Tooltip content={WEBUI_BUILD_HASH}>
 								<span
 									class="text-sm font-medium text-gray-400 dark:text-gray-500 whitespace-nowrap"
-									>V{currentVersion}</span
+									>V{currentVersion} · {WEBUI_FORK_VERSION}</span
 								>
 							</Tooltip>
 							<span
 								class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-600 dark:bg-amber-900/25 dark:text-amber-400 leading-none"
+							>
+								Custom
+							</span>
+							<span
+								class="hidden items-center px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-600 dark:bg-amber-900/25 dark:text-amber-400 leading-none"
 							>
 								测试版
 							</span>
@@ -244,7 +256,7 @@
 						</a>
 						<span class="text-gray-300 dark:text-gray-600 select-none">·</span>
 						<a
-							href="https://github.com/ztx888/HaloWebUI"
+							href={WEBUI_FORK_REPO_URL}
 							target="_blank"
 							class="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-100 dark:hover:bg-gray-700/40 transition-colors"
 						>
@@ -264,7 +276,7 @@
 						</a>
 						<span class="text-gray-300 dark:text-gray-600 select-none">·</span>
 						<a
-							href="https://github.com/ztx888/HaloWebUI/issues"
+							href={`${WEBUI_FORK_REPO_URL}/issues`}
 							target="_blank"
 							class="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-gray-500 dark:text-gray-400 hover:text-orange-600 dark:hover:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-900/15 transition-colors"
 						>

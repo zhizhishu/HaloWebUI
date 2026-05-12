@@ -13,6 +13,14 @@ from open_webui.utils import user_connections
 from open_webui.models.users import Users
 
 
+class _Settings:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def model_dump(self):
+        return self._payload
+
+
 class _WorkspaceModel:
     def __init__(
         self,
@@ -269,6 +277,56 @@ def test_admin_base_model_is_marked_when_inherited(monkeypatch):
     assert models[0]["_inherited_from_user_id"] == owner.id
     assert models[0]["inherited_from_user_id"] == owner.id
     assert request.state.MODELS["admin-only.gpt-4o"]["_inherited_from_user_id"] == owner.id
+
+
+def test_user_resource_setting_can_disable_admin_model_inheritance(monkeypatch):
+    owner = SimpleNamespace(id="admin-1", role="admin")
+    user = SimpleNamespace(
+        id="user-1",
+        role="user",
+        settings=_Settings(
+            {
+                "resource_inheritance": {
+                    "admin_models": False,
+                    "admin_mcp_servers": True,
+                }
+            }
+        ),
+    )
+
+    async def fake_get_all_base_models(_request, user=None):
+        if user and user.id == owner.id:
+            return [
+                {
+                    "id": "admin-only.gpt-4o",
+                    "name": "Admin GPT-4o",
+                    "object": "model",
+                    "created": 123,
+                    "owned_by": "openai",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(models_utils, "get_all_base_models", fake_get_all_base_models)
+    monkeypatch.setattr(models_utils.Functions, "get_global_action_functions", lambda: [])
+    monkeypatch.setattr(
+        models_utils.Functions,
+        "get_functions_by_type",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(models_utils.Models, "get_all_models", lambda: [])
+    monkeypatch.setattr(Users, "get_users", lambda: [owner])
+    monkeypatch.setattr(
+        user_connections,
+        "maybe_migrate_user_connections",
+        lambda _request, candidate: candidate,
+    )
+
+    request = _make_request(inherit_admin_models=True)
+    models = asyncio.run(models_utils.get_all_models(request, user=user))
+
+    assert models == []
+    assert request.state.MODELS == {}
 
 
 def test_orphan_base_override_is_not_injected_into_models(monkeypatch):

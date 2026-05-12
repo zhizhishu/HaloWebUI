@@ -9,17 +9,17 @@
 
   <br/>
 
-  <a href="https://github.com/ztx888/HaloWebUI/stargazers">
-    <img src="https://img.shields.io/github/stars/ztx888/HaloWebUI?style=for-the-badge&logo=github&color=f4c542" alt="Stars" />
+  <a href="https://github.com/zhizhishu/HaloWebUI/stargazers">
+    <img src="https://img.shields.io/github/stars/zhizhishu/HaloWebUI?style=for-the-badge&logo=github&color=f4c542" alt="Stars" />
   </a>
-  <a href="https://github.com/ztx888/HaloWebUI/network/members">
-    <img src="https://img.shields.io/github/forks/ztx888/HaloWebUI?style=for-the-badge&logo=github&color=8ac926" alt="Forks" />
+  <a href="https://github.com/zhizhishu/HaloWebUI/network/members">
+    <img src="https://img.shields.io/github/forks/zhizhishu/HaloWebUI?style=for-the-badge&logo=github&color=8ac926" alt="Forks" />
   </a>
-  <a href="https://github.com/ztx888/HaloWebUI/commits/main">
-    <img src="https://img.shields.io/github/last-commit/ztx888/HaloWebUI/main?style=for-the-badge&logo=git&color=ff595e" alt="Last Commit" />
+  <a href="https://github.com/zhizhishu/HaloWebUI/commits/custom">
+    <img src="https://img.shields.io/github/last-commit/zhizhishu/HaloWebUI/custom?style=for-the-badge&logo=git&color=ff595e" alt="Last Commit" />
   </a>
-  <a href="https://github.com/ztx888/HaloWebUI/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/ztx888/HaloWebUI?style=for-the-badge&color=6a4c93" alt="License" />
+  <a href="https://github.com/zhizhishu/HaloWebUI/blob/custom/LICENSE">
+    <img src="https://img.shields.io/github/license/zhizhishu/HaloWebUI?style=for-the-badge&color=6a4c93" alt="License" />
   </a>
 
   <br/><br/>
@@ -33,6 +33,12 @@
 </div>
 
 <br/>
+
+## Custom 分支更新
+
+- 普通用户可按用户管理权限继承管理员模型。
+- 普通用户可按用户管理权限继承管理员 MCP 服务器；用户自己的 MCP 配置优先。
+- 前端设置页显示 `custom-<commit>` 版本，公开 GitHub 链接指向 `zhizhishu/HaloWebUI`。
 
 <!-- TODO: 替换为实际界面截图（推荐 16:9、1920×1080），放到 static/screenshot.png -->
 <!--
@@ -61,7 +67,7 @@ docker run -d -p 3000:8080 \
   -v open-webui:/app/backend/data \
   --name halowebui \
   --restart always \
-  ghcr.io/ztx888/halowebui:main
+  ghcr.io/zhizhishu/halowebui:custom
 ```
 
 ### Docker Compose（默认推荐）
@@ -146,7 +152,7 @@ docker run -d -p 3000:8080 \
   -v open-webui:/app/backend/data \
   --name halowebui \
   --restart always \
-  ghcr.io/ztx888/halowebui:slim
+  ghcr.io/zhizhishu/halowebui:slim
 ```
 
 ### Docker Compose（轻量版 slim）
@@ -212,11 +218,11 @@ HaloWebUI 基于 [Open WebUI](https://github.com/open-webui/open-webui) 深度�
 
 ### ⭐ Star History
 
-<a href="https://star-history.com/#ztx888/HaloWebUI&Date">
+<a href="https://star-history.com/#zhizhishu/HaloWebUI&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=ztx888/HaloWebUI&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=ztx888/HaloWebUI&type=Date" />
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=ztx888/HaloWebUI&type=Date" width="680" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=zhizhishu/HaloWebUI&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=zhizhishu/HaloWebUI&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=zhizhishu/HaloWebUI&type=Date" width="680" />
   </picture>
 </a>
 

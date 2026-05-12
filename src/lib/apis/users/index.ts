@@ -359,6 +359,7 @@ type UserUpdateForm = {
 	name: string;
 	password: string;
 	note: string;
+	settings?: Record<string, any>;
 };
 
 export const updateUserById = async (token: string, userId: string, user: UserUpdateForm) => {
@@ -375,7 +376,8 @@ export const updateUserById = async (token: string, userId: string, user: UserUp
 			email: user.email,
 			name: user.name,
 			password: user.password !== '' ? user.password : undefined,
-			note: user.note ?? undefined
+			note: user.note ?? undefined,
+			settings: user.settings ?? undefined
 		})
 	})
 		.then(parseJsonResponse)

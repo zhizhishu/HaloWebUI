@@ -87,8 +87,7 @@ export const getConnectionsConfig = async (token: string) => {
 		const direct = await getDirectConnectionsConfig(token).catch(() => ({}));
 		return {
 			...(direct ?? {}),
-			ENABLE_BASE_MODELS_CACHE: direct?.ENABLE_BASE_MODELS_CACHE ?? true,
-			ENABLE_MODEL_INHERIT_FROM_ADMIN: direct?.ENABLE_MODEL_INHERIT_FROM_ADMIN ?? true
+			ENABLE_BASE_MODELS_CACHE: direct?.ENABLE_BASE_MODELS_CACHE ?? true
 		};
 	}
 };

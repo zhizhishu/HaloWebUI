@@ -17,6 +17,7 @@ from open_webui.models.models import Models
 
 from open_webui.utils.plugin import load_function_module_by_id
 from open_webui.utils.access_control import has_access
+from open_webui.utils.user_resource_inheritance import can_user_inherit_admin_models
 from open_webui.utils.model_identity import (
     build_model_lookup,
     decorate_provider_model_identity,
@@ -61,6 +62,15 @@ def is_model_inherit_from_admin_enabled(request: Request) -> bool:
         return bool(getattr(cfg, "ENABLE_MODEL_INHERIT_FROM_ADMIN"))
     except Exception:
         return False
+
+
+def can_inherit_admin_models(request: Request, user: Optional[UserModel]) -> bool:
+    return (
+        bool(user)
+        and getattr(user, "role", None) != "admin"
+        and is_model_inherit_from_admin_enabled(request)
+        and can_user_inherit_admin_models(user)
+    )
 
 
 def get_inherited_model_owner_id(model: Optional[dict]) -> str:
@@ -301,11 +311,7 @@ async def get_all_models(request, user: UserModel = None):
     base_models = await get_all_base_models(request, user=user)
     models = copy.deepcopy(base_models)
 
-    model_inherit_enabled = (
-        bool(user)
-        and getattr(user, "role", None) != "admin"
-        and is_model_inherit_from_admin_enabled(request)
-    )
+    model_inherit_enabled = can_inherit_admin_models(request, user)
     admin_user_ids: set[str] = set()
 
     if model_inherit_enabled:

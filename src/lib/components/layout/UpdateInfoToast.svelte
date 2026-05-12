@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { getContext, createEventDispatcher } from 'svelte';
+	import type { Writable } from 'svelte/store';
+	import type { i18n as i18nType } from 'i18next';
 
 	const dispatch = createEventDispatcher();
-	const i18n = getContext('i18n');
+	const i18n = getContext('i18n') as Writable<i18nType>;
 
-	import { WEBUI_VERSION } from '$lib/constants';
+	import { WEBUI_FORK_REPO_URL, WEBUI_VERSION } from '$lib/constants';
 	import XMark from '../icons/XMark.svelte';
 
 	export let version = {
@@ -37,7 +39,7 @@
 			LATEST_VERSION: version.latest
 		})}
 
-		<a href="https://github.com/ztx888/HaloWebUI/releases" target="_blank"
+		<a href={`${WEBUI_FORK_REPO_URL}/releases`} target="_blank"
 			class="underline hover:text-blue-900 dark:hover:text-blue-200 transition-colors">
 			{$i18n.t('Update for the latest features and improvements.')}
 		</a>

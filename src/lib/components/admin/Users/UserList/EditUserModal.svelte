@@ -3,15 +3,18 @@
 	import dayjs from 'dayjs';
 	import { createEventDispatcher } from 'svelte';
 	import { getContext, onMount } from 'svelte';
+	import type { Writable } from 'svelte/store';
+	import type { i18n as i18nType } from 'i18next';
 
 	import { updateUserById } from '$lib/apis/users';
 	import { WEBUI_BASE_URL } from '$lib/constants';
 
 	import Modal from '$lib/components/common/Modal.svelte';
 	import LetterAvatar from '$lib/components/common/LetterAvatar.svelte';
+	import Switch from '$lib/components/common/Switch.svelte';
 	import localizedFormat from 'dayjs/plugin/localizedFormat';
 
-	const i18n = getContext('i18n');
+	const i18n = getContext('i18n') as Writable<i18nType>;
 	const dispatch = createEventDispatcher();
 	dayjs.extend(localizedFormat);
 
@@ -25,8 +28,24 @@
 		name: '',
 		email: '',
 		password: '',
-		note: ''
+		note: '',
+		settings: {
+			resource_inheritance: {
+				admin_models: true,
+				admin_mcp_servers: true
+			}
+		}
 	};
+
+	const DEFAULT_RESOURCE_INHERITANCE = {
+		admin_models: true,
+		admin_mcp_servers: true
+	};
+
+	const getResourceInheritance = (settings: any = {}) => ({
+		...DEFAULT_RESOURCE_INHERITANCE,
+		...(settings?.resource_inheritance ?? {})
+	});
 
 	const createEditableUser = (user: any) => ({
 		id: user?.id ?? '',
@@ -34,7 +53,10 @@
 		name: user?.name ?? '',
 		email: user?.email ?? '',
 		password: '',
-		note: user?.note ?? ''
+		note: user?.note ?? '',
+		settings: {
+			resource_inheritance: getResourceInheritance(user?.settings)
+		}
 	});
 
 	const hasCustomAvatar = (url: string) =>
@@ -55,7 +77,12 @@
 	};
 
 	const submitHandler = async () => {
-		const res = await updateUserById(localStorage.token, selectedUser.id, _user).catch((error) => {
+		const payload =
+			selectedUser?.role === 'admin'
+				? { ..._user, settings: undefined }
+				: _user;
+
+		const res = await updateUserById(localStorage.token, selectedUser.id, payload).catch((error) => {
 			toast.error(`${error}`);
 		});
 
@@ -162,6 +189,43 @@
 						placeholder={$i18n.t('Internal note visible only to admins')}
 					/>
 				</div>
+
+				{#if selectedUser?.role !== 'admin'}
+					<div class="glass-item p-4 space-y-3">
+						<div>
+							<div class="text-xs font-medium text-gray-500 dark:text-gray-400">
+								{$i18n.t('Resource Inheritance')}
+							</div>
+							<div class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+								{$i18n.t('Control whether this user can inherit admin-managed resources.')}
+							</div>
+						</div>
+
+						<div class="flex items-start justify-between gap-4">
+							<div>
+								<div class="text-sm font-medium text-gray-700 dark:text-gray-200">
+									{$i18n.t('Inherit Admin Models')}
+								</div>
+								<div class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+									{$i18n.t('Allow this user to use models configured by admins.')}
+								</div>
+							</div>
+							<Switch bind:state={_user.settings.resource_inheritance.admin_models} />
+						</div>
+
+						<div class="flex items-start justify-between gap-4">
+							<div>
+								<div class="text-sm font-medium text-gray-700 dark:text-gray-200">
+									{$i18n.t('Inherit Admin MCP')}
+								</div>
+								<div class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+									{$i18n.t('Allow this user to use MCP servers configured by admins.')}
+								</div>
+							</div>
+							<Switch bind:state={_user.settings.resource_inheritance.admin_mcp_servers} />
+						</div>
+					</div>
+				{/if}
 			</div>
 
 			<div class="flex justify-end mt-5">

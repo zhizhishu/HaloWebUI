@@ -1504,7 +1504,7 @@
 												Couldn't find your language?
 												<a
 													class="text-gray-500 dark:text-gray-400 font-medium underline"
-													href="https://github.com/ztx888/HaloWebUI/blob/main/docs/CONTRIBUTING.md#-translations-and-internationalization"
+													href="https://github.com/zhizhishu/HaloWebUI/blob/custom/docs/CONTRIBUTING.md#-translations-and-internationalization"
 													target="_blank"
 												>
 													Help us translate Halo WebUI!

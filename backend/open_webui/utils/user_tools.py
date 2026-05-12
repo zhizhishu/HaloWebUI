@@ -29,6 +29,9 @@ from copy import deepcopy
 from typing import Any, Optional
 
 from open_webui.models.users import UserModel, UserSettings, Users
+from open_webui.utils.user_resource_inheritance import (
+    can_user_inherit_admin_mcp_servers,
+)
 
 
 TOOLS_KEY = "tools"
@@ -242,10 +245,24 @@ def get_user_mcp_server_connections(request, user: Optional[UserModel]) -> list[
             if str(connection.get("transport_type") or "http").lower() != "stdio"
         ]
 
-    if MCP_SERVER_CONNECTIONS_KEY in tools:
-        return _filter_stdio(_as_list(tools.get(MCP_SERVER_CONNECTIONS_KEY)))
+    can_inherit = (
+        user
+        and role != "admin"
+        and _is_mcp_inherit_from_admin_enabled(request)
+        and can_user_inherit_admin_mcp_servers(user)
+    )
 
-    if user and role != "admin" and _is_mcp_inherit_from_admin_enabled(request):
+    if MCP_SERVER_CONNECTIONS_KEY in tools:
+        own_connections = _filter_stdio(_as_list(tools.get(MCP_SERVER_CONNECTIONS_KEY)))
+        if own_connections or not can_inherit:
+            return own_connections
+
+        inherited = _get_admin_mcp_seed_connections(request)
+        if inherited:
+            return _filter_stdio(inherited)
+        return []
+
+    if can_inherit:
         inherited = _get_admin_mcp_seed_connections(request)
         if inherited:
             return _filter_stdio(inherited)

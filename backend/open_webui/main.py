@@ -579,7 +579,7 @@ print(
 
 v{VERSION} - building the best open-source AI user interface.
 {f"Commit: {WEBUI_BUILD_HASH}" if WEBUI_BUILD_HASH != "dev-build" else ""}
-https://github.com/ztx888/HaloWebUI
+https://github.com/zhizhishu/HaloWebUI
 """
 )
 
@@ -2118,7 +2118,7 @@ async def get_app_latest_release_version(user=Depends(get_verified_user)):
         timeout = aiohttp.ClientTimeout(total=1)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             async with session.get(
-                "https://api.github.com/repos/ztx888/HaloWebUI/releases/latest"
+                "https://api.github.com/repos/zhizhishu/HaloWebUI/releases/latest"
             ) as response:
                 response.raise_for_status()
                 data = await response.json()

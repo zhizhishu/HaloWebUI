@@ -20,6 +20,12 @@ export const EXTERNAL_API_ADMIN_BASE_URL = `${WEBUI_BASE_URL}/api/v1/external_ap
 
 export const WEBUI_VERSION = APP_VERSION;
 export const WEBUI_BUILD_HASH = APP_BUILD_HASH;
+export const WEBUI_FORK_REPOSITORY = 'zhizhishu/HaloWebUI';
+export const WEBUI_FORK_REPO_URL = `https://github.com/${WEBUI_FORK_REPOSITORY}`;
+export const WEBUI_FORK_VERSION =
+	WEBUI_BUILD_HASH && WEBUI_BUILD_HASH !== 'dev-build'
+		? `custom-${WEBUI_BUILD_HASH.slice(0, 7)}`
+		: 'custom-dev';
 export const REQUIRED_OLLAMA_VERSION = '0.1.16';
 
 export const SUPPORTED_FILE_TYPE = [
