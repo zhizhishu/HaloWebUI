@@ -52,11 +52,11 @@ jobs:
         shell: bash
         run: |
           set +e
-          mkdir -p .reports
+          mkdir -p .reports .reports/data
           LOG_FILE=".reports/mcp-core-regression.log"
           JUNIT_FILE=".reports/mcp-core-regression.junit.xml"
 
-          uv run pytest \
+          DATA_DIR="${PWD}/.reports/data" uv run pytest \
             backend/open_webui/test/unit/test_user_tools_mcp_inherit.py \
             backend/open_webui/test/unit/test_mcp.py \
             --junitxml "${JUNIT_FILE}" 2>&1 | tee "${LOG_FILE}"
