@@ -9,6 +9,7 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from open_webui.utils import models as models_utils
+from open_webui.utils import user_connections
 from open_webui.models.users import Users
 
 
@@ -49,10 +50,16 @@ class _WorkspaceModel:
         }
 
 
-def _make_request():
+def _make_request(*, inherit_admin_models=None):
+    app_state = SimpleNamespace(FUNCTIONS={})
+    if inherit_admin_models is not None:
+        app_state.config = SimpleNamespace(
+            ENABLE_MODEL_INHERIT_FROM_ADMIN=inherit_admin_models
+        )
+
     return SimpleNamespace(
         state=SimpleNamespace(),
-        app=SimpleNamespace(state=SimpleNamespace(FUNCTIONS={})),
+        app=SimpleNamespace(state=app_state),
     )
 
 
@@ -161,6 +168,107 @@ def test_private_admin_shared_model_stays_hidden_without_explicit_access(monkeyp
 
     assert models == []
     assert request.state.MODELS == {}
+
+
+def test_private_admin_shared_model_is_inherited_when_enabled(monkeypatch):
+    owner = SimpleNamespace(id="admin-1", role="admin")
+    user = SimpleNamespace(id="user-1", role="user")
+
+    async def fake_get_all_base_models(_request, user=None):
+        if user and user.id == owner.id:
+            return [
+                {
+                    "id": "shared.gpt-4o",
+                    "name": "Owner GPT-4o",
+                    "object": "model",
+                    "created": 123,
+                    "owned_by": "openai",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(models_utils, "get_all_base_models", fake_get_all_base_models)
+    monkeypatch.setattr(models_utils.Functions, "get_global_action_functions", lambda: [])
+    monkeypatch.setattr(
+        models_utils.Functions,
+        "get_functions_by_type",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        models_utils.Models,
+        "get_all_models",
+        lambda: [
+            _WorkspaceModel(
+                model_id="shared.gpt-4o",
+                user_id=owner.id,
+                name="Shared GPT-4o",
+                access_control={},
+            )
+        ],
+    )
+    monkeypatch.setattr(models_utils, "has_access", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(Users, "get_users", lambda: [owner])
+    monkeypatch.setattr(
+        Users,
+        "get_user_by_id",
+        lambda user_id: owner if user_id == owner.id else None,
+    )
+    monkeypatch.setattr(
+        user_connections,
+        "maybe_migrate_user_connections",
+        lambda _request, candidate: candidate,
+    )
+
+    request = _make_request(inherit_admin_models=True)
+    models = asyncio.run(models_utils.get_all_models(request, user=user))
+
+    assert [model["id"] for model in models] == ["shared.gpt-4o"]
+    assert models[0]["name"] == "Shared GPT-4o"
+    assert models[0]["info"]["user_id"] == owner.id
+    assert models[0]["_inherited_from_user_id"] == owner.id
+    assert models[0]["inherited_from_user_id"] == owner.id
+    assert request.state.MODELS["shared.gpt-4o"]["_inherited_from_user_id"] == owner.id
+
+
+def test_admin_base_model_is_marked_when_inherited(monkeypatch):
+    owner = SimpleNamespace(id="admin-1", role="admin")
+    user = SimpleNamespace(id="user-1", role="user")
+
+    async def fake_get_all_base_models(_request, user=None):
+        if user and user.id == owner.id:
+            return [
+                {
+                    "id": "admin-only.gpt-4o",
+                    "name": "Admin GPT-4o",
+                    "object": "model",
+                    "created": 123,
+                    "owned_by": "openai",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(models_utils, "get_all_base_models", fake_get_all_base_models)
+    monkeypatch.setattr(models_utils.Functions, "get_global_action_functions", lambda: [])
+    monkeypatch.setattr(
+        models_utils.Functions,
+        "get_functions_by_type",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(models_utils.Models, "get_all_models", lambda: [])
+    monkeypatch.setattr(Users, "get_users", lambda: [owner])
+    monkeypatch.setattr(
+        user_connections,
+        "maybe_migrate_user_connections",
+        lambda _request, candidate: candidate,
+    )
+
+    request = _make_request(inherit_admin_models=True)
+    models = asyncio.run(models_utils.get_all_models(request, user=user))
+
+    assert [model["id"] for model in models] == ["admin-only.gpt-4o"]
+    assert models[0]["_inherited_from_user_id"] == owner.id
+    assert models[0]["inherited_from_user_id"] == owner.id
+    assert request.state.MODELS["admin-only.gpt-4o"]["_inherited_from_user_id"] == owner.id
 
 
 def test_orphan_base_override_is_not_injected_into_models(monkeypatch):

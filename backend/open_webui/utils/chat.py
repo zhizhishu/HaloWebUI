@@ -43,7 +43,11 @@ from open_webui.models.models import Models
 
 
 from open_webui.utils.plugin import load_function_module_by_id
-from open_webui.utils.models import get_all_models, check_model_access
+from open_webui.utils.models import (
+    get_all_models,
+    check_model_access,
+    get_inherited_model_owner_id,
+)
 from open_webui.utils.model_identity import resolve_model_from_lookup
 from open_webui.utils.payload import convert_payload_openai_to_ollama
 from open_webui.utils.chat_image_refs import materialize_openai_image_message_refs
@@ -215,15 +219,25 @@ async def generate_chat_completion(
     # Shared model: route through the owning user's connections.
     # This matters for task endpoints that call generate_chat_completion directly.
     try:
-        model_info = Models.get_model_by_id(model.get("id"))
-        if model_info and model_info.user_id and model_info.user_id != user.id:
+        inherited_owner_id = get_inherited_model_owner_id(model)
+        if inherited_owner_id and inherited_owner_id != getattr(user, "id", None):
             from open_webui.models.users import Users  # local import to avoid heavy coupling
             from open_webui.utils.user_connections import maybe_migrate_user_connections
 
-            owner = Users.get_user_by_id(model_info.user_id)
+            owner = Users.get_user_by_id(inherited_owner_id)
             if owner:
                 owner = maybe_migrate_user_connections(request, owner)
                 request.state.connection_user = owner
+        else:
+            model_info = Models.get_model_by_id(model.get("id"))
+            if model_info and model_info.user_id and model_info.user_id != user.id:
+                from open_webui.models.users import Users  # local import to avoid heavy coupling
+                from open_webui.utils.user_connections import maybe_migrate_user_connections
+
+                owner = Users.get_user_by_id(model_info.user_id)
+                if owner:
+                    owner = maybe_migrate_user_connections(request, owner)
+                    request.state.connection_user = owner
     except Exception:
         pass
 

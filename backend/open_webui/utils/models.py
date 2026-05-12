@@ -51,6 +51,44 @@ _BASE_MODEL_FETCH_TIMEOUT = (
     if isinstance(AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST, (int, float))
     else 5.0
 )
+MODEL_INHERIT_OWNER_KEY = "_inherited_from_user_id"
+
+
+def is_model_inherit_from_admin_enabled(request: Request) -> bool:
+    cfg = getattr(getattr(request, "app", None), "state", None)
+    cfg = getattr(cfg, "config", None)
+    try:
+        return bool(getattr(cfg, "ENABLE_MODEL_INHERIT_FROM_ADMIN"))
+    except Exception:
+        return False
+
+
+def get_inherited_model_owner_id(model: Optional[dict]) -> str:
+    if not isinstance(model, dict):
+        return ""
+    return str(
+        model.get(MODEL_INHERIT_OWNER_KEY)
+        or model.get("inherited_from_user_id")
+        or ""
+    ).strip()
+
+
+def _mark_model_inherited_from_admin(model: dict, owner_user_id: str) -> dict:
+    if not isinstance(model, dict) or not owner_user_id:
+        return model
+    model[MODEL_INHERIT_OWNER_KEY] = owner_user_id
+    model["inherited_from_user_id"] = owner_user_id
+    model["inherited_from_role"] = "admin"
+    return model
+
+
+def _is_admin_owned_model_inheritance(
+    user: Optional[UserModel], model_owner_id: Optional[str], admin_user_ids: set[str]
+) -> bool:
+    owner_id = str(model_owner_id or "").strip()
+    if not user or getattr(user, "role", None) == "admin":
+        return False
+    return bool(owner_id and owner_id != user.id and owner_id in admin_user_ids)
 
 
 def _get_base_model_cache_key(user: Optional[UserModel]) -> str:
@@ -263,6 +301,42 @@ async def get_all_models(request, user: UserModel = None):
     base_models = await get_all_base_models(request, user=user)
     models = copy.deepcopy(base_models)
 
+    model_inherit_enabled = (
+        bool(user)
+        and getattr(user, "role", None) != "admin"
+        and is_model_inherit_from_admin_enabled(request)
+    )
+    admin_user_ids: set[str] = set()
+
+    if model_inherit_enabled:
+        try:
+            from open_webui.models.users import Users  # local import to avoid heavy coupling
+            from open_webui.utils.user_connections import maybe_migrate_user_connections
+
+            for candidate in Users.get_users():
+                if getattr(candidate, "role", None) != "admin":
+                    continue
+                if getattr(candidate, "id", None) == getattr(user, "id", None):
+                    continue
+
+                admin_user_ids.add(candidate.id)
+                owner = maybe_migrate_user_connections(request, candidate)
+                owner_models = await get_all_base_models(request, user=owner)
+
+                for owner_model in owner_models or []:
+                    if not isinstance(owner_model, dict):
+                        continue
+                    inherited = _mark_model_inherited_from_admin(
+                        copy.deepcopy(owner_model), candidate.id
+                    )
+                    models.append(inherited)
+        except Exception as e:
+            log.warning(
+                "Failed to inherit admin base models: %s: %s",
+                type(e).__name__,
+                e,
+            )
+
     # Do not return early when the caller has no provider-backed base models.
     # Admin-shared workspace models are injected below and must still be visible
     # to users who have not configured their own connections.
@@ -291,6 +365,10 @@ async def get_all_models(request, user: UserModel = None):
         if user.role == "admin":
             return True
         if user.id == model_row.user_id:
+            return True
+        if _is_admin_owned_model_inheritance(
+            user, model_row.user_id, admin_user_ids
+        ):
             return True
         return has_access(user.id, type="read", access_control=model_row.access_control)
 
@@ -488,6 +566,13 @@ async def get_all_models(request, user: UserModel = None):
     for custom_model in custom_models:
         if custom_model.base_model_id is not None:
             continue
+        inherited_owner_id = (
+            custom_model.user_id
+            if _is_admin_owned_model_inheritance(
+                user, custom_model.user_id, admin_user_ids
+            )
+            else ""
+        )
 
         # Skip entries the caller can't see (for users).
         if user and user.role == "user" and not _can_read_workspace_model(custom_model):
@@ -498,6 +583,8 @@ async def get_all_models(request, user: UserModel = None):
             if custom_model.is_active:
                 existing["name"] = custom_model.name
                 existing["info"] = custom_model.model_dump()
+                if inherited_owner_id:
+                    _mark_model_inherited_from_admin(existing, inherited_owner_id)
 
                 action_ids = []
                 if "info" in existing and "meta" in existing["info"]:
@@ -541,6 +628,8 @@ async def get_all_models(request, user: UserModel = None):
             }
         )
         injected["selection_id"] = custom_model.id
+        if inherited_owner_id:
+            _mark_model_inherited_from_admin(injected, inherited_owner_id)
         models.append(injected)
         model_by_id[injected["id"]] = injected
         model_ids.add(injected["id"])
@@ -549,6 +638,13 @@ async def get_all_models(request, user: UserModel = None):
     for custom_model in custom_models:
         if custom_model.base_model_id is None or not custom_model.is_active:
             continue
+        inherited_owner_id = (
+            custom_model.user_id
+            if _is_admin_owned_model_inheritance(
+                user, custom_model.user_id, admin_user_ids
+            )
+            else ""
+        )
 
         # Skip entries the caller can't see (for users).
         if user and user.role == "user" and not _can_read_workspace_model(custom_model):
@@ -595,21 +691,22 @@ async def get_all_models(request, user: UserModel = None):
                     "base_selection_id", get_model_selection_id(base_like)
                 )
 
-        models.append(
-            {
-                "id": f"{custom_model.id}",
-                "selection_id": f"{custom_model.id}",
-                "name": custom_model.name,
-                "object": "model",
-                "created": custom_model.created_at,
-                "owned_by": owned_by,
-                "info": info_dump,
-                "preset": True,
-                **({"model_ref": base_model_ref} if base_model_ref else {}),
-                **({"pipe": pipe} if pipe is not None else {}),
-                "action_ids": action_ids,
-            }
-        )
+        model_entry = {
+            "id": f"{custom_model.id}",
+            "selection_id": f"{custom_model.id}",
+            "name": custom_model.name,
+            "object": "model",
+            "created": custom_model.created_at,
+            "owned_by": owned_by,
+            "info": info_dump,
+            "preset": True,
+            **({"model_ref": base_model_ref} if base_model_ref else {}),
+            **({"pipe": pipe} if pipe is not None else {}),
+            "action_ids": action_ids,
+        }
+        if inherited_owner_id:
+            _mark_model_inherited_from_admin(model_entry, inherited_owner_id)
+        models.append(model_entry)
 
     # Process action_ids to get the actions
     def get_action_items_from_module(function, module):
@@ -691,6 +788,10 @@ def check_model_access(user, model):
     # Base models coming from a user's own external connections may not have a DB row.
     # In that case, access is implicitly granted because the model list is already user-scoped.
     if not model_info:
+        return True
+
+    inherited_owner_id = get_inherited_model_owner_id(model)
+    if inherited_owner_id and inherited_owner_id == model_info.user_id:
         return True
 
     if not (

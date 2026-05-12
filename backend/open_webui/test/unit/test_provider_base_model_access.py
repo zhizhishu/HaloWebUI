@@ -156,7 +156,7 @@ def test_anthropic_missing_db_record_base_model_is_not_preemptively_rejected(mon
     monkeypatch.setattr(
         anthropic_router,
         "_resolve_connection_by_model_id",
-        lambda _connection_user, _model_id: (0, "", "", {}),
+        lambda _connection_user, _model_id, **_kwargs: (0, "", "", {}),
     )
 
     with pytest.raises(HTTPException) as exc_info:

@@ -253,6 +253,7 @@ async def set_direct_connections_config(
 class ConnectionsConfigForm(BaseModel):
     ENABLE_DIRECT_CONNECTIONS: bool
     ENABLE_BASE_MODELS_CACHE: bool
+    ENABLE_MODEL_INHERIT_FROM_ADMIN: bool = True
 
 
 @router.get("/connections", response_model=ConnectionsConfigForm)
@@ -260,6 +261,7 @@ async def get_connections_config(request: Request, user=Depends(get_admin_user))
     return {
         "ENABLE_DIRECT_CONNECTIONS": request.app.state.config.ENABLE_DIRECT_CONNECTIONS,
         "ENABLE_BASE_MODELS_CACHE": request.app.state.config.ENABLE_BASE_MODELS_CACHE,
+        "ENABLE_MODEL_INHERIT_FROM_ADMIN": request.app.state.config.ENABLE_MODEL_INHERIT_FROM_ADMIN,
     }
 
 
@@ -271,6 +273,9 @@ async def set_connections_config(
 
     request.app.state.config.ENABLE_DIRECT_CONNECTIONS = form_data.ENABLE_DIRECT_CONNECTIONS
     request.app.state.config.ENABLE_BASE_MODELS_CACHE = form_data.ENABLE_BASE_MODELS_CACHE
+    request.app.state.config.ENABLE_MODEL_INHERIT_FROM_ADMIN = (
+        form_data.ENABLE_MODEL_INHERIT_FROM_ADMIN
+    )
 
     # If the cache is (re-)enabled, warm it once at save time (in background).
     if request.app.state.config.ENABLE_BASE_MODELS_CACHE and (
@@ -291,6 +296,7 @@ async def set_connections_config(
     return {
         "ENABLE_DIRECT_CONNECTIONS": request.app.state.config.ENABLE_DIRECT_CONNECTIONS,
         "ENABLE_BASE_MODELS_CACHE": request.app.state.config.ENABLE_BASE_MODELS_CACHE,
+        "ENABLE_MODEL_INHERIT_FROM_ADMIN": request.app.state.config.ENABLE_MODEL_INHERIT_FROM_ADMIN,
     }
 
 

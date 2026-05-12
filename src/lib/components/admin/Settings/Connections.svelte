@@ -713,6 +713,7 @@
 			connectionsConfig = connectionsConfig ?? {};
 			connectionsConfig.ENABLE_DIRECT_CONNECTIONS ??= false;
 			connectionsConfig.ENABLE_BASE_MODELS_CACHE ??= true;
+			connectionsConfig.ENABLE_MODEL_INHERIT_FROM_ADMIN ??= true;
 
 			for (const [idx] of GEMINI_API_BASE_URLS.entries()) {
 				if (!GEMINI_API_CONFIGS[idx]) {
@@ -1508,6 +1509,22 @@
 									<div class="mt-1.5 text-xs text-gray-400 dark:text-gray-500">
 										{$i18n.t(
 											'Base Model List Cache speeds up access by fetching base models only at startup or on settings save—faster, but may not show recent base model changes.'
+										)}
+									</div>
+								</div>
+								<div>
+									<div class="flex justify-between items-center text-sm">
+										<div class="font-medium">{$i18n.t('Inherit Admin Models')}</div>
+										<Switch
+											bind:state={connectionsConfig.ENABLE_MODEL_INHERIT_FROM_ADMIN}
+											on:change={async () => {
+												await updateConnectionsHandler();
+											}}
+										/>
+									</div>
+									<div class="mt-1.5 text-xs text-gray-400 dark:text-gray-500">
+										{$i18n.t(
+											'Allow regular users to use models available to admins. Requests use the owning admin connection.'
 										)}
 									</div>
 								</div>

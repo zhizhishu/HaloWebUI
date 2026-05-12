@@ -144,6 +144,7 @@ from open_webui.config import (
     # Direct Connections
     ENABLE_DIRECT_CONNECTIONS,
     ENABLE_BASE_MODELS_CACHE,
+    ENABLE_MODEL_INHERIT_FROM_ADMIN,
     # Tool Server Configs
     TOOL_SERVER_CONNECTIONS,
     # MCP Server Configs
@@ -483,6 +484,7 @@ from open_webui.utils.models import (
     get_all_models,
     get_all_base_models,
     check_model_access,
+    get_inherited_model_owner_id,
 )
 from open_webui.utils.model_identity import resolve_model_from_lookup
 from open_webui.utils.chat import (
@@ -807,6 +809,7 @@ app.state.config.ENABLE_CHANNEL_TOOLS = ENABLE_CHANNEL_TOOLS
 
 app.state.config.ENABLE_DIRECT_CONNECTIONS = ENABLE_DIRECT_CONNECTIONS
 app.state.config.ENABLE_BASE_MODELS_CACHE = ENABLE_BASE_MODELS_CACHE
+app.state.config.ENABLE_MODEL_INHERIT_FROM_ADMIN = ENABLE_MODEL_INHERIT_FROM_ADMIN
 
 # UI no longer exposes "direct connections" (browser-to-upstream) because all external connections
 # are now stored per account and proxied by the backend. Keep the feature disabled to avoid
@@ -1469,6 +1472,10 @@ async def get_models(request: Request, user=Depends(get_verified_user)):
             if not model_info:
                 filtered.append(model)
                 continue
+            inherited_owner_id = get_inherited_model_owner_id(model)
+            if inherited_owner_id and inherited_owner_id == model_info.user_id:
+                filtered.append(model)
+                continue
             if user.id == model_info.user_id or has_access(
                 user.id, type="read", access_control=model_info.access_control
             ):
@@ -1486,6 +1493,17 @@ def _apply_connection_owner_for_model(request: Request, user, model: dict | None
         return
 
     try:
+        inherited_owner_id = get_inherited_model_owner_id(model)
+        if inherited_owner_id and inherited_owner_id != getattr(user, "id", None):
+            from open_webui.models.users import Users  # local import to avoid heavy coupling
+            from open_webui.utils.user_connections import maybe_migrate_user_connections
+
+            owner = Users.get_user_by_id(inherited_owner_id)
+            if owner:
+                owner = maybe_migrate_user_connections(request, owner)
+                request.state.connection_user = owner
+                return
+
         model_info = Models.get_model_by_id(model.get("id"))
         if model_info and model_info.user_id and model_info.user_id != user.id:
             from open_webui.models.users import Users  # local import to avoid heavy coupling

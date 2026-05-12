@@ -1402,6 +1402,14 @@ ENABLE_MCP_SERVER_INHERIT_FROM_ADMIN = PersistentConfig(
     os.environ.get("ENABLE_MCP_SERVER_INHERIT_FROM_ADMIN", "True").lower() == "true",
 )
 
+# When enabled, non-admin users also see models available to admin users. Requests
+# for inherited models are routed through the owning admin's connections.
+ENABLE_MODEL_INHERIT_FROM_ADMIN = PersistentConfig(
+    "ENABLE_MODEL_INHERIT_FROM_ADMIN",
+    "models.inherit_from_admin.enable",
+    os.environ.get("ENABLE_MODEL_INHERIT_FROM_ADMIN", "True").lower() == "true",
+)
+
 ####################################
 # BUILTIN TOOLS / NATIVE MODE
 ####################################
