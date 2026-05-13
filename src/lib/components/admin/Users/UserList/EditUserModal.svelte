@@ -13,6 +13,18 @@
 		type ResourceInheritanceOptions
 	} from '$lib/apis/users';
 	import { WEBUI_BASE_URL } from '$lib/constants';
+	import {
+		countSelectedResourceIds,
+		getResourceInheritanceScope,
+		getSelectedResourceIds as getSelectedInheritedResourceIds,
+		isAllResourceInherited,
+		normalizeResourceInheritance,
+		setResourceInheritanceScope,
+		toggleSelectedResourceId,
+		type ResourceInheritanceScope,
+		type ResourceInheritanceSelectionKey,
+		type ResourceInheritanceSettings
+	} from '$lib/utils/resource-inheritance';
 
 	import Modal from '$lib/components/common/Modal.svelte';
 	import LetterAvatar from '$lib/components/common/LetterAvatar.svelte';
@@ -44,44 +56,48 @@
 		}
 	};
 
-	const DEFAULT_RESOURCE_INHERITANCE = {
-		admin_models: true,
-		admin_model_ids: null,
-		admin_mcp_servers: true,
-		admin_mcp_server_ids: null
-	};
-
-	const getResourceInheritance = (settings: any = {}) => ({
-		...DEFAULT_RESOURCE_INHERITANCE,
-		...(settings?.resource_inheritance ?? {})
-	});
-
 	let inheritanceOptions: ResourceInheritanceOptions = {
 		admin_models: [],
 		admin_mcp_servers: []
 	};
 	let inheritanceOptionsLoading = false;
 	let inheritanceOptionsLoaded = false;
-	type ResourceSelectionKey = 'admin_model_ids' | 'admin_mcp_server_ids';
-	type ResourceInheritanceKey = ResourceSelectionKey | 'admin_models' | 'admin_mcp_servers';
-	const pendingSelectCurrentOnLoad = new Set<ResourceSelectionKey>();
+	let modelResourceScope: ResourceInheritanceScope = 'all';
+	let mcpResourceScope: ResourceInheritanceScope = 'all';
+	type ResourceInheritanceKey =
+		| ResourceInheritanceSelectionKey
+		| 'admin_models'
+		| 'admin_mcp_servers';
+	const pendingSelectCurrentOnLoad = new Set<ResourceInheritanceSelectionKey>();
 
 	const getOptionsForKey = (
-		key: ResourceSelectionKey,
+		key: ResourceInheritanceSelectionKey,
 		options: ResourceInheritanceOptions = inheritanceOptions
 	) => (key === 'admin_model_ids' ? options.admin_models : options.admin_mcp_servers);
 
-	const setResourceInheritanceValue = (key: ResourceInheritanceKey, value: any) => {
+	const getOptionIds = (options: ResourceInheritanceOption[]) => options.map((option) => option.id);
+
+	const syncResourceScopes = (resource_inheritance: ResourceInheritanceSettings) => {
+		modelResourceScope = getResourceInheritanceScope(resource_inheritance, 'admin_model_ids');
+		mcpResourceScope = getResourceInheritanceScope(resource_inheritance, 'admin_mcp_server_ids');
+	};
+
+	const setResourceInheritance = (resource_inheritance: ResourceInheritanceSettings) => {
 		_user = {
 			..._user,
 			settings: {
 				..._user.settings,
-				resource_inheritance: {
-					..._user.settings.resource_inheritance,
-					[key]: value
-				}
+				resource_inheritance
 			}
 		};
+		syncResourceScopes(resource_inheritance);
+	};
+
+	const setResourceInheritanceValue = (key: ResourceInheritanceKey, value: any) => {
+		setResourceInheritance({
+			..._user.settings.resource_inheritance,
+			[key]: value
+		});
 	};
 
 	const loadInheritanceOptions = async () => {
@@ -116,69 +132,64 @@
 		inheritanceOptionsLoading = false;
 	};
 
-	const isAllInherited = (key: ResourceSelectionKey) =>
-		_user.settings.resource_inheritance[key] === null ||
-		_user.settings.resource_inheritance[key] === undefined;
+	const getScopeFromEvent = (event: Event): ResourceInheritanceScope =>
+		(event.currentTarget as HTMLSelectElement).value === 'specified' ? 'specified' : 'all';
+
+	const isAllInherited = (key: ResourceInheritanceSelectionKey) =>
+		isAllResourceInherited(_user.settings.resource_inheritance, key);
 
 	const getSelectedResourceIds = (
-		key: ResourceSelectionKey,
+		key: ResourceInheritanceSelectionKey,
 		options: ResourceInheritanceOption[]
-	) => {
-		const value = _user.settings.resource_inheritance[key];
-		if (Array.isArray(value)) {
-			return value;
-		}
-		return options.map((option) => option.id);
-	};
+	) =>
+		getSelectedInheritedResourceIds(
+			_user.settings.resource_inheritance,
+			key,
+			getOptionIds(options)
+		);
 
-	const setAllInherited = (
-		key: ResourceSelectionKey,
-		all: boolean,
+	const setResourceScope = (
+		key: ResourceInheritanceSelectionKey,
+		scope: ResourceInheritanceScope,
 		options: ResourceInheritanceOption[]
 	) => {
-		if (all) {
+		if (scope === 'all') {
 			pendingSelectCurrentOnLoad.delete(key);
-			setResourceInheritanceValue(key, null);
-			return;
-		}
-
-		if (!inheritanceOptionsLoaded && options.length === 0) {
+		} else if (!inheritanceOptionsLoaded && options.length === 0) {
 			pendingSelectCurrentOnLoad.add(key);
 			void loadInheritanceOptions();
 		}
-		setResourceInheritanceValue(key, options.length > 0 ? options.map((option) => option.id) : []);
+
+		setResourceInheritance(
+			setResourceInheritanceScope(
+				_user.settings.resource_inheritance,
+				key,
+				scope,
+				getOptionIds(options)
+			)
+		);
 	};
 
 	const toggleInheritedResource = (
-		key: ResourceSelectionKey,
+		key: ResourceInheritanceSelectionKey,
 		options: ResourceInheritanceOption[],
 		id: string
 	) => {
-		const selected = new Set(getSelectedResourceIds(key, options));
-		if (selected.has(id)) {
-			selected.delete(id);
-		} else {
-			selected.add(id);
-		}
-		setResourceInheritanceValue(
-			key,
-			options.map((option) => option.id).filter((optionId) => selected.has(optionId))
+		setResourceInheritance(
+			toggleSelectedResourceId(
+				_user.settings.resource_inheritance,
+				key,
+				getOptionIds(options),
+				id
+			)
 		);
 	};
 
 	const getSelectedResourceCount = (
-		key: ResourceSelectionKey,
+		key: ResourceInheritanceSelectionKey,
 		options: ResourceInheritanceOption[]
 	) =>
-		getSelectedResourceIds(key, options).filter((id) => options.some((option) => option.id === id))
-			.length;
-
-	const getScopeButtonClasses = (active: boolean) =>
-		`inline-flex min-w-[4.5rem] items-center justify-center rounded-lg px-3 py-1.5 text-center text-xs font-medium transition ${
-			active
-				? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-gray-50'
-				: 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
-		}`;
+		countSelectedResourceIds(_user.settings.resource_inheritance, key, getOptionIds(options));
 
 	const createEditableUser = (user: any) => ({
 		id: user?.id ?? '',
@@ -188,7 +199,7 @@
 		password: '',
 		note: user?.note ?? '',
 		settings: {
-			resource_inheritance: getResourceInheritance(user?.settings)
+			resource_inheritance: normalizeResourceInheritance(user?.settings)
 		}
 	});
 
@@ -227,6 +238,7 @@
 	onMount(() => {
 		if (selectedUser) {
 			_user = createEditableUser(selectedUser);
+			syncResourceScopes(_user.settings.resource_inheritance);
 		}
 		loadInheritanceOptions();
 	});
@@ -393,33 +405,20 @@
 												: $i18n.t('Only selected admin models are available to this user.')}
 										</div>
 									</div>
-									<div
-										class="inline-flex shrink-0 rounded-xl border border-gray-100 bg-gray-50 p-1 dark:border-gray-800 dark:bg-gray-900"
+									<select
+										class="h-8 min-w-[7rem] shrink-0 rounded-lg border border-gray-200 bg-white px-2 text-xs font-medium text-gray-700 outline-none transition focus:border-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+										bind:value={modelResourceScope}
 										aria-label={$i18n.t('Model Inheritance Scope')}
+										on:change={(event) =>
+											setResourceScope(
+												'admin_model_ids',
+												getScopeFromEvent(event),
+												inheritanceOptions.admin_models
+											)}
 									>
-										<button
-											type="button"
-											aria-pressed={isAllInherited('admin_model_ids')}
-											class={getScopeButtonClasses(isAllInherited('admin_model_ids'))}
-											on:click={() =>
-												setAllInherited('admin_model_ids', true, inheritanceOptions.admin_models)}
-										>
-											{$i18n.t('All')}
-										</button>
-										<button
-											type="button"
-											aria-pressed={!isAllInherited('admin_model_ids')}
-											class={getScopeButtonClasses(!isAllInherited('admin_model_ids'))}
-											on:click={() =>
-												setAllInherited(
-													'admin_model_ids',
-													false,
-													inheritanceOptions.admin_models
-												)}
-										>
-											{$i18n.t('Specified')}
-										</button>
-									</div>
+										<option value="all">{$i18n.t('All')}</option>
+										<option value="specified">{$i18n.t('Specified')}</option>
+									</select>
 								</div>
 
 								<div class="mt-3 flex items-center justify-between gap-3 text-[11px]">
@@ -513,37 +512,20 @@
 												: $i18n.t('Only selected admin MCP servers are available to this user.')}
 										</div>
 									</div>
-									<div
-										class="inline-flex shrink-0 rounded-xl border border-gray-100 bg-gray-50 p-1 dark:border-gray-800 dark:bg-gray-900"
+									<select
+										class="h-8 min-w-[7rem] shrink-0 rounded-lg border border-gray-200 bg-white px-2 text-xs font-medium text-gray-700 outline-none transition focus:border-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+										bind:value={mcpResourceScope}
 										aria-label={$i18n.t('MCP Inheritance Scope')}
+										on:change={(event) =>
+											setResourceScope(
+												'admin_mcp_server_ids',
+												getScopeFromEvent(event),
+												inheritanceOptions.admin_mcp_servers
+											)}
 									>
-										<button
-											type="button"
-											aria-pressed={isAllInherited('admin_mcp_server_ids')}
-											class={getScopeButtonClasses(isAllInherited('admin_mcp_server_ids'))}
-											on:click={() =>
-												setAllInherited(
-													'admin_mcp_server_ids',
-													true,
-													inheritanceOptions.admin_mcp_servers
-												)}
-										>
-											{$i18n.t('All')}
-										</button>
-										<button
-											type="button"
-											aria-pressed={!isAllInherited('admin_mcp_server_ids')}
-											class={getScopeButtonClasses(!isAllInherited('admin_mcp_server_ids'))}
-											on:click={() =>
-												setAllInherited(
-													'admin_mcp_server_ids',
-													false,
-													inheritanceOptions.admin_mcp_servers
-												)}
-										>
-											{$i18n.t('Specified')}
-										</button>
-									</div>
+										<option value="all">{$i18n.t('All')}</option>
+										<option value="specified">{$i18n.t('Specified')}</option>
+									</select>
 								</div>
 
 								<div class="mt-3 flex items-center justify-between gap-3 text-[11px]">
