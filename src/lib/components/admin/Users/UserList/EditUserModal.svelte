@@ -173,8 +173,8 @@
 		getSelectedResourceIds(key, options).filter((id) => options.some((option) => option.id === id))
 			.length;
 
-	const getScopeOptionClasses = (active: boolean) =>
-		`inline-flex min-w-[4.5rem] cursor-pointer items-center justify-center rounded-lg px-3 py-1.5 text-center text-xs font-medium transition ${
+	const getScopeButtonClasses = (active: boolean) =>
+		`inline-flex min-w-[4.5rem] items-center justify-center rounded-lg px-3 py-1.5 text-center text-xs font-medium transition ${
 			active
 				? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-gray-50'
 				: 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
@@ -395,35 +395,30 @@
 									</div>
 									<div
 										class="inline-flex shrink-0 rounded-xl border border-gray-100 bg-gray-50 p-1 dark:border-gray-800 dark:bg-gray-900"
-										role="radiogroup"
 										aria-label={$i18n.t('Model Inheritance Scope')}
 									>
-										<label class={getScopeOptionClasses(isAllInherited('admin_model_ids'))}>
-											<input
-												type="radio"
-												class="sr-only"
-												name="admin-model-inheritance-scope"
-												checked={isAllInherited('admin_model_ids')}
-												on:change={() =>
-													setAllInherited('admin_model_ids', true, inheritanceOptions.admin_models)}
-											/>
+										<button
+											type="button"
+											aria-pressed={isAllInherited('admin_model_ids')}
+											class={getScopeButtonClasses(isAllInherited('admin_model_ids'))}
+											on:click={() =>
+												setAllInherited('admin_model_ids', true, inheritanceOptions.admin_models)}
+										>
 											{$i18n.t('All')}
-										</label>
-										<label class={getScopeOptionClasses(!isAllInherited('admin_model_ids'))}>
-											<input
-												type="radio"
-												class="sr-only"
-												name="admin-model-inheritance-scope"
-												checked={!isAllInherited('admin_model_ids')}
-												on:change={() =>
-													setAllInherited(
-														'admin_model_ids',
-														false,
-														inheritanceOptions.admin_models
-													)}
-											/>
+										</button>
+										<button
+											type="button"
+											aria-pressed={!isAllInherited('admin_model_ids')}
+											class={getScopeButtonClasses(!isAllInherited('admin_model_ids'))}
+											on:click={() =>
+												setAllInherited(
+													'admin_model_ids',
+													false,
+													inheritanceOptions.admin_models
+												)}
+										>
 											{$i18n.t('Specified')}
-										</label>
+										</button>
 									</div>
 								</div>
 
@@ -520,39 +515,34 @@
 									</div>
 									<div
 										class="inline-flex shrink-0 rounded-xl border border-gray-100 bg-gray-50 p-1 dark:border-gray-800 dark:bg-gray-900"
-										role="radiogroup"
 										aria-label={$i18n.t('MCP Inheritance Scope')}
 									>
-										<label class={getScopeOptionClasses(isAllInherited('admin_mcp_server_ids'))}>
-											<input
-												type="radio"
-												class="sr-only"
-												name="admin-mcp-inheritance-scope"
-												checked={isAllInherited('admin_mcp_server_ids')}
-												on:change={() =>
-													setAllInherited(
-														'admin_mcp_server_ids',
-														true,
-														inheritanceOptions.admin_mcp_servers
-													)}
-											/>
+										<button
+											type="button"
+											aria-pressed={isAllInherited('admin_mcp_server_ids')}
+											class={getScopeButtonClasses(isAllInherited('admin_mcp_server_ids'))}
+											on:click={() =>
+												setAllInherited(
+													'admin_mcp_server_ids',
+													true,
+													inheritanceOptions.admin_mcp_servers
+												)}
+										>
 											{$i18n.t('All')}
-										</label>
-										<label class={getScopeOptionClasses(!isAllInherited('admin_mcp_server_ids'))}>
-											<input
-												type="radio"
-												class="sr-only"
-												name="admin-mcp-inheritance-scope"
-												checked={!isAllInherited('admin_mcp_server_ids')}
-												on:change={() =>
-													setAllInherited(
-														'admin_mcp_server_ids',
-														false,
-														inheritanceOptions.admin_mcp_servers
-													)}
-											/>
+										</button>
+										<button
+											type="button"
+											aria-pressed={!isAllInherited('admin_mcp_server_ids')}
+											class={getScopeButtonClasses(!isAllInherited('admin_mcp_server_ids'))}
+											on:click={() =>
+												setAllInherited(
+													'admin_mcp_server_ids',
+													false,
+													inheritanceOptions.admin_mcp_servers
+												)}
+										>
 											{$i18n.t('Specified')}
-										</label>
+										</button>
 									</div>
 								</div>
 
