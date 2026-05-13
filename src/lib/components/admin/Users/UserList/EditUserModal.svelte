@@ -61,6 +61,7 @@
 		admin_mcp_servers: []
 	};
 	let inheritanceOptionsLoading = false;
+	type ResourceSelectionKey = 'admin_model_ids' | 'admin_mcp_server_ids';
 
 	const loadInheritanceOptions = async () => {
 		if (selectedUser?.role === 'admin') {
@@ -81,12 +82,12 @@
 		inheritanceOptionsLoading = false;
 	};
 
-	const isAllInherited = (key: 'admin_model_ids' | 'admin_mcp_server_ids') =>
+	const isAllInherited = (key: ResourceSelectionKey) =>
 		_user.settings.resource_inheritance[key] === null ||
 		_user.settings.resource_inheritance[key] === undefined;
 
 	const getSelectedResourceIds = (
-		key: 'admin_model_ids' | 'admin_mcp_server_ids',
+		key: ResourceSelectionKey,
 		options: ResourceInheritanceOption[]
 	) => {
 		const value = _user.settings.resource_inheritance[key];
@@ -97,7 +98,7 @@
 	};
 
 	const setAllInherited = (
-		key: 'admin_model_ids' | 'admin_mcp_server_ids',
+		key: ResourceSelectionKey,
 		all: boolean,
 		options: ResourceInheritanceOption[]
 	) => {
@@ -106,7 +107,7 @@
 	};
 
 	const toggleInheritedResource = (
-		key: 'admin_model_ids' | 'admin_mcp_server_ids',
+		key: ResourceSelectionKey,
 		options: ResourceInheritanceOption[],
 		id: string
 	) => {
@@ -121,6 +122,20 @@
 			.filter((optionId) => selected.has(optionId));
 		_user = _user;
 	};
+
+	const getSelectedResourceCount = (
+		key: ResourceSelectionKey,
+		options: ResourceInheritanceOption[]
+	) =>
+		getSelectedResourceIds(key, options).filter((id) => options.some((option) => option.id === id))
+			.length;
+
+	const getScopeButtonClasses = (active: boolean) =>
+		`min-w-[4.5rem] rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+			active
+				? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-gray-50'
+				: 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+		}`;
 
 	const createEditableUser = (user: any) => ({
 		id: user?.id ?? '',
@@ -152,14 +167,13 @@
 	};
 
 	const submitHandler = async () => {
-		const payload =
-			selectedUser?.role === 'admin'
-				? { ..._user, settings: undefined }
-				: _user;
+		const payload = selectedUser?.role === 'admin' ? { ..._user, settings: undefined } : _user;
 
-		const res = await updateUserById(localStorage.token, selectedUser.id, payload).catch((error) => {
-			toast.error(`${error}`);
-		});
+		const res = await updateUserById(localStorage.token, selectedUser.id, payload).catch(
+			(error) => {
+				toast.error(`${error}`);
+			}
+		);
 
 		if (res) {
 			dispatch('save');
@@ -179,13 +193,24 @@
 	<div class="max-h-[85vh] overflow-y-auto">
 		<!-- Header -->
 		<div class="flex items-center justify-between px-5 pt-5 pb-3">
-			<div class="text-base font-semibold text-gray-800 dark:text-gray-100">{$i18n.t('Edit User')}</div>
+			<div class="text-base font-semibold text-gray-800 dark:text-gray-100">
+				{$i18n.t('Edit User')}
+			</div>
 			<button
 				class="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-				on:click={() => { show = false; }}
+				on:click={() => {
+					show = false;
+				}}
 			>
-				<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="size-5">
-					<path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+				<svg
+					xmlns="http://www.w3.org/2000/svg"
+					viewBox="0 0 20 20"
+					fill="currentColor"
+					class="size-5"
+				>
+					<path
+						d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
+					/>
 				</svg>
 			</button>
 		</div>
@@ -200,20 +225,32 @@
 						alt="User profile"
 					/>
 				{:else}
-					<LetterAvatar name={selectedUser?.name ?? ''} size="size-14" className="rounded-2xl" textClass="text-xl" />
+					<LetterAvatar
+						name={selectedUser?.name ?? ''}
+						size="size-14"
+						className="rounded-2xl"
+						textClass="text-xl"
+					/>
 				{/if}
 
 				<div class="min-w-0 flex-1">
 					<div class="flex items-center gap-2.5">
-						<span class="truncate text-sm font-semibold text-gray-800 dark:text-gray-100">{selectedUser?.name}</span>
-						<span class={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${getRoleClasses(selectedUser?.role)}`}>
+						<span class="truncate text-sm font-semibold text-gray-800 dark:text-gray-100"
+							>{selectedUser?.name}</span
+						>
+						<span
+							class={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${getRoleClasses(selectedUser?.role)}`}
+						>
 							<span class="size-1.5 rounded-full bg-current opacity-80" />
 							{$i18n.t(selectedUser?.role)}
 						</span>
 					</div>
-					<div class="mt-1 truncate text-xs text-gray-400 dark:text-gray-500">{selectedUser?.email}</div>
+					<div class="mt-1 truncate text-xs text-gray-400 dark:text-gray-500">
+						{selectedUser?.email}
+					</div>
 					<div class="mt-0.5 text-[11px] text-gray-400 dark:text-gray-500">
-						{$i18n.t('Created at')} {dayjs(selectedUser?.created_at * 1000).format('LL')}
+						{$i18n.t('Created at')}
+						{dayjs(selectedUser?.created_at * 1000).format('LL')}
 					</div>
 				</div>
 			</div>
@@ -223,7 +260,9 @@
 		<form class="px-5 pb-5" on:submit|preventDefault={submitHandler}>
 			<div class="space-y-3">
 				<div class="glass-item p-4">
-					<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">{$i18n.t('Email')}</div>
+					<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+						{$i18n.t('Email')}
+					</div>
 					<input
 						class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input disabled:text-gray-400 dark:disabled:text-gray-500 disabled:cursor-not-allowed"
 						type="email"
@@ -235,7 +274,9 @@
 				</div>
 
 				<div class="glass-item p-4">
-					<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">{$i18n.t('Name')}</div>
+					<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+						{$i18n.t('Name')}
+					</div>
 					<input
 						class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input"
 						type="text"
@@ -246,7 +287,9 @@
 				</div>
 
 				<div class="glass-item p-4">
-					<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">{$i18n.t('New Password')}</div>
+					<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+						{$i18n.t('New Password')}
+					</div>
 					<input
 						class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input"
 						type="password"
@@ -257,7 +300,9 @@
 				</div>
 
 				<div class="glass-item p-4">
-					<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">{$i18n.t('Admin Note')}</div>
+					<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">
+						{$i18n.t('Admin Note')}
+					</div>
 					<textarea
 						class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input resize-y"
 						bind:value={_user.note}
@@ -291,24 +336,52 @@
 
 						{#if _user.settings.resource_inheritance.admin_models}
 							<div class="rounded-xl border border-gray-100/80 dark:border-gray-800/80 p-3">
-								<div class="flex items-start justify-between gap-4">
-									<div>
+								<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+									<div class="min-w-0">
 										<div class="text-xs font-medium text-gray-600 dark:text-gray-300">
-											{$i18n.t('All Admin Models')}
+											{$i18n.t('Model Inheritance Scope')}
 										</div>
 										<div class="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
-											{$i18n.t('Automatically include current and future admin models.')}
+											{isAllInherited('admin_model_ids')
+												? $i18n.t('Automatically include current and future admin models.')
+												: $i18n.t('Only selected admin models are available to this user.')}
 										</div>
 									</div>
-									<Switch
-										state={isAllInherited('admin_model_ids')}
-										on:change={(event) =>
-											setAllInherited(
-												'admin_model_ids',
-												event.detail,
-												inheritanceOptions.admin_models
-											)}
-									/>
+									<div
+										class="inline-flex shrink-0 rounded-xl border border-gray-100 bg-gray-50 p-1 dark:border-gray-800 dark:bg-gray-900"
+									>
+										<button
+											type="button"
+											aria-pressed={isAllInherited('admin_model_ids')}
+											class={getScopeButtonClasses(isAllInherited('admin_model_ids'))}
+											on:click={() =>
+												setAllInherited('admin_model_ids', true, inheritanceOptions.admin_models)}
+										>
+											{$i18n.t('All')}
+										</button>
+										<button
+											type="button"
+											aria-pressed={!isAllInherited('admin_model_ids')}
+											class={getScopeButtonClasses(!isAllInherited('admin_model_ids'))}
+											on:click={() =>
+												setAllInherited('admin_model_ids', false, inheritanceOptions.admin_models)}
+										>
+											{$i18n.t('Specified')}
+										</button>
+									</div>
+								</div>
+
+								<div class="mt-3 flex items-center justify-between gap-3 text-[11px]">
+									<span class="truncate text-gray-400 dark:text-gray-500">
+										{$i18n.t('Available admin models')}
+									</span>
+									<span
+										class="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-300"
+									>
+										{isAllInherited('admin_model_ids')
+											? $i18n.t('All current and future')
+											: `${getSelectedResourceCount('admin_model_ids', inheritanceOptions.admin_models)}/${inheritanceOptions.admin_models.length} ${$i18n.t('selected')}`}
+									</span>
 								</div>
 
 								{#if !isAllInherited('admin_model_ids')}
@@ -341,11 +414,15 @@
 															)}
 													/>
 													<span class="min-w-0">
-														<span class="block truncate text-xs font-medium text-gray-700 dark:text-gray-200">
+														<span
+															class="block truncate text-xs font-medium text-gray-700 dark:text-gray-200"
+														>
 															{option.name}
 														</span>
-														<span class="block truncate text-[11px] text-gray-400 dark:text-gray-500">
-															{option.id}
+														<span
+															class="block truncate text-[11px] text-gray-400 dark:text-gray-500"
+														>
+															{option.owner_name ? `${option.owner_name} - ` : ''}{option.id}
 														</span>
 													</span>
 												</label>
@@ -370,24 +447,60 @@
 
 						{#if _user.settings.resource_inheritance.admin_mcp_servers}
 							<div class="rounded-xl border border-gray-100/80 dark:border-gray-800/80 p-3">
-								<div class="flex items-start justify-between gap-4">
-									<div>
+								<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+									<div class="min-w-0">
 										<div class="text-xs font-medium text-gray-600 dark:text-gray-300">
-											{$i18n.t('All Admin MCP Servers')}
+											{$i18n.t('MCP Inheritance Scope')}
 										</div>
 										<div class="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
-											{$i18n.t('Automatically include current and future admin MCP servers.')}
+											{isAllInherited('admin_mcp_server_ids')
+												? $i18n.t('Automatically include current and future admin MCP servers.')
+												: $i18n.t('Only selected admin MCP servers are available to this user.')}
 										</div>
 									</div>
-									<Switch
-										state={isAllInherited('admin_mcp_server_ids')}
-										on:change={(event) =>
-											setAllInherited(
-												'admin_mcp_server_ids',
-												event.detail,
-												inheritanceOptions.admin_mcp_servers
-											)}
-									/>
+									<div
+										class="inline-flex shrink-0 rounded-xl border border-gray-100 bg-gray-50 p-1 dark:border-gray-800 dark:bg-gray-900"
+									>
+										<button
+											type="button"
+											aria-pressed={isAllInherited('admin_mcp_server_ids')}
+											class={getScopeButtonClasses(isAllInherited('admin_mcp_server_ids'))}
+											on:click={() =>
+												setAllInherited(
+													'admin_mcp_server_ids',
+													true,
+													inheritanceOptions.admin_mcp_servers
+												)}
+										>
+											{$i18n.t('All')}
+										</button>
+										<button
+											type="button"
+											aria-pressed={!isAllInherited('admin_mcp_server_ids')}
+											class={getScopeButtonClasses(!isAllInherited('admin_mcp_server_ids'))}
+											on:click={() =>
+												setAllInherited(
+													'admin_mcp_server_ids',
+													false,
+													inheritanceOptions.admin_mcp_servers
+												)}
+										>
+											{$i18n.t('Specified')}
+										</button>
+									</div>
+								</div>
+
+								<div class="mt-3 flex items-center justify-between gap-3 text-[11px]">
+									<span class="truncate text-gray-400 dark:text-gray-500">
+										{$i18n.t('Available admin MCP servers')}
+									</span>
+									<span
+										class="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-300"
+									>
+										{isAllInherited('admin_mcp_server_ids')
+											? $i18n.t('All current and future')
+											: `${getSelectedResourceCount('admin_mcp_server_ids', inheritanceOptions.admin_mcp_servers)}/${inheritanceOptions.admin_mcp_servers.length} ${$i18n.t('selected')}`}
+									</span>
 								</div>
 
 								{#if !isAllInherited('admin_mcp_server_ids')}
@@ -420,13 +533,18 @@
 															)}
 													/>
 													<span class="min-w-0">
-														<span class="block truncate text-xs font-medium text-gray-700 dark:text-gray-200">
+														<span
+															class="block truncate text-xs font-medium text-gray-700 dark:text-gray-200"
+														>
 															{option.name}
 														</span>
-														<span class="block truncate text-[11px] text-gray-400 dark:text-gray-500">
-															{option.transport_type?.toUpperCase?.() ?? 'HTTP'}{option.tool_count
-																? ` - ${option.tool_count} tools`
-																: ''}
+														<span
+															class="block truncate text-[11px] text-gray-400 dark:text-gray-500"
+														>
+															{option.owner_name
+																? `${option.owner_name} - `
+																: ''}{option.transport_type?.toUpperCase?.() ??
+																'HTTP'}{option.tool_count ? ` - ${option.tool_count} tools` : ''}
 														</span>
 													</span>
 												</label>
