@@ -1,5 +1,6 @@
 export type ResourceInheritanceSelectionKey = 'admin_model_ids' | 'admin_mcp_server_ids';
 export type ResourceInheritanceScope = 'all' | 'specified';
+export type ResourceInheritanceMode = 'disabled' | ResourceInheritanceScope;
 
 export type ResourceInheritanceSettings = {
 	admin_models: boolean;
@@ -25,10 +26,23 @@ export const getResourceInheritanceScope = (
 	key: ResourceInheritanceSelectionKey
 ): ResourceInheritanceScope => (Array.isArray(settings[key]) ? 'specified' : 'all');
 
+const getResourceInheritanceEnabledKey = (
+	key: ResourceInheritanceSelectionKey
+): 'admin_models' | 'admin_mcp_servers' =>
+	key === 'admin_model_ids' ? 'admin_models' : 'admin_mcp_servers';
+
+export const getResourceInheritanceMode = (
+	settings: ResourceInheritanceSettings,
+	key: ResourceInheritanceSelectionKey
+): ResourceInheritanceMode =>
+	settings[getResourceInheritanceEnabledKey(key)] === false
+		? 'disabled'
+		: getResourceInheritanceScope(settings, key);
+
 export const isAllResourceInherited = (
 	settings: ResourceInheritanceSettings,
 	key: ResourceInheritanceSelectionKey
-) => getResourceInheritanceScope(settings, key) === 'all';
+) => getResourceInheritanceMode(settings, key) === 'all';
 
 export const getSelectedResourceIds = (
 	settings: ResourceInheritanceSettings,
@@ -69,6 +83,28 @@ export const setResourceInheritanceScope = (
 	return {
 		...settings,
 		[key]: nextValue
+	};
+};
+
+export const setResourceInheritanceMode = (
+	settings: ResourceInheritanceSettings,
+	key: ResourceInheritanceSelectionKey,
+	mode: ResourceInheritanceMode,
+	optionIds: string[] = []
+): ResourceInheritanceSettings => {
+	const enabledKey = getResourceInheritanceEnabledKey(key);
+
+	if (mode === 'disabled') {
+		return {
+			...settings,
+			[enabledKey]: false,
+			[key]: null
+		};
+	}
+
+	return {
+		...setResourceInheritanceScope(settings, key, mode, optionIds),
+		[enabledKey]: true
 	};
 };
 

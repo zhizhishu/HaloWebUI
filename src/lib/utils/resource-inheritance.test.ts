@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
 	DEFAULT_RESOURCE_INHERITANCE,
 	countSelectedResourceIds,
+	getResourceInheritanceMode,
 	getResourceInheritanceScope,
 	getSelectedResourceIds,
 	normalizeResourceInheritance,
+	setResourceInheritanceMode,
 	setResourceInheritanceScope,
 	toggleSelectedResourceId
 } from './resource-inheritance';
@@ -28,6 +30,45 @@ describe('resource inheritance state', () => {
 		settings = setResourceInheritanceScope(settings, 'admin_model_ids', 'all', optionIds);
 		expect(getResourceInheritanceScope(settings, 'admin_model_ids')).toBe('all');
 		expect(settings.admin_model_ids).toBeNull();
+	});
+
+	it('switches admin models through disabled, specified, and all from one mode control', () => {
+		const optionIds = ['admin.gpt', 'admin.claude'];
+		let settings = normalizeResourceInheritance();
+
+		settings = setResourceInheritanceMode(settings, 'admin_model_ids', 'disabled', optionIds);
+		expect(getResourceInheritanceMode(settings, 'admin_model_ids')).toBe('disabled');
+		expect(settings.admin_models).toBe(false);
+		expect(settings.admin_model_ids).toBeNull();
+
+		settings = setResourceInheritanceMode(settings, 'admin_model_ids', 'specified', optionIds);
+		expect(getResourceInheritanceMode(settings, 'admin_model_ids')).toBe('specified');
+		expect(settings.admin_models).toBe(true);
+		expect(settings.admin_model_ids).toEqual(optionIds);
+
+		settings = setResourceInheritanceMode(settings, 'admin_model_ids', 'all', optionIds);
+		expect(getResourceInheritanceMode(settings, 'admin_model_ids')).toBe('all');
+		expect(settings.admin_models).toBe(true);
+		expect(settings.admin_model_ids).toBeNull();
+	});
+
+	it('switches admin MCP through disabled and specified without changing model mode', () => {
+		const modelIds = ['admin.gpt'];
+		const mcpIds = ['admin-1:0', 'admin-1:1'];
+		let settings = normalizeResourceInheritance();
+
+		settings = setResourceInheritanceMode(settings, 'admin_model_ids', 'specified', modelIds);
+		settings = setResourceInheritanceMode(settings, 'admin_mcp_server_ids', 'disabled', mcpIds);
+		expect(getResourceInheritanceMode(settings, 'admin_model_ids')).toBe('specified');
+		expect(getResourceInheritanceMode(settings, 'admin_mcp_server_ids')).toBe('disabled');
+		expect(settings.admin_models).toBe(true);
+		expect(settings.admin_mcp_servers).toBe(false);
+
+		settings = setResourceInheritanceMode(settings, 'admin_mcp_server_ids', 'specified', mcpIds);
+		expect(getResourceInheritanceMode(settings, 'admin_model_ids')).toBe('specified');
+		expect(getResourceInheritanceMode(settings, 'admin_mcp_server_ids')).toBe('specified');
+		expect(settings.admin_model_ids).toEqual(modelIds);
+		expect(settings.admin_mcp_server_ids).toEqual(mcpIds);
 	});
 
 	it('switches admin MCP servers independently from model scope', () => {
