@@ -52,6 +52,16 @@ describe('resource inheritance state', () => {
 		expect(settings.admin_model_ids).toBeNull();
 	});
 
+	it('marks specified mode in payload even before options are loaded', () => {
+		let settings = normalizeResourceInheritance();
+
+		settings = setResourceInheritanceMode(settings, 'admin_model_ids', 'specified', []);
+
+		expect(getResourceInheritanceMode(settings, 'admin_model_ids')).toBe('specified');
+		expect(settings.admin_models).toBe(true);
+		expect(settings.admin_model_ids).toEqual([]);
+	});
+
 	it('switches admin MCP through disabled and specified without changing model mode', () => {
 		const modelIds = ['admin.gpt'];
 		const mcpIds = ['admin-1:0', 'admin-1:1'];

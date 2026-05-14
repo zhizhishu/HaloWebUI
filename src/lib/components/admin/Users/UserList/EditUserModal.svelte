@@ -61,8 +61,6 @@
 	};
 	let inheritanceOptionsLoading = false;
 	let inheritanceOptionsLoaded = false;
-	let modelResourceMode: ResourceInheritanceMode = 'all';
-	let mcpResourceMode: ResourceInheritanceMode = 'all';
 	const pendingSelectCurrentOnLoad = new Set<ResourceInheritanceSelectionKey>();
 
 	const getOptionsForKey = (
@@ -72,11 +70,6 @@
 
 	const getOptionIds = (options: ResourceInheritanceOption[]) => options.map((option) => option.id);
 
-	const syncResourceScopes = (resource_inheritance: ResourceInheritanceSettings) => {
-		modelResourceMode = getResourceInheritanceMode(resource_inheritance, 'admin_model_ids');
-		mcpResourceMode = getResourceInheritanceMode(resource_inheritance, 'admin_mcp_server_ids');
-	};
-
 	const setResourceInheritance = (resource_inheritance: ResourceInheritanceSettings) => {
 		_user = {
 			..._user,
@@ -85,7 +78,6 @@
 				resource_inheritance
 			}
 		};
-		syncResourceScopes(resource_inheritance);
 	};
 
 	const setResourceInheritanceValue = (key: ResourceInheritanceSelectionKey, value: string[]) => {
@@ -132,8 +124,11 @@
 		return value === 'specified' || value === 'disabled' ? value : 'all';
 	};
 
+	const getCurrentResourceMode = (key: ResourceInheritanceSelectionKey) =>
+		getResourceInheritanceMode(_user.settings.resource_inheritance, key);
+
 	const isSpecifiedMode = (key: ResourceInheritanceSelectionKey) =>
-		getResourceInheritanceMode(_user.settings.resource_inheritance, key) === 'specified';
+		getCurrentResourceMode(key) === 'specified';
 
 	const isAllInherited = (key: ResourceInheritanceSelectionKey) =>
 		isAllResourceInherited(_user.settings.resource_inheritance, key);
@@ -232,7 +227,6 @@
 	onMount(() => {
 		if (selectedUser) {
 			_user = createEditableUser(selectedUser);
-			syncResourceScopes(_user.settings.resource_inheritance);
 		}
 		loadInheritanceOptions();
 	});
@@ -378,28 +372,30 @@
 										{$i18n.t('Inherit Admin Models')}
 									</div>
 									<div class="mt-1 text-xs leading-5 text-gray-400 dark:text-gray-500">
-										{modelResourceMode === 'disabled'
+										{getCurrentResourceMode('admin_model_ids') === 'disabled'
 											? $i18n.t('Disabled')
 											: isAllInherited('admin_model_ids')
 												? $i18n.t('Automatically include current and future admin models.')
 												: $i18n.t('Only selected admin models are available to this user.')}
 									</div>
 								</div>
-								<select
-									class="h-9 w-full shrink-0 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium leading-5 text-gray-700 outline-none transition focus:border-gray-400 sm:w-32 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
-									bind:value={modelResourceMode}
-									aria-label={$i18n.t('Model Inheritance Scope')}
-									on:change={(event) =>
-										setResourceMode(
-											'admin_model_ids',
-											getModeFromEvent(event),
-											inheritanceOptions.admin_models
-										)}
-								>
-									<option value="disabled">{$i18n.t('Disabled')}</option>
-									<option value="all">{$i18n.t('All')}</option>
-									<option value="specified">{$i18n.t('Specified')}</option>
-								</select>
+								{#key getCurrentResourceMode('admin_model_ids')}
+									<select
+										class="h-9 w-full shrink-0 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium leading-5 text-gray-700 outline-none transition focus:border-gray-400 sm:w-32 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+										value={getCurrentResourceMode('admin_model_ids')}
+										aria-label={$i18n.t('Model Inheritance Scope')}
+										on:change={(event) =>
+											setResourceMode(
+												'admin_model_ids',
+												getModeFromEvent(event),
+												inheritanceOptions.admin_models
+											)}
+									>
+										<option value="disabled">{$i18n.t('Disabled')}</option>
+										<option value="all">{$i18n.t('All')}</option>
+										<option value="specified">{$i18n.t('Specified')}</option>
+									</select>
+								{/key}
 							</div>
 
 							<div class="mt-3 flex items-center justify-between gap-3 text-[11px] leading-5">
@@ -409,7 +405,7 @@
 								<span
 									class="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-300"
 								>
-									{modelResourceMode === 'disabled'
+									{getCurrentResourceMode('admin_model_ids') === 'disabled'
 										? $i18n.t('Disabled')
 										: isAllInherited('admin_model_ids')
 											? $i18n.t('All current and future')
@@ -472,28 +468,30 @@
 										{$i18n.t('Inherit Admin MCP')}
 									</div>
 									<div class="mt-1 text-xs leading-5 text-gray-400 dark:text-gray-500">
-										{mcpResourceMode === 'disabled'
+										{getCurrentResourceMode('admin_mcp_server_ids') === 'disabled'
 											? $i18n.t('Disabled')
 											: isAllInherited('admin_mcp_server_ids')
 												? $i18n.t('Automatically include current and future admin MCP servers.')
 												: $i18n.t('Only selected admin MCP servers are available to this user.')}
 									</div>
 								</div>
-								<select
-									class="h-9 w-full shrink-0 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium leading-5 text-gray-700 outline-none transition focus:border-gray-400 sm:w-32 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
-									bind:value={mcpResourceMode}
-									aria-label={$i18n.t('MCP Inheritance Scope')}
-									on:change={(event) =>
-										setResourceMode(
-											'admin_mcp_server_ids',
-											getModeFromEvent(event),
-											inheritanceOptions.admin_mcp_servers
-										)}
-								>
-									<option value="disabled">{$i18n.t('Disabled')}</option>
-									<option value="all">{$i18n.t('All')}</option>
-									<option value="specified">{$i18n.t('Specified')}</option>
-								</select>
+								{#key getCurrentResourceMode('admin_mcp_server_ids')}
+									<select
+										class="h-9 w-full shrink-0 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium leading-5 text-gray-700 outline-none transition focus:border-gray-400 sm:w-32 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
+										value={getCurrentResourceMode('admin_mcp_server_ids')}
+										aria-label={$i18n.t('MCP Inheritance Scope')}
+										on:change={(event) =>
+											setResourceMode(
+												'admin_mcp_server_ids',
+												getModeFromEvent(event),
+												inheritanceOptions.admin_mcp_servers
+											)}
+									>
+										<option value="disabled">{$i18n.t('Disabled')}</option>
+										<option value="all">{$i18n.t('All')}</option>
+										<option value="specified">{$i18n.t('Specified')}</option>
+									</select>
+								{/key}
 							</div>
 
 							<div class="mt-3 flex items-center justify-between gap-3 text-[11px] leading-5">
@@ -503,7 +501,7 @@
 								<span
 									class="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-300"
 								>
-									{mcpResourceMode === 'disabled'
+									{getCurrentResourceMode('admin_mcp_server_ids') === 'disabled'
 										? $i18n.t('Disabled')
 										: isAllInherited('admin_mcp_server_ids')
 											? $i18n.t('All current and future')
