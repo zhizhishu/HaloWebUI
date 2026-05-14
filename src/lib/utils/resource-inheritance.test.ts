@@ -59,4 +59,23 @@ describe('resource inheritance state', () => {
 		expect(getSelectedResourceIds(settings, 'admin_mcp_server_ids', mcpIds)).toEqual([]);
 		expect(countSelectedResourceIds(settings, 'admin_mcp_server_ids', mcpIds)).toBe(0);
 	});
+
+	it('turns inherited-all model selection into a specified payload when one model is unchecked', () => {
+		const modelIds = ['admin.gpt', 'admin.claude'];
+		let settings = normalizeResourceInheritance();
+
+		settings = toggleSelectedResourceId(settings, 'admin_model_ids', modelIds, 'admin.gpt');
+
+		expect(getResourceInheritanceScope(settings, 'admin_model_ids')).toBe('specified');
+		expect(settings.admin_model_ids).toEqual(['admin.claude']);
+	});
+
+	it('keeps specified payload empty when there are no options yet', () => {
+		let settings = normalizeResourceInheritance();
+
+		settings = setResourceInheritanceScope(settings, 'admin_mcp_server_ids', 'specified', []);
+
+		expect(getResourceInheritanceScope(settings, 'admin_mcp_server_ids')).toBe('specified');
+		expect(settings.admin_mcp_server_ids).toEqual([]);
+	});
 });

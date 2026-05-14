@@ -288,6 +288,46 @@ def test_regular_user_selected_admin_mcp_ids_filter_inherited_servers(monkeypatc
     assert [item["url"] for item in result] == ["https://second.example.com"]
 
 
+def test_regular_user_empty_selected_admin_mcp_ids_block_all_inherited_servers(
+    monkeypatch,
+):
+    from open_webui.utils import user_tools as user_tools_mod
+
+    admin_user = SimpleNamespace(
+        id="admin-1",
+        role="admin",
+        settings=_Settings(
+            {
+                "tools": {
+                    "mcp_server_connections": [
+                        {"transport_type": "http", "url": "https://first.example.com"},
+                        {"transport_type": "http", "url": "https://second.example.com"},
+                    ]
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(user_tools_mod.Users, "get_users", lambda: [admin_user])
+
+    request = _build_request(inherit_enabled=True)
+    regular_user = SimpleNamespace(
+        id="user-1",
+        role="user",
+        settings=_Settings(
+            {
+                "resource_inheritance": {
+                    "admin_mcp_servers": True,
+                    "admin_mcp_server_ids": [],
+                }
+            }
+        ),
+    )
+
+    result = user_tools_mod.get_user_mcp_server_connections(request, regular_user)
+
+    assert result == []
+
+
 def test_admin_mcp_inheritance_connections_mark_legacy_ids(monkeypatch):
     from open_webui.utils import user_tools as user_tools_mod
 

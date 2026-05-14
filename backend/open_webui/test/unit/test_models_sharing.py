@@ -335,6 +335,56 @@ def test_user_selected_admin_model_ids_filter_base_models(monkeypatch):
     assert [model["id"] for model in models] == ["admin-allowed.gpt"]
 
 
+def test_user_empty_selected_admin_model_ids_block_admin_models(monkeypatch):
+    owner = SimpleNamespace(id="admin-1", role="admin")
+    user = SimpleNamespace(
+        id="user-1",
+        role="user",
+        settings=_Settings(
+            {
+                "resource_inheritance": {
+                    "admin_models": True,
+                    "admin_model_ids": [],
+                }
+            }
+        ),
+    )
+
+    async def fake_get_all_base_models(_request, user=None):
+        if user and user.id == owner.id:
+            return [
+                {
+                    "id": "admin-blocked.gpt",
+                    "name": "Blocked GPT",
+                    "object": "model",
+                    "created": 123,
+                    "owned_by": "openai",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(models_utils, "get_all_base_models", fake_get_all_base_models)
+    monkeypatch.setattr(models_utils.Functions, "get_global_action_functions", lambda: [])
+    monkeypatch.setattr(
+        models_utils.Functions,
+        "get_functions_by_type",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(models_utils.Models, "get_all_models", lambda: [])
+    monkeypatch.setattr(Users, "get_users", lambda: [owner])
+    monkeypatch.setattr(
+        user_connections,
+        "maybe_migrate_user_connections",
+        lambda _request, candidate: candidate,
+    )
+
+    request = _make_request(inherit_admin_models=True)
+    models = asyncio.run(models_utils.get_all_models(request, user=user))
+
+    assert models == []
+    assert request.state.MODELS == {}
+
+
 def test_user_selected_admin_model_ids_filter_workspace_models(monkeypatch):
     owner = SimpleNamespace(id="admin-1", role="admin")
     user = SimpleNamespace(
