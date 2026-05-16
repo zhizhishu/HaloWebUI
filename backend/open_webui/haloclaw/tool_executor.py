@@ -255,6 +255,7 @@ async def _extract_message(response: Any) -> Optional[dict]:
 
         full = "".join(chunks)
         text_parts = []
+        reasoning_parts = []
         tool_calls_map: Dict[int, dict] = {}
 
         for line in full.split("\n"):
@@ -263,12 +264,29 @@ async def _extract_message(response: Any) -> Optional[dict]:
                 continue
             try:
                 data = json.loads(line[6:])
-                delta = data.get("choices", [{}])[0].get("delta", {})
+                choice = data.get("choices", [{}])[0]
+                delta = choice.get("delta", {}) if isinstance(choice, dict) else {}
+                if (
+                    (not delta or not isinstance(delta, dict))
+                    and isinstance(choice, dict)
+                    and isinstance(choice.get("message"), dict)
+                ):
+                    delta = choice.get("message") or {}
 
                 # Collect content
                 content = delta.get("content")
                 if content:
                     text_parts.append(content)
+
+                reasoning = (
+                    delta.get("reasoning_content")
+                    or delta.get("reasoning")
+                    or delta.get("thinking")
+                    or delta.get("thinking_content")
+                )
+                reasoning_text = _stringify_message_content(reasoning)
+                if reasoning_text:
+                    reasoning_parts.append(reasoning_text)
 
                 # Collect tool_calls (streamed incrementally)
                 for tc_delta in delta.get("tool_calls", []):
@@ -293,11 +311,21 @@ async def _extract_message(response: Any) -> Optional[dict]:
         message: dict = {"role": "assistant"}
         if text_parts:
             message["content"] = "".join(text_parts)
+        if reasoning_parts:
+            message["reasoning_content"] = "".join(reasoning_parts)
         if tool_calls_map:
             message["tool_calls"] = [
                 tool_calls_map[i] for i in sorted(tool_calls_map.keys())
             ]
-        return message if ("content" in message or "tool_calls" in message) else None
+        return (
+            message
+            if (
+                "content" in message
+                or "reasoning_content" in message
+                or "tool_calls" in message
+            )
+            else None
+        )
 
     if isinstance(response, JSONResponse):
         try:

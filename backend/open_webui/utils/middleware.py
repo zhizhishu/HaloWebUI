@@ -6,7 +6,7 @@ import base64
 
 import asyncio
 from aiocache import cached
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 import random
 import json
 import html
@@ -183,7 +183,15 @@ log.setLevel(SRC_LOG_LEVELS["MAIN"])
 # This prevents thinking/reasoning tokens from leaking into the model's context
 # (KV cache protection for reasoning models).
 _REASONING_DETAILS_RE = re.compile(
-    r'<details\s+type="reasoning"[^>]*>.*?</details>', re.DOTALL | re.IGNORECASE
+    r"""<details\b(?=[^>]*\btype=["']reasoning["'])[^>]*>.*?</details>""",
+    re.DOTALL | re.IGNORECASE,
+)
+_REASONING_DETAILS_CAPTURE_RE = re.compile(
+    r"""<details\b(?=[^>]*\btype=["']reasoning["'])[^>]*>(.*?)</details>""",
+    re.DOTALL | re.IGNORECASE,
+)
+_DETAILS_SUMMARY_RE = re.compile(
+    r"<summary\b[^>]*>.*?</summary>", re.DOTALL | re.IGNORECASE
 )
 
 
@@ -192,6 +200,78 @@ def strip_reasoning_details(content: str) -> str:
     if not content or not isinstance(content, str):
         return content or ""
     return _REASONING_DETAILS_RE.sub("", content).strip()
+
+
+def _extract_reasoning_content_from_serialized_details(content: Any) -> str:
+    """Recover raw reasoning text from stored UI <details type="reasoning"> blocks."""
+    if not isinstance(content, str) or not content:
+        return ""
+
+    parts: list[str] = []
+    for match in _REASONING_DETAILS_CAPTURE_RE.finditer(content):
+        body = _DETAILS_SUMMARY_RE.sub("", match.group(1) or "")
+        lines: list[str] = []
+        for line in body.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(">"):
+                stripped = stripped[1:].lstrip()
+            lines.append(stripped)
+        text = html.unescape("\n".join(lines).strip())
+        if text:
+            parts.append(text)
+
+    return "\n".join(parts).strip()
+
+
+def _collect_reasoning_content_from_blocks(content_blocks: Any) -> str:
+    """Collect reasoning text that belongs to the assistant turn before tool_calls."""
+    if not isinstance(content_blocks, list):
+        return ""
+
+    parts: list[str] = []
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+
+        block_type = block.get("type")
+        block_content = block.get("content")
+
+        if block_type == "reasoning" and block_content:
+            parts.append(str(block_content))
+            continue
+
+        if block_type == "text":
+            text_reasoning = _extract_reasoning_content_from_serialized_details(
+                block_content
+            )
+            if text_reasoning:
+                parts.append(text_reasoning)
+
+    return "\n".join(part for part in parts if str(part).strip()).strip()
+
+
+def _build_tool_call_assistant_message(
+    prefix_blocks: list[dict],
+    tool_calls: Any,
+    serialize_content_blocks: Callable[..., str],
+) -> dict:
+    """Build an OpenAI-compatible assistant tool-call message.
+
+    DeepSeek thinking mode requires the assistant message that contains tool_calls
+    to also carry the original reasoning_content in the next request.
+    """
+    visible_content = serialize_content_blocks(prefix_blocks, include_reasoning=False)
+    reasoning_content = _collect_reasoning_content_from_blocks(prefix_blocks)
+
+    message = {
+        "role": "assistant",
+        "content": visible_content if visible_content else "",
+        "tool_calls": tool_calls,
+    }
+    if reasoning_content:
+        message["reasoning_content"] = reasoning_content
+
+    return message
 
 
 def _summarize_form_data_for_debug(form_data: Any) -> dict[str, Any]:
@@ -4219,12 +4299,18 @@ async def process_chat_response(
 
         # Handle as a background task
         async def post_response_handler(response, events):
-            def serialize_content_blocks(content_blocks, raw=False):
+            def serialize_content_blocks(content_blocks, raw=False, include_reasoning=True):
                 content = ""
 
                 for block in content_blocks:
                     if block["type"] == "text":
-                        content = f"{content}{block['content'].strip()}\n"
+                        block_content = str(block.get("content", "")).strip()
+                        if not include_reasoning:
+                            block_content = strip_reasoning_details(
+                                block_content
+                            ).strip()
+                        if block_content:
+                            content = f"{content}{block_content}\n"
                     elif block["type"] == "tool_calls":
                         attributes = block.get("attributes", {})
 
@@ -4277,6 +4363,9 @@ async def process_chat_response(
                                 content = f"{content}\n{tool_calls_display_content}\n\n"
 
                     elif block["type"] == "reasoning":
+                        if not include_reasoning:
+                            continue
+
                         reasoning_display_content = "\n".join(
                             (f"> {line}" if not line.startswith(">") else line)
                             for line in block["content"].splitlines()
@@ -4338,13 +4427,12 @@ async def process_chat_response(
                 temp_blocks = []
                 for idx, block in enumerate(content_blocks):
                     if block["type"] == "tool_calls":
-                        serialized = serialize_content_blocks(temp_blocks)
                         messages.append(
-                            {
-                                "role": "assistant",
-                                "content": serialized if serialized else None,
-                                "tool_calls": block.get("content"),
-                            }
+                            _build_tool_call_assistant_message(
+                                temp_blocks,
+                                block.get("content"),
+                                serialize_content_blocks,
+                            )
                         )
 
                         results = block.get("results", [])
