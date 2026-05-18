@@ -34,6 +34,15 @@ jobs:
           git remote add upstream https://github.com/ztx888/HaloWebUI.git
           git fetch upstream main
 
+      - name: Prepare sync helper scripts
+        run: |
+          mkdir -p "$RUNNER_TEMP/sync-scripts"
+          DEFAULT_BRANCH="${{ github.event.repository.default_branch }}"
+          git fetch origin "${DEFAULT_BRANCH}" --depth=1
+          git show "origin/${DEFAULT_BRANCH}:scripts/generate-upstream-change-report.sh" \
+            > "$RUNNER_TEMP/sync-scripts/generate-upstream-change-report.sh"
+          chmod +x "$RUNNER_TEMP/sync-scripts/generate-upstream-change-report.sh"
+
       - name: Mirror upstream/main into main
         id: sync
         run: |
@@ -48,7 +57,7 @@ jobs:
       - name: Generate upstream change report
         run: |
           mkdir -p .reports
-          bash scripts/generate-upstream-change-report.sh \
+          bash "$RUNNER_TEMP/sync-scripts/generate-upstream-change-report.sh" \
             "${{ steps.sync.outputs.prev_main_sha }}" \
             "${{ steps.sync.outputs.new_main_sha }}" \
             "upstream/main" \
