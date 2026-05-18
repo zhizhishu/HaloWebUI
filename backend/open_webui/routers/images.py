@@ -4514,9 +4514,28 @@ def _build_openai_image_upstream_error_detail(
         status_code = None
 
     body_dict = parsed_body if isinstance(parsed_body, dict) else {}
-    error_code = body_dict.get("error_code") or body_dict.get("code")
+    error_field = body_dict.get("error")
+    nested_error = error_field if isinstance(error_field, dict) else {}
+    error_type = (
+        body_dict.get("error_type")
+        or body_dict.get("type")
+        or nested_error.get("type")
+        or (error_field if isinstance(error_field, str) else None)
+    )
+    error_code = (
+        body_dict.get("error_code")
+        or body_dict.get("code")
+        or nested_error.get("code")
+    )
     title = str(body_dict.get("title") or "")
-    detail = str(body_dict.get("detail") or body_dict.get("message") or "")
+    detail = str(
+        body_dict.get("detail")
+        or body_dict.get("message")
+        or body_dict.get("error_detail")
+        or body_dict.get("error_description")
+        or nested_error.get("message")
+        or ""
+    )
     try:
         body_text = json.dumps(parsed_body, ensure_ascii=False, default=str)
     except Exception:
@@ -4558,7 +4577,20 @@ def _build_openai_image_upstream_error_detail(
             "请稍后重试，或切换接口模式/连接。"
         )
 
-    return build_error_detail(parsed_body, default=default)
+    detail_text = build_error_detail(parsed_body, default=default)
+    context_parts = []
+    for label, value in (("错误代码", error_code), ("错误类型", error_type)):
+        value_text = str(value or "").strip()
+        if value_text and value_text not in detail_text:
+            context_parts.append(f"{label}：{value_text}")
+    suffix = f"（{'；'.join(context_parts)}）" if context_parts else ""
+
+    if status_code and not re.search(
+        rf"\bHTTP\s*{status_code}\b", detail_text, re.IGNORECASE
+    ):
+        return f"{status_text}：{detail_text}{suffix}"
+
+    return f"{detail_text}{suffix}"
 
 
 def _get_openai_images_edit_url(base_url: str, api_config: Optional[dict]) -> str:

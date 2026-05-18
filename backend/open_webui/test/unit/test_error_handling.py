@@ -28,6 +28,29 @@ def test_extract_error_detail_prefers_nested_error_message():
     )
 
 
+def test_extract_error_detail_prefers_human_detail_over_scalar_error_type():
+    assert (
+        extract_error_detail(
+            {
+                "error": "openai_error",
+                "error_code": "internal_server_error",
+                "error_detail": (
+                    "status_code=503, auth_not_found: no auth available "
+                    "(providers=codex, model=gpt-5.4-mini)"
+                ),
+            }
+        )
+        == (
+            "status_code=503, auth_not_found: no auth available "
+            "(providers=codex, model=gpt-5.4-mini)"
+        )
+    )
+
+
+def test_extract_error_detail_falls_back_to_scalar_error_when_no_detail_exists():
+    assert extract_error_detail({"error": "invalid_api_key"}) == "invalid_api_key"
+
+
 def test_extract_error_detail_handles_validation_error_lists():
     assert (
         extract_error_detail(

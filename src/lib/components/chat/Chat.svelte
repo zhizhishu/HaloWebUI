@@ -89,7 +89,6 @@
 		resolveTemporaryChatEnabled
 	} from '$lib/utils/temporary-chat';
 	import {
-		getPreferredWebSearchMode,
 		normalizeWebSearchMode,
 		normalizeWebSearchModeSource,
 		type WebSearchMode,
@@ -97,6 +96,7 @@
 	} from '$lib/utils/web-search-mode';
 	import { getFunctionPipeRootId } from '$lib/utils/image-generation';
 	import { isDedicatedImageGenerationModel } from '$lib/utils/model-capabilities';
+	import { resolveModelBuiltinWebSearchState } from '$lib/utils/model-web-search-preference';
 	import { applyUserSettingsSnapshot } from '$lib/utils/user-settings';
 	import { buildWebSearchModeOptions } from '$lib/utils/native-web-search';
 
@@ -779,13 +779,6 @@
 		return resolved.length === ids.length ? resolved : [];
 	};
 
-	const getModelBuiltinWebSearchPreference = (model: Model | null | undefined): boolean | null => {
-		const value =
-			(model as any)?.info?.meta?.builtin_tool_config?.ENABLE_WEB_SEARCH_TOOL ??
-			(model as any)?.meta?.builtin_tool_config?.ENABLE_WEB_SEARCH_TOOL;
-		return typeof value === 'boolean' ? value : null;
-	};
-
 	const pickModelDefaultWebSearchMode = (selectedModels: Model[]): WebSearchMode => {
 		const availableModes = new Set(
 			buildWebSearchModeOptions(
@@ -817,24 +810,11 @@
 			return null;
 		}
 
-		const fallbackMode = getPreferredDefaultWebSearchMode();
-		if (resolvedModels.length === 0) {
-			return { mode: fallbackMode, source: 'default' };
-		}
-
-		const preferences = resolvedModels.map(getModelBuiltinWebSearchPreference);
-		if (resolvedModels.length > 1 && preferences.some((value) => value === false)) {
-			return { mode: 'off', source: 'model' };
-		}
-
-		if (preferences.some((value) => value === true)) {
-			return {
-				mode: pickModelDefaultWebSearchMode(resolvedModels),
-				source: 'model'
-			};
-		}
-
-		return { mode: fallbackMode, source: 'default' };
+		return resolveModelBuiltinWebSearchState(
+			resolvedModels,
+			getPreferredDefaultWebSearchMode(),
+			pickModelDefaultWebSearchMode
+		);
 	};
 
 	// J-3-01: Reactive flag to avoid calling createMessagesList just for emptiness check in template
@@ -997,18 +977,6 @@
 			.map((str) => decodeURIComponent(JSON.parse('"' + str.replace(/\"/g, '\\"') + '"')));
 	};
 
-	const collectFloatingRequestFiles = (messages) =>
-		messages
-			.flatMap((message) =>
-				(message?.files ?? []).filter((item) =>
-					['doc', 'file', 'collection', 'web_search_results'].includes(item.type)
-				)
-			)
-			.filter(
-				(item, index, array) =>
-					array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
-			);
-
 	const buildFloatingRequestMessages = async (messages) => {
 		const systemPrompt =
 			params?.system || $settings?.system
@@ -1098,7 +1066,7 @@
 		const requestedWebSearchMode = canUseChatWebSearch()
 			? normalizeWebSearchMode(webSearchMode, 'off')
 			: 'off';
-		const requestFiles = collectFloatingRequestFiles(messages);
+		const requestFiles = structuredClone(chatFiles);
 		const imageGenerationActive = canUseChatImageGeneration()
 			? isImageGenerationActiveForRequest()
 			: false;
@@ -1118,7 +1086,7 @@
 				keep_alive: $settings.keepAlive ?? undefined,
 				stop: getRequestStopTokens()
 			},
-			files: requestFiles.length > 0 ? requestFiles : undefined,
+			files: Array.isArray(requestFiles) ? requestFiles : [],
 			tool_ids: selectedToolIds.length > 0 ? selectedToolIds : undefined,
 			skill_ids: requestSkillIds.length > 0 ? requestSkillIds : undefined,
 			skill_selection_touched: skillSelectionTouched ? true : undefined,
@@ -1163,8 +1131,7 @@
 
 	setContext('floatingChatRequestFactory', buildFloatingChatRequest);
 
-	const getPreferredDefaultWebSearchMode = (): WebSearchMode =>
-		getPreferredWebSearchMode($settings, 'off');
+	const getPreferredDefaultWebSearchMode = (): WebSearchMode => 'off';
 
 	const isChatWebSearchFeatureEnabled = () =>
 		Boolean($config?.features?.enable_halo_web_search ?? $config?.features?.enable_web_search) ||
@@ -1347,7 +1314,7 @@
 			if (model?.pipe) {
 				return {
 					tab: 'functions' as const,
-					id: getFunctionPipeRootId(activeModelId)
+					id: getFunctionPipeRootId(model.id || activeModelId)
 				};
 			}
 		}
@@ -1429,6 +1396,24 @@
 
 	const getSelectedModelsStorageKey = () =>
 		buildScopedStorageKey(getLegacySelectedModelsStorageKey());
+
+	const removeSessionSelectedModels = () => {
+		if (typeof window === 'undefined') {
+			return;
+		}
+		const scopedKey = getSelectedModelsStorageKey();
+		const legacyKey = getLegacySelectedModelsStorageKey();
+		sessionStorage.removeItem(scopedKey);
+		if (legacyKey !== scopedKey) {
+			sessionStorage.removeItem(legacyKey);
+		}
+	};
+
+	const getNewChatStateInheritanceEnabled = (settingsSource = $settings) =>
+		settingsSource?.newChatInheritsPreviousState ?? false;
+
+	const shouldRestoreChatSessionState = (id: string | null | undefined) =>
+		Boolean(id) || getNewChatStateInheritanceEnabled();
 
 	const safeParseStoredJson = <T,>(rawValue: string | null | undefined, fallback: T): T => {
 		if (!rawValue) {
@@ -1623,6 +1608,10 @@
 
 	const restoreChatSessionState = (id: string | null | undefined = $chatId || chatIdProp) => {
 		try {
+			if (!shouldRestoreChatSessionState(id)) {
+				return false;
+			}
+
 			const scopedKey = getChatSessionStateKey(id);
 			const legacyKey = getLegacyChatSessionStateKey(id);
 			const { value, usedLegacy } = readStorageItem(localStorage, scopedKey, legacyKey);
@@ -1748,6 +1737,19 @@
 			localStorage.removeItem(legacyKey);
 		}
 	};
+
+	const clearNewChatStateCache = () => {
+		if (typeof window === 'undefined') {
+			return;
+		}
+		removeChatSessionState('');
+		removeChatInputState('');
+		removeSessionSelectedModels();
+	};
+
+	$: if (($settings?.newChatInheritsPreviousState ?? false) === false) {
+		clearNewChatStateCache();
+	}
 
 	const migrateChatSessionState = (
 		fromId: string | null | undefined,
@@ -2011,10 +2013,12 @@
 
 	$: {
 		const selectionDrivenState = getSelectionDrivenWebSearchState();
+		const shouldApplyModelOff =
+			selectionDrivenState?.source === 'model' && selectionDrivenState.mode === 'off';
 		if (
 			webSearchSelectionSyncReady &&
-			webSearchModeSource !== 'user' &&
 			selectionDrivenState &&
+			(webSearchModeSource !== 'user' || shouldApplyModelOff) &&
 			(webSearchMode !== selectionDrivenState.mode ||
 				webSearchModeSource !== selectionDrivenState.source)
 		) {
@@ -2091,6 +2095,10 @@
 	}
 
 	const saveSessionSelectedModels = () => {
+		if (!getNewChatStateInheritanceEnabled()) {
+			removeSessionSelectedModels();
+			return;
+		}
 		if (selectedModels.length === 0 || (selectedModels.length === 1 && selectedModels[0] === '')) {
 			return;
 		}
@@ -2109,6 +2117,7 @@
 		modelsMap.size > 0 &&
 		!chatIdProp &&
 		!freshChatActive &&
+		getNewChatStateInheritanceEnabled() &&
 		(selectedModels.length === 0 || (selectedModels.length === 1 && selectedModels[0] === ''))
 	) {
 		const scopedKey = getSelectedModelsStorageKey();
@@ -2465,25 +2474,29 @@
 		}
 
 		if (!chatIdProp) {
-			const input = readChatInputState(chatIdProp);
-			if (input) {
-				try {
-					prompt = input.prompt;
-					files = input.files;
-				} catch (e) {
-					prompt = '';
-					files = [];
-					selectedToolIds = [];
-					toolSelectionTouched = false;
-					selectedSkillIds = [];
-					skillSelectionTouched = false;
-					webSearchMode = getPreferredDefaultWebSearchMode();
-					webSearchModeSource = 'default';
-					imageGenerationEnabled = false;
-					imageGenerationOptions = {};
+			if (getNewChatStateInheritanceEnabled()) {
+				const input = readChatInputState(chatIdProp);
+				if (input) {
+					try {
+						prompt = input.prompt;
+						files = input.files;
+					} catch (e) {
+						prompt = '';
+						files = [];
+						selectedToolIds = [];
+						toolSelectionTouched = false;
+						selectedSkillIds = [];
+						skillSelectionTouched = false;
+						webSearchMode = getPreferredDefaultWebSearchMode();
+						webSearchModeSource = 'default';
+						imageGenerationEnabled = false;
+						imageGenerationOptions = {};
+					}
 				}
+				restoreChatSessionState(chatIdProp);
+			} else {
+				clearNewChatStateCache();
 			}
-			restoreChatSessionState(chatIdProp);
 			composerStateSyncReady = true;
 			webSearchSelectionSyncReady = true;
 		}
@@ -2841,6 +2854,7 @@
 
 	const initNewChat = async (options: { fresh?: boolean } = {}) => {
 		const fresh = options.fresh ?? false;
+		const inheritNewChatState = !fresh && getNewChatStateInheritanceEnabled();
 		freshChatActive = fresh;
 		composerStateSyncReady = false;
 		resetReasoningSelectionTracking();
@@ -2875,7 +2889,7 @@
 			}
 		} else if (!fresh && $selectedAssistantScene?.id) {
 			selectedModels = [$selectedAssistantScene.id];
-		} else if (!fresh) {
+		} else if (!fresh && inheritNewChatState) {
 			const scopedKey = getSelectedModelsStorageKey();
 			const legacyKey = getLegacySelectedModelsStorageKey();
 			const { value, usedLegacy } = readStorageItem(sessionStorage, scopedKey, legacyKey);
@@ -2894,7 +2908,7 @@
 			}
 		} else if ($settings?.models) {
 			selectedModels = $settings?.models;
-		} else if (fresh) {
+		} else if (fresh || !inheritNewChatState) {
 			// fresh=true but no default model configured — reset to empty so user must choose
 			selectedModels = [''];
 		}
@@ -2919,7 +2933,7 @@
 			) {
 				if (hadExplicitSelectedModels) {
 					selectedModels = [''];
-				} else if (!fresh && $models.length > 0) {
+				} else if (!fresh && inheritNewChatState && $models.length > 0) {
 					// Non-fresh: auto-select first available model as fallback
 					selectedModels = [getModelSelectionId($models[0])];
 				} else {
@@ -2965,7 +2979,7 @@
 		expandedSelectionThreadId.set(null);
 		clearResponseAnimationControllers();
 
-		if (fresh) {
+		if (fresh || !inheritNewChatState) {
 			chat = null;
 			tags = [];
 			taskIds = null;
@@ -2992,9 +3006,8 @@
 		selectedSkillIds = [];
 		skillSelectionTouched = false;
 
-		if (fresh) {
-			removeChatSessionState('');
-			removeChatInputState('');
+		if (fresh || !inheritNewChatState) {
+			clearNewChatStateCache();
 			reasoningEffort = null;
 			maxThinkingTokens = null;
 			webSearchMode = getPreferredDefaultWebSearchMode();
@@ -3093,7 +3106,7 @@
 		}
 
 		if (fresh && $page.url.searchParams.get('web-search') !== 'true') {
-			webSearchMode = getPreferredWebSearchMode(userSettings?.ui ?? $settings, 'off');
+			webSearchMode = getPreferredDefaultWebSearchMode();
 			webSearchModeSource = 'default';
 		}
 
@@ -4538,20 +4551,7 @@
 
 	const sendPromptSocket = async (_history, model, responseMessageId, _chatId) => {
 		const responseMessage = _history.messages[responseMessageId];
-		const userMessage = _history.messages[responseMessage.parentId];
-
-		let files = structuredClone(chatFiles);
-		files.push(
-			...(userMessage?.files ?? []).filter((item) =>
-				['doc', 'file', 'collection'].includes(item.type)
-			),
-			...(responseMessage?.files ?? []).filter((item) => ['web_search_results'].includes(item.type))
-		);
-		// Remove duplicates
-		files = files.filter(
-			(item, index, array) =>
-				array.findIndex((i) => JSON.stringify(i) === JSON.stringify(item)) === index
-		);
+		const files = structuredClone(chatFiles);
 
 		resetAutoScrollLock();
 		scrollToBottom();
@@ -4719,7 +4719,7 @@
 							: undefined
 				},
 
-				files: (files?.length ?? 0) > 0 ? files : undefined,
+				files: Array.isArray(files) ? files : [],
 				tool_ids: selectedToolIds.length > 0 ? selectedToolIds : undefined,
 				skill_ids: requestSkillIds.length > 0 ? requestSkillIds : undefined,
 				skill_selection_touched: skillSelectionTouched ? true : undefined,
@@ -5425,6 +5425,19 @@
 			}
 		}
 	};
+
+	const persistChatFilesChange = async (event: CustomEvent<{ files?: any[] }> | null = null) => {
+		if (Array.isArray(event?.detail?.files)) {
+			chatFiles = event.detail.files;
+		}
+
+		if ($temporaryChatEnabled || !$chatId || $chatId === 'local') {
+			return;
+		}
+
+		await tick();
+		await saveChatHandler($chatId, history);
+	};
 </script>
 
 <svelte:head>
@@ -5686,6 +5699,7 @@
 				{eventTarget}
 				{imageGenerationEnabled}
 				{currentValvesContext}
+				on:chatFilesChange={persistChatFilesChange}
 			/>
 		</PaneGroup>
 	{:else if loading}

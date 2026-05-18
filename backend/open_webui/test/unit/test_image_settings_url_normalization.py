@@ -157,6 +157,28 @@ def test_openai_image_502_cloudflare_error_keeps_status_code():
     assert "origin web server" not in detail
 
 
+def test_openai_image_503_scalar_error_type_preserves_upstream_detail():
+    detail = _build_openai_image_upstream_error_detail(
+        503,
+        {
+            "error": "openai_error",
+            "error_code": "internal_server_error",
+            "error_detail": (
+                "status_code=503, auth_not_found: no auth available "
+                "(providers=codex, model=gpt-5.4-mini)"
+            ),
+        },
+        default="Failed to generate image via upstream /images/generations",
+        route_label="generations",
+    )
+
+    assert "HTTP 503" in detail
+    assert "auth_not_found" in detail
+    assert "internal_server_error" in detail
+    assert "openai_error" in detail
+    assert detail != "openai_error"
+
+
 def test_openai_image_settings_auto_append_v1():
     normalized, force_mode = _normalize_image_provider_base_url(
         "https://api.example.com",

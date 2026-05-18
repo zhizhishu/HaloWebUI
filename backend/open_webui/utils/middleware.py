@@ -6,7 +6,7 @@ import base64
 
 import asyncio
 from aiocache import cached
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 import random
 import json
 import html
@@ -14,6 +14,8 @@ import inspect
 import re
 import ast
 import hashlib
+import mimetypes
+from io import BytesIO
 from difflib import get_close_matches
 from urllib.parse import urlparse
 
@@ -27,7 +29,7 @@ from starlette.responses import Response, StreamingResponse
 
 
 from open_webui.models.chats import Chats
-from open_webui.models.files import Files
+from open_webui.models.files import FileForm, Files
 from open_webui.models.users import Users
 from open_webui.socket.main import (
     get_event_call,
@@ -53,6 +55,7 @@ from open_webui.routers.openai import (
     NATIVE_FILE_INPUT_STATUS_SUPPORTED,
     NATIVE_FILE_INPUT_STATUS_UPLOAD_FAILED,
     NATIVE_FILE_INPUT_STATUS_UPSTREAM_REJECTED,
+    _clear_cached_openai_file_id,
     _get_cached_openai_file_id,
     _get_native_file_input_capability,
     _get_openai_file_cache_key,
@@ -155,7 +158,12 @@ from open_webui.utils.filter import (
 from open_webui.utils.shared_tool_runtime import (
     ensure_selected_shared_tool_runtime_loaded,
 )
-from open_webui.utils.code_interpreter import execute_code_jupyter
+from open_webui.utils.code_interpreter import (
+    MAX_GENERATED_FILE_BYTES,
+    MAX_GENERATED_FILES,
+    MAX_GENERATED_TOTAL_BYTES,
+    execute_code_jupyter,
+)
 
 from open_webui.tasks import create_task, set_current_task_blocks_completion
 
@@ -177,11 +185,20 @@ logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MAIN"])
 
+
 # Regex to strip <details type="reasoning"> blocks from stored message content.
 # This prevents thinking/reasoning tokens from leaking into the model's context
 # (KV cache protection for reasoning models).
 _REASONING_DETAILS_RE = re.compile(
-    r'<details\s+type="reasoning"[^>]*>.*?</details>', re.DOTALL | re.IGNORECASE
+    r"""<details\b(?=[^>]*\btype=["']reasoning["'])[^>]*>.*?</details>""",
+    re.DOTALL | re.IGNORECASE,
+)
+_REASONING_DETAILS_CAPTURE_RE = re.compile(
+    r"""<details\b(?=[^>]*\btype=["']reasoning["'])[^>]*>(.*?)</details>""",
+    re.DOTALL | re.IGNORECASE,
+)
+_DETAILS_SUMMARY_RE = re.compile(
+    r"<summary\b[^>]*>.*?</summary>", re.DOTALL | re.IGNORECASE
 )
 
 
@@ -190,6 +207,78 @@ def strip_reasoning_details(content: str) -> str:
     if not content or not isinstance(content, str):
         return content or ""
     return _REASONING_DETAILS_RE.sub("", content).strip()
+
+
+def _extract_reasoning_content_from_serialized_details(content: Any) -> str:
+    """Recover raw reasoning text from stored UI <details type="reasoning"> blocks."""
+    if not isinstance(content, str) or not content:
+        return ""
+
+    parts: list[str] = []
+    for match in _REASONING_DETAILS_CAPTURE_RE.finditer(content):
+        body = _DETAILS_SUMMARY_RE.sub("", match.group(1) or "")
+        lines: list[str] = []
+        for line in body.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(">"):
+                stripped = stripped[1:].lstrip()
+            lines.append(stripped)
+        text = html.unescape("\n".join(lines).strip())
+        if text:
+            parts.append(text)
+
+    return "\n".join(parts).strip()
+
+
+def _collect_reasoning_content_from_blocks(content_blocks: Any) -> str:
+    """Collect reasoning text that belongs to the assistant turn before tool_calls."""
+    if not isinstance(content_blocks, list):
+        return ""
+
+    parts: list[str] = []
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+
+        block_type = block.get("type")
+        block_content = block.get("content")
+
+        if block_type == "reasoning" and block_content:
+            parts.append(str(block_content))
+            continue
+
+        if block_type == "text":
+            text_reasoning = _extract_reasoning_content_from_serialized_details(
+                block_content
+            )
+            if text_reasoning:
+                parts.append(text_reasoning)
+
+    return "\n".join(part for part in parts if str(part).strip()).strip()
+
+
+def _build_tool_call_assistant_message(
+    prefix_blocks: list[dict],
+    tool_calls: Any,
+    serialize_content_blocks: Callable[..., str],
+) -> dict:
+    """Build an OpenAI-compatible assistant tool-call message.
+
+    DeepSeek thinking mode requires the assistant message that contains tool_calls
+    to also carry the original reasoning_content in the next request.
+    """
+    visible_content = serialize_content_blocks(prefix_blocks, include_reasoning=False)
+    reasoning_content = _collect_reasoning_content_from_blocks(prefix_blocks)
+
+    message = {
+        "role": "assistant",
+        "content": visible_content if visible_content else "",
+        "tool_calls": tool_calls,
+    }
+    if reasoning_content:
+        message["reasoning_content"] = reasoning_content
+
+    return message
 
 
 def _summarize_form_data_for_debug(form_data: Any) -> dict[str, Any]:
@@ -311,6 +400,182 @@ def _normalize_message_files(files: Any) -> list[dict]:
 
 def _merge_message_files(existing: Any, incoming: Any) -> list[dict]:
     return _normalize_message_files([*(existing or []), *(incoming or [])])
+
+
+def _is_code_interpreter_generated_file(file_item: Any) -> bool:
+    if not isinstance(file_item, dict):
+        return False
+    return (
+        file_item.get("generated") is True
+        or str(file_item.get("source") or "").strip() == "code_interpreter"
+    )
+
+
+def _safe_generated_file_path(value: Any) -> str:
+    path = str(value or "").replace("\\", "/").strip()
+    if not path or path.startswith("/") or path.startswith("//"):
+        return ""
+    if re.match(r"^[a-z][a-z0-9+.-]*:", path, re.IGNORECASE):
+        return ""
+
+    parts = [
+        part.strip() for part in path.split("/") if part.strip() and part.strip() != "."
+    ]
+    if not parts or any(part == ".." for part in parts):
+        return ""
+
+    return "/".join(parts)
+
+
+def _decode_generated_file_content(generated_file: dict) -> Optional[bytes]:
+    if "content_base64" in generated_file:
+        content_base64 = generated_file.get("content_base64")
+        if not isinstance(content_base64, str):
+            return None
+        if len(content_base64) > ((MAX_GENERATED_FILE_BYTES + 2) // 3) * 4:
+            return None
+        return base64.b64decode(content_base64, validate=True)
+
+    def decode_byte_list(values: Any) -> Optional[bytes]:
+        if not isinstance(values, list) or len(values) > MAX_GENERATED_FILE_BYTES:
+            return None
+
+        data = bytearray()
+        for item in values:
+            if type(item) is not int or item < 0 or item > 255:
+                return None
+            data.append(item)
+        return bytes(data)
+
+    content = generated_file.get("content") if "content" in generated_file else None
+    if isinstance(content, list):
+        return decode_byte_list(content)
+
+    if isinstance(content, dict):
+        values = content.get("data")
+        if isinstance(values, list):
+            return decode_byte_list(values)
+
+    return None
+
+
+def _register_code_interpreter_generated_files(
+    request: Request, user: UserModel, generated_files: Any
+) -> list[dict]:
+    if not isinstance(generated_files, list):
+        return []
+
+    registered_files: list[dict] = []
+    total_size = 0
+
+    for generated_file in generated_files:
+        if len(registered_files) >= MAX_GENERATED_FILES:
+            break
+
+        if not isinstance(generated_file, dict):
+            continue
+
+        relative_path = _safe_generated_file_path(
+            generated_file.get("path")
+            or generated_file.get("relative_path")
+            or generated_file.get("name")
+        )
+        fallback_name = _safe_generated_file_path(
+            generated_file.get("name") or generated_file.get("filename")
+        )
+        name = os.path.basename(relative_path) or os.path.basename(fallback_name)
+        if not relative_path:
+            relative_path = name
+        if not name:
+            continue
+
+        try:
+            content = _decode_generated_file_content(generated_file)
+        except Exception:
+            log.warning(
+                "Skipping generated file with invalid content payload: %s", name
+            )
+            continue
+
+        if content is None:
+            continue
+        if len(content) > MAX_GENERATED_FILE_BYTES:
+            continue
+        if total_size + len(content) > MAX_GENERATED_TOTAL_BYTES:
+            continue
+
+        file_id = str(uuid4())
+        storage_filename = f"{file_id}_{name}"
+        content_type = (
+            str(generated_file.get("content_type") or "").strip()
+            or mimetypes.guess_type(name)[0]
+            or "application/octet-stream"
+        )
+
+        file_path = None
+        try:
+            file_size, file_path = Storage.upload_file(
+                BytesIO(content), storage_filename
+            )
+            file_item = Files.insert_new_file(
+                user.id,
+                FileForm(
+                    **{
+                        "id": file_id,
+                        "filename": name,
+                        "path": file_path,
+                        "meta": {
+                            "name": name,
+                            "content_type": content_type,
+                            "size": file_size,
+                            "data": {
+                                "source": "code_interpreter",
+                                "path": relative_path or name,
+                            },
+                        },
+                    }
+                ),
+            )
+        except Exception:
+            if file_path:
+                try:
+                    Storage.delete_file(file_path)
+                except Exception:
+                    log.debug("Failed to clean up generated file upload: %s", file_path)
+            log.exception(
+                "Failed to register generated code interpreter file: %s", name
+            )
+            continue
+
+        if not file_item:
+            if file_path:
+                try:
+                    Storage.delete_file(file_path)
+                except Exception:
+                    log.debug("Failed to clean up generated file upload: %s", file_path)
+            continue
+
+        download_url = f"/api/v1/files/{file_id}/content?attachment=true"
+        content_url = f"/api/v1/files/{file_id}/content"
+        total_size += file_size
+        registered_files.append(
+            {
+                "type": "file",
+                "id": file_id,
+                "name": name,
+                "filename": name,
+                "url": download_url,
+                "content_url": content_url,
+                "size": file_size,
+                "content_type": content_type,
+                "path": relative_path or name,
+                "relative_path": relative_path or name,
+                "source": "code_interpreter",
+                "generated": True,
+            }
+        )
+
+    return registered_files
 
 
 def normalize_message_files(files: Any) -> list[dict]:
@@ -530,10 +795,16 @@ def _has_visible_message_files(message_files: Any) -> bool:
         if not isinstance(file_item, dict):
             continue
 
-        if str(file_item.get("type") or "").strip().lower() != "image":
-            continue
+        file_type = str(file_item.get("type") or "").strip().lower()
+        generated = (
+            file_item.get("generated") is True
+            or str(file_item.get("source") or "").strip() == "code_interpreter"
+        )
+        visible_keys = ("url", "content_url", "id", "name", "filename", "path")
 
-        if any(str(file_item.get(key) or "").strip() for key in ("url", "id", "name")):
+        if (file_type == "image" or generated) and any(
+            str(file_item.get(key) or "").strip() for key in visible_keys
+        ):
             return True
 
     return False
@@ -961,6 +1232,19 @@ _NATIVE_FILE_INPUT_RETRY_PATTERNS = (
     "purpose",
     "user_data",
 )
+_NATIVE_FILE_INPUT_STALE_FILE_ID_PATTERNS = (
+    "file not found",
+    "file_not_found",
+    "invalid file_id",
+    "invalid_file_id",
+    "invalid file id",
+    "invalid_file",
+    "no such file",
+    "could not find file",
+    "file id does not exist",
+    "file_id does not exist",
+    "unknown file",
+)
 
 _ANTHROPIC_NATIVE_DOCUMENT_MIME_TYPES = {
     "application/pdf",
@@ -1259,6 +1543,50 @@ def should_retry_native_file_inputs_with_rag(metadata: dict, error: Any) -> bool
     return any(pattern in text for pattern in _NATIVE_FILE_INPUT_RETRY_PATTERNS)
 
 
+def should_retry_native_file_inputs_after_cache_clear(metadata: dict, error: Any) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    if metadata.get("disable_native_file_inputs"):
+        return False
+    if metadata.get("native_file_input_cache_retried"):
+        return False
+    if not metadata.get("native_file_input_file_ids"):
+        return False
+    if not metadata.get("native_file_input_connection_cache_key"):
+        return False
+
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+
+    if "input_file" not in text and "file_id" not in text and "file id" not in text:
+        return False
+
+    return any(pattern in text for pattern in _NATIVE_FILE_INPUT_STALE_FILE_ID_PATTERNS)
+
+
+def clear_native_file_input_remote_cache(metadata: dict) -> list[str]:
+    if not isinstance(metadata, dict):
+        return []
+
+    conn_key = str(metadata.get("native_file_input_connection_cache_key") or "").strip()
+    if not conn_key:
+        return []
+
+    cleared: list[str] = []
+    for file_id in metadata.get("native_file_input_file_ids") or []:
+        file_id = str(file_id or "").strip()
+        if not file_id:
+            continue
+        file_obj = Files.get_file_by_id(file_id)
+        if not file_obj:
+            continue
+        _clear_cached_openai_file_id(file_id, file_obj.meta or {}, conn_key)
+        cleared.append(file_id)
+
+    return cleared
+
+
 def _build_api_error_payload(
     error: dict | str,
     model_id: str,
@@ -1326,6 +1654,8 @@ def _extract_files_from_messages(messages: list[dict]) -> list[dict]:
             continue
         for f in msg_files:
             if not isinstance(f, dict):
+                continue
+            if _is_code_interpreter_generated_file(f):
                 continue
             file_id = f.get("id") or f.get("file_id") or ""
             if not file_id or file_id in file_ids_seen:
@@ -1414,6 +1744,8 @@ def _get_file_item_processing_mode(file_item: Any) -> str:
 def _is_native_file_input_candidate(file_item: Any) -> bool:
     if not isinstance(file_item, dict):
         return False
+    if _is_code_interpreter_generated_file(file_item):
+        return False
     if file_item.get("type") != "file":
         return False
     if file_item.get("source") == "knowledge":
@@ -1421,6 +1753,27 @@ def _is_native_file_input_candidate(file_item: Any) -> bool:
     if _get_file_item_processing_mode(file_item) != FILE_PROCESSING_MODE_NATIVE_FILE:
         return False
     return bool(_get_attachment_file_id(file_item))
+
+
+def _deduplicate_file_items(files: Any) -> list[dict]:
+    if not isinstance(files, list):
+        return []
+
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for file_item in files:
+        if not isinstance(file_item, dict):
+            continue
+        try:
+            key = json.dumps(file_item, sort_keys=True, ensure_ascii=False, default=str)
+        except Exception:
+            key = str(file_item)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(file_item)
+
+    return deduped
 
 
 def _filter_rag_files_for_native_file_inputs(
@@ -1757,6 +2110,8 @@ async def _ensure_requested_chat_file_modes(
     for file_item in regular_files:
         if not isinstance(file_item, dict) or file_item.get("type") != "file":
             continue
+        if _is_code_interpreter_generated_file(file_item):
+            continue
 
         file_id = _get_attachment_file_id(file_item)
         if not file_id:
@@ -1899,35 +2254,20 @@ async def _prepare_openai_native_file_inputs(
     if not url:
         return
 
-    file_ids_by_message_idx: dict[int, list[str]] = {}
-    message_level_files_found = False
-    for idx, message in enumerate(messages):
-        if not isinstance(message, dict) or message.get("role") != "user":
-            continue
-        message_files = message.get("files") or []
-        if not isinstance(message_files, list) or not message_files:
-            continue
-        eligible_ids = [
-            _get_attachment_file_id(file_item)
-            for file_item in message_files
-            if _is_native_file_input_candidate(file_item)
-        ]
-        eligible_ids = [file_id for file_id in eligible_ids if file_id]
-        if eligible_ids:
-            message_level_files_found = True
-            file_ids_by_message_idx[idx] = eligible_ids
+    last_user_idx = None
+    for idx in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[idx], dict) and messages[idx].get("role") == "user":
+            last_user_idx = idx
+            break
+    if last_user_idx is None:
+        return
 
-    if not message_level_files_found:
-        last_user_idx = None
-        for idx in range(len(messages) - 1, -1, -1):
-            if isinstance(messages[idx], dict) and messages[idx].get("role") == "user":
-                last_user_idx = idx
-                break
-        if last_user_idx is None:
-            return
-        file_ids_by_message_idx[last_user_idx] = [
-            _get_attachment_file_id(file_item) for file_item in candidate_files
-        ]
+    file_ids_by_message_idx: dict[int, list[str]] = {last_user_idx: []}
+    last_user_file_ids = file_ids_by_message_idx[last_user_idx]
+    for file_item in candidate_files:
+        file_id = _get_attachment_file_id(file_item)
+        if file_id and file_id not in last_user_file_ids:
+            last_user_file_ids.append(file_id)
 
     unique_file_ids: list[str] = []
     for file_ids in file_ids_by_message_idx.values():
@@ -2025,6 +2365,7 @@ async def _prepare_openai_native_file_inputs(
             return
 
     conn_key = _get_openai_file_cache_key(api_config, url_idx)
+    metadata["native_file_input_connection_cache_key"] = conn_key
     remote_ids_by_local_id: dict[str, str] = {}
 
     for file_id in unique_file_ids:
@@ -2129,6 +2470,7 @@ async def _prepare_openai_native_file_inputs(
 
     metadata["native_file_input_file_ids"] = native_file_input_ids
     metadata["native_file_input_parts_by_message"] = parts_by_message_idx
+    metadata["native_file_input_remote_ids_by_local_id"] = remote_ids_by_local_id
     metadata["native_file_inputs_force_responses_api"] = True
     log.info(
         "[OPENAI NATIVE FILE INPUTS] prepared model=%s connection=%s files=%s force_responses=%s",
@@ -3041,6 +3383,11 @@ async def chat_completion_files_handler(
 
     # J-7-16: Merge knowledge files back in for RAG processing.
     _regular_files = body.get("metadata", {}).get("files", None) or []
+    _regular_files = [
+        file_item
+        for file_item in _regular_files
+        if not _is_code_interpreter_generated_file(file_item)
+    ]
     native_file_input_ids = {
         str(file_id).strip()
         for file_id in (body.get("metadata", {}).get("native_file_input_file_ids") or [])
@@ -3178,6 +3525,7 @@ def apply_params_to_form_data(form_data, model):
 
 async def process_chat_payload(request, form_data, user, metadata, model):
 
+    files_provided = bool(metadata.get("files_provided")) or "files" in form_data
     form_data = apply_params_to_form_data(form_data, model)
     if log.isEnabledFor(logging.DEBUG):
         log.debug(
@@ -3455,11 +3803,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         )
 
     tool_ids = form_data.pop("tool_ids", None)
-    files = form_data.pop("files", None)
-
-    # Remove files duplicates
-    if files:
-        files = list({json.dumps(f, sort_keys=True): f for f in files}.values())
+    raw_files = _deduplicate_file_items(form_data.pop("files", None))
+    files = raw_files if (files_provided or raw_files) else None
 
     metadata = {
         **metadata,
@@ -3478,22 +3823,27 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         "skill_ids": skill_context["resolved_ids"],
         "tool_ids": tool_ids,
         "files": files,
+        "files_provided": files_provided,
     }
 
     # J-2-02: Extract file references from chat messages and enrich metadata["files"]
-    # so tools can access uploaded files via __metadata__["files"].
-    try:
-        message_files = _extract_files_from_messages(form_data.get("messages", []))
-        if message_files:
-            existing = metadata.get("files") or []
-            existing_ids = {f.get("id") for f in existing if f.get("id")}
-            for mf in message_files:
-                if mf["id"] not in existing_ids:
-                    existing.append(mf)
-                    existing_ids.add(mf["id"])
-            metadata["files"] = existing
-    except Exception as e:
-        log.debug(f"Error extracting files from messages: {e}")
+    # so tools can access uploaded files via __metadata__["files"]. For modern
+    # clients, the explicit top-level files list is the user's current file
+    # selection, so historical message attachments must not bring deleted files
+    # back into the active request.
+    if not files_provided:
+        try:
+            message_files = _extract_files_from_messages(form_data.get("messages", []))
+            if message_files:
+                existing = metadata.get("files") or []
+                existing_ids = {f.get("id") for f in existing if f.get("id")}
+                for mf in message_files:
+                    if mf["id"] not in existing_ids:
+                        existing.append(mf)
+                        existing_ids.add(mf["id"])
+                metadata["files"] = existing
+        except Exception as e:
+            log.debug(f"Error extracting files from messages: {e}")
 
     form_data["metadata"] = metadata
 
@@ -4149,12 +4499,18 @@ async def process_chat_response(
 
         # Handle as a background task
         async def post_response_handler(response, events):
-            def serialize_content_blocks(content_blocks, raw=False):
+            def serialize_content_blocks(content_blocks, raw=False, include_reasoning=True):
                 content = ""
 
                 for block in content_blocks:
                     if block["type"] == "text":
-                        content = f"{content}{block['content'].strip()}\n"
+                        block_content = str(block.get("content", "")).strip()
+                        if not include_reasoning:
+                            block_content = strip_reasoning_details(
+                                block_content
+                            ).strip()
+                        if block_content:
+                            content = f"{content}{block_content}\n"
                     elif block["type"] == "tool_calls":
                         attributes = block.get("attributes", {})
 
@@ -4207,6 +4563,9 @@ async def process_chat_response(
                                 content = f"{content}\n{tool_calls_display_content}\n\n"
 
                     elif block["type"] == "reasoning":
+                        if not include_reasoning:
+                            continue
+
                         reasoning_display_content = "\n".join(
                             (f"> {line}" if not line.startswith(">") else line)
                             for line in block["content"].splitlines()
@@ -4268,13 +4627,12 @@ async def process_chat_response(
                 temp_blocks = []
                 for idx, block in enumerate(content_blocks):
                     if block["type"] == "tool_calls":
-                        serialized = serialize_content_blocks(temp_blocks)
                         messages.append(
-                            {
-                                "role": "assistant",
-                                "content": serialized if serialized else None,
-                                "tool_calls": block.get("content"),
-                            }
+                            _build_tool_call_assistant_message(
+                                temp_blocks,
+                                block.get("content"),
+                                serialize_content_blocks,
+                            )
                         )
 
                         results = block.get("results", [])
@@ -7460,6 +7818,7 @@ async def process_chat_response(
                                             else None
                                         ),
                                         request.app.state.config.CODE_INTERPRETER_JUPYTER_TIMEOUT,
+                                        capture_generated_files=True,
                                     )
                                 else:
                                     output = {
@@ -7532,6 +7891,68 @@ async def process_chat_response(
                                                 )
 
                                         output["result"] = "\n".join(resultLines)
+
+                                    raw_generated_files = []
+                                    registered_output_files = []
+
+                                    for file_item in output.get("files") or []:
+                                        if (
+                                            isinstance(file_item, dict)
+                                            and "content_base64" in file_item
+                                        ):
+                                            raw_generated_files.append(file_item)
+                                        else:
+                                            registered_output_files.append(file_item)
+
+                                    raw_generated_files.extend(
+                                        [
+                                            item
+                                            for item in output.get("generated_files")
+                                            or []
+                                            if isinstance(item, dict)
+                                        ]
+                                    )
+
+                                    registered_generated_files = (
+                                        _register_code_interpreter_generated_files(
+                                            request, user, raw_generated_files
+                                        )
+                                    )
+                                    output_files = _merge_message_files(
+                                        registered_output_files,
+                                        registered_generated_files,
+                                    )
+
+                                    file_warnings = output.get("file_warnings")
+                                    if (
+                                        isinstance(file_warnings, list)
+                                        and file_warnings
+                                    ):
+                                        warning_text = "\n".join(
+                                            str(warning)
+                                            for warning in file_warnings
+                                            if str(warning).strip()
+                                        )
+                                        if warning_text:
+                                            stderr = output.get("stderr") or ""
+                                            output["stderr"] = (
+                                                f"{stderr}\n{warning_text}".strip()
+                                            )
+
+                                    if output_files:
+                                        message_files = _merge_message_files(
+                                            message_files, output_files
+                                        )
+                                        await event_emitter(
+                                            {
+                                                "type": "files",
+                                                "data": {"files": output_files},
+                                            }
+                                        )
+
+                                    output.pop("files", None)
+                                    output.pop("generated_files", None)
+                                    output.pop("file_warnings", None)
                         except Exception as e:
                             output = str(e)
 

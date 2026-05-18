@@ -60,13 +60,25 @@ def extract_error_detail(value: Any, *, limit: int = 2000) -> str | None:
             return _truncate_text(msg.strip(), limit)
 
         error = value.get("error")
-        if error is not None:
+        if isinstance(error, (dict, list)):
             detail = extract_error_detail(error, limit=limit)
             if detail:
                 return detail
 
-        for key in ("detail", "message", "error_description", "title"):
+        for key in (
+            "detail",
+            "message",
+            "error_description",
+            "error_detail",
+            "description",
+            "title",
+        ):
             detail = extract_error_detail(value.get(key), limit=limit)
+            if detail:
+                return detail
+
+        if error is not None:
+            detail = extract_error_detail(error, limit=limit)
             if detail:
                 return detail
 

@@ -193,9 +193,30 @@ def _build_branch_history(
     }, chain_ids, message_id_map
 
 
-def _collect_branch_files(history_messages: dict, chain_ids: list[str]) -> list[dict]:
+def _append_branch_file(files: list[dict], seen: set[str], file_item: object) -> None:
+    if not isinstance(file_item, dict):
+        return
+    if file_item.get("type") not in BRANCH_FILE_TYPES:
+        return
+
+    serialized = json.dumps(file_item, sort_keys=True, ensure_ascii=False)
+    if serialized in seen:
+        return
+
+    seen.add(serialized)
+    files.append(deepcopy(file_item))
+
+
+def _collect_branch_files(
+    history_messages: dict, chain_ids: list[str], chat_files: object = None
+) -> list[dict]:
     files: list[dict] = []
     seen: set[str] = set()
+
+    if isinstance(chat_files, list):
+        for file_item in chat_files:
+            _append_branch_file(files, seen, file_item)
+        return files
 
     for message_id in chain_ids:
         message = history_messages.get(message_id)
@@ -203,17 +224,7 @@ def _collect_branch_files(history_messages: dict, chain_ids: list[str]) -> list[
             continue
 
         for file_item in message.get("files") or []:
-            if not isinstance(file_item, dict):
-                continue
-            if file_item.get("type") not in BRANCH_FILE_TYPES:
-                continue
-
-            serialized = json.dumps(file_item, sort_keys=True, ensure_ascii=False)
-            if serialized in seen:
-                continue
-
-            seen.add(serialized)
-            files.append(deepcopy(file_item))
+            _append_branch_file(files, seen, file_item)
 
     return files
 
@@ -270,7 +281,9 @@ def _build_branch_chat_payload(
     history_messages = history.get("messages", {}) if isinstance(history, dict) else {}
 
     payload["history"] = branched_history
-    payload["files"] = _collect_branch_files(history_messages, chain_ids)
+    payload["files"] = _collect_branch_files(
+        history_messages, chain_ids, payload.get("files")
+    )
     payload["selectionThreads"] = _remap_branch_selection_threads(
         payload.get("selectionThreads"), message_id_map
     )

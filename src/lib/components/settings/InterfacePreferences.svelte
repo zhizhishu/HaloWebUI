@@ -19,12 +19,18 @@
 	import { getLanguages, changeLanguage, translateWithDefault } from '$lib/i18n';
 	import { getModelChatDisplayName } from '$lib/utils/model-display';
 	import { getModelSelectionId, resolveModelSelectionId } from '$lib/utils/model-identity';
-	import { setTextScale } from '$lib/utils/text-scale';
+	import {
+		setTextScale,
+		TEXT_SCALE_DEFAULT,
+		TEXT_SCALE_MAX,
+		TEXT_SCALE_MIN
+	} from '$lib/utils/text-scale';
 	import { revealExpandedSection } from '$lib/utils/expanded-section-scroll';
 
 	import Switch from '$lib/components/common/Switch.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
+	import QuestionMarkCircle from '$lib/components/icons/QuestionMarkCircle.svelte';
 	import HaloSelect from '$lib/components/common/HaloSelect.svelte';
 	import ThemeSelector from '$lib/components/common/ThemeSelector.svelte';
 	import ManageModal from '$lib/components/chat/Settings/Personalization/ManageModal.svelte';
@@ -47,17 +53,6 @@
 		normalizeMermaidTheme,
 		type MermaidThemeId
 	} from '$lib/utils/lobehub-chat-appearance';
-	import {
-		getPreferredWebSearchMode,
-		normalizeWebSearchMode,
-		type WebSearchMode
-	} from '$lib/utils/web-search-mode';
-	import {
-		buildWebSearchModeOptions,
-		getNativeWebSearchAvailabilityNote,
-		summarizeNativeWebSearchSupport
-	} from '$lib/utils/native-web-search';
-
 	const dispatch = createEventDispatcher();
 	const i18n: Writable<any> = getContext('i18n');
 	const tr = (key: string, defaultValue: string, options: Record<string, any> = {}) =>
@@ -137,8 +132,10 @@
 	let scrollOnBranchChange = true;
 	let enableMessageQueue = true;
 	let temporaryChatByDefault = false;
+	let newChatInheritsPreviousState = false;
 	let transitionMode: ChatTransitionMode = DEFAULT_CHAT_TRANSITION_MODE;
 	let enableAutoScrollOnStreaming = true;
+	let autoGenerationRequestWarning = '';
 	let insertSuggestionPrompt = false;
 	let keepFollowUpPrompts = false;
 	let insertFollowUpPrompt = false;
@@ -153,6 +150,11 @@
 		input: boolean;
 		prompt: string;
 	}> | null = null;
+
+	$: autoGenerationRequestWarning = tr(
+		'开启后，每次对话除了生成回答，还可能额外发起一次模型请求。若这三项都开启，单次提问可能在短时间内连续触发 3-4 次请求，容易命中模型服务或上游中转站的 RPM / 频率限制，严重时可能被临时封禁。',
+		'When enabled, each chat may send one extra model request besides the main response. If all three options are enabled, one message can trigger 3-4 rapid requests, which may hit RPM or rate limits on the model service or upstream proxy and could cause a temporary block.'
+	);
 
 	// Memory
 	let enableMemory = false;
@@ -173,7 +175,6 @@
 
 	// Privacy / advanced
 	let userLocation = false;
-	let webSearchMode: WebSearchMode = 'off';
 	let iframeSandboxAllowSameOrigin = false;
 	let iframeSandboxAllowForms = false;
 
@@ -242,6 +243,7 @@
 			scrollOnBranchChange: boolean;
 			enableMessageQueue: boolean;
 			temporaryChatByDefault: boolean;
+			newChatInheritsPreviousState: boolean;
 			collapseCodeBlocks: boolean;
 			collapseHistoricalLongResponses: boolean;
 			showInlineCitations: boolean;
@@ -274,7 +276,6 @@
 		};
 		advanced: {
 			userLocation: boolean;
-			webSearchMode: WebSearchMode;
 			iframeSandboxAllowSameOrigin: boolean;
 			iframeSandboxAllowForms: boolean;
 			hapticFeedback: boolean;
@@ -405,40 +406,13 @@
 
 	const commitTextScaleSelection = (scale: number | null) => {
 		textScale = scale;
-		setTextScale(textScale ?? 1);
+		setTextScale(textScale ?? TEXT_SCALE_DEFAULT);
 	};
 
 	// Avoid TS type assertions in Svelte markup expressions (can break parsing depending on tooling).
 	const onCtrlEnterBehaviorChange = (e: CustomEvent<{ value: string }>) => {
 		ctrlEnterToSend = e.detail.value === 'ctrl_enter';
 	};
-
-	const onWebSearchChange = (e: CustomEvent<{ value: string }>) => {
-		webSearchMode = normalizeWebSearchMode(e.detail?.value, 'off');
-	};
-
-	$: nativeWebSearchCatalogSummary = summarizeNativeWebSearchSupport($models ?? []);
-	$: webSearchModeOptions = buildWebSearchModeOptions(
-		(key, options) => $i18n.t(key, options),
-		$config,
-		$models ?? []
-	);
-	$: currentWebSearchOption = webSearchModeOptions.find((option) => option.value === webSearchMode) ?? null;
-	$: currentWebSearchModeDescription = currentWebSearchOption?.description ?? '';
-	$: webSearchAvailabilityNote = getNativeWebSearchAvailabilityNote(
-		(key, options) => $i18n.t(key, options),
-		nativeWebSearchCatalogSummary,
-		'catalog'
-	);
-	$: if (
-		(($models ?? []).length > 0 || !$config?.features?.enable_native_web_search) &&
-		!webSearchModeOptions.some((option) => option.value === webSearchMode && option.disabled !== true)
-	) {
-		webSearchMode =
-			(['auto', 'halo', 'native', 'off'] as WebSearchMode[]).find((mode) =>
-				webSearchModeOptions.some((option) => option.value === mode && option.disabled !== true)
-			) ?? 'off';
-	}
 
 	const onBackgroundFileChange = async () => {
 		if (!inputFiles || inputFiles.length === 0) return;
@@ -572,6 +546,7 @@
 			scrollOnBranchChange,
 			enableMessageQueue,
 			temporaryChatByDefault,
+			newChatInheritsPreviousState,
 			collapseCodeBlocks,
 			collapseHistoricalLongResponses,
 			showInlineCitations,
@@ -596,7 +571,6 @@
 		},
 		advanced: {
 			userLocation,
-			webSearchMode: normalizeWebSearchMode(webSearchMode, 'off'),
 			iframeSandboxAllowSameOrigin,
 			iframeSandboxAllowForms,
 			hapticFeedback
@@ -652,6 +626,7 @@
 		scrollOnBranchChange = snapshot.scrollOnBranchChange;
 		enableMessageQueue = snapshot.enableMessageQueue;
 		temporaryChatByDefault = snapshot.temporaryChatByDefault;
+		newChatInheritsPreviousState = snapshot.newChatInheritsPreviousState;
 		collapseCodeBlocks = snapshot.collapseCodeBlocks;
 		collapseHistoricalLongResponses = snapshot.collapseHistoricalLongResponses;
 		showInlineCitations = snapshot.showInlineCitations;
@@ -677,7 +652,6 @@
 
 	const applyAdvancedSnapshot = (snapshot: SectionSnapshot['advanced']) => {
 		userLocation = snapshot.userLocation;
-		webSearchMode = normalizeWebSearchMode(snapshot.webSearchMode, 'off');
 		iframeSandboxAllowSameOrigin = snapshot.iframeSandboxAllowSameOrigin;
 		iframeSandboxAllowForms = snapshot.iframeSandboxAllowForms;
 		hapticFeedback = snapshot.hapticFeedback;
@@ -721,6 +695,7 @@
 		scrollOnBranchChange;
 		enableMessageQueue;
 		temporaryChatByDefault;
+		newChatInheritsPreviousState;
 		transitionMode;
 		enableAutoScrollOnStreaming;
 		collapseCodeBlocks;
@@ -746,7 +721,6 @@
 		imageCompressionSize;
 		imageCompressionInChannels;
 		userLocation;
-		webSearchMode;
 		iframeSandboxAllowSameOrigin;
 		iframeSandboxAllowForms;
 		sectionSnapshot = buildSectionSnapshot();
@@ -1021,6 +995,7 @@
 				scrollOnBranchChange,
 				enableMessageQueue,
 				temporaryChatByDefault,
+				newChatInheritsPreviousState,
 				collapseCodeBlocks,
 				collapseHistoricalLongResponses,
 				showInlineCitations,
@@ -1060,8 +1035,6 @@
 			await syncUserLocationPreference();
 			await saveSettings({
 				userLocation,
-				webSearchMode: normalizeWebSearchMode(webSearchMode, 'off'),
-				webSearch: null,
 				iframeSandboxAllowSameOrigin,
 				iframeSandboxAllowForms,
 				hapticFeedback
@@ -1181,6 +1154,7 @@
 		showChatTitleInTab = $settings?.showChatTitleInTab ?? true;
 		enableMessageQueue = $settings?.enableMessageQueue ?? true;
 		temporaryChatByDefault = $settings?.temporaryChatByDefault ?? false;
+		newChatInheritsPreviousState = $settings?.newChatInheritsPreviousState ?? false;
 		transitionMode = resolveChatTransitionMode($settings);
 		enableAutoScrollOnStreaming = $settings?.enableAutoScrollOnStreaming ?? true;
 		insertSuggestionPrompt = $settings?.insertSuggestionPrompt ?? false;
@@ -1231,7 +1205,7 @@
 
 		notificationSound = $settings?.notificationSound ?? true;
 		textScale = $settings?.textScale ?? null;
-		setTextScale(textScale ?? 1);
+		setTextScale(textScale ?? TEXT_SCALE_DEFAULT);
 
 		hapticFeedback = $settings?.hapticFeedback ?? false;
 		ctrlEnterToSend = $settings?.ctrlEnterToSend ?? false;
@@ -1244,7 +1218,6 @@
 		defaultModelId = getEffectiveDefaultModelId();
 
 		backgroundImageUrl = $settings?.backgroundImageUrl ?? null;
-		webSearchMode = getPreferredWebSearchMode($settings, 'off');
 		iframeSandboxAllowSameOrigin = $settings?.iframeSandboxAllowSameOrigin ?? false;
 		iframeSandboxAllowForms = $settings?.iframeSandboxAllowForms ?? false;
 
@@ -1561,14 +1534,14 @@
 													<input
 														class="flex-1 h-1.5 accent-blue-500 cursor-pointer"
 														type="range"
-														min="1"
-														max="1.5"
+														min={TEXT_SCALE_MIN}
+														max={TEXT_SCALE_MAX}
 														step={0.01}
 														bind:value={textScale}
 													/>
 													<span
 														class="text-xs font-mono text-gray-500 dark:text-gray-400 w-10 text-right tabular-nums"
-														>{Math.round((textScale ?? 1) * 100)}%</span
+														>{Math.round((textScale ?? TEXT_SCALE_DEFAULT) * 100)}%</span
 													>
 												{/if}
 												<button
@@ -1578,7 +1551,7 @@
 														? 'border-blue-300 dark:border-blue-600 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
 														: 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/5'}"
 													on:click={() => {
-														textScale = textScale === null ? 1 : null;
+														textScale = textScale === null ? TEXT_SCALE_DEFAULT : null;
 													}}
 												>
 													{textScale === null ? $i18n.t('Default') : $i18n.t('Reset')}
@@ -2102,24 +2075,69 @@
 									</div>
 									<div class="space-y-2">
 										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Title Auto-Generation')}
+											<div class="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+												<span>{$i18n.t('Title Auto-Generation')}</span>
+												<Tooltip
+													content={autoGenerationRequestWarning}
+													className="inline-flex shrink-0"
+												>
+													<button
+														type="button"
+														aria-label={tr(
+															'查看自动生成请求频率提醒',
+															'View auto-generation request rate warning'
+														)}
+														class="inline-flex size-4 items-center justify-center rounded-full text-gray-400 transition hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 dark:text-gray-500 dark:hover:text-gray-300 dark:focus:ring-gray-700"
+													>
+														<QuestionMarkCircle className="size-3.5" strokeWidth="2" />
+													</button>
+												</Tooltip>
 											</div>
 											<Switch
 												bind:state={titleAutoGenerate}
 											/>
 										</div>
 										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Follow-Up Auto-Generation')}
+											<div class="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+												<span>{$i18n.t('Follow-Up Auto-Generation')}</span>
+												<Tooltip
+													content={autoGenerationRequestWarning}
+													className="inline-flex shrink-0"
+												>
+													<button
+														type="button"
+														aria-label={tr(
+															'查看自动生成请求频率提醒',
+															'View auto-generation request rate warning'
+														)}
+														class="inline-flex size-4 items-center justify-center rounded-full text-gray-400 transition hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 dark:text-gray-500 dark:hover:text-gray-300 dark:focus:ring-gray-700"
+													>
+														<QuestionMarkCircle className="size-3.5" strokeWidth="2" />
+													</button>
+												</Tooltip>
 											</div>
 											<Switch
 												bind:state={autoFollowUps}
 											/>
 										</div>
 										<div class="flex items-center justify-between glass-item px-4 py-3">
-											<div class="text-sm font-medium">
-												{$i18n.t('Chat Tags Auto-Generation')}
+											<div class="flex min-w-0 items-center gap-1.5 text-sm font-medium">
+												<span>{$i18n.t('Chat Tags Auto-Generation')}</span>
+												<Tooltip
+													content={autoGenerationRequestWarning}
+													className="inline-flex shrink-0"
+												>
+													<button
+														type="button"
+														aria-label={tr(
+															'查看自动生成请求频率提醒',
+															'View auto-generation request rate warning'
+														)}
+														class="inline-flex size-4 items-center justify-center rounded-full text-gray-400 transition hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-300 dark:text-gray-500 dark:hover:text-gray-300 dark:focus:ring-gray-700"
+													>
+														<QuestionMarkCircle className="size-3.5" strokeWidth="2" />
+													</button>
+												</Tooltip>
 											</div>
 											<Switch
 												bind:state={autoTags}
@@ -2245,6 +2263,24 @@
 											<Switch
 												bind:state={enableMessageQueue}
 											/>
+										</div>
+										<div class="glass-item px-4 py-3">
+											<div class="flex items-center justify-between gap-4">
+												<div class="min-w-0">
+													<div class="text-sm font-medium">
+														{tr('新对话继承上次对话状态', 'Inherit Previous State for New Chats')}
+													</div>
+													<p class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
+														{tr(
+															'开启后，点击“新对话”会沿用上一轮的模型选择、联网、图片生成、代码解释器、工具和推理设置；关闭后，新对话从默认设置开始。点击左上角 Halo WebUI 图标仍会打开完全干净的新对话。',
+															'When enabled, New Chat keeps the previous model selection, web search, image generation, code interpreter, tools, and reasoning settings. Turn it off to start from defaults. The Halo WebUI logo still opens a clean fresh chat.'
+														)}
+													</p>
+												</div>
+												<Switch
+													bind:state={newChatInheritsPreviousState}
+												/>
+											</div>
 										</div>
 										{#if $user?.role === 'admin' || $user?.permissions?.chat?.temporary}
 											<div class="flex items-center justify-between glass-item px-4 py-3">
@@ -2552,36 +2588,6 @@
 											</div>
 											<Switch bind:state={userLocation} />
 										</div>
-											<div class="glass-item px-4 py-3 space-y-2">
-												<div class="flex items-center justify-between gap-4">
-													<div class="text-sm font-medium">
-														{$i18n.t('Web Search in Chat')}
-													</div>
-													<HaloSelect
-														value={webSearchMode}
-														options={webSearchModeOptions.map((option) => ({
-															value: option.value,
-															label: option.label,
-															description: option.description,
-															descriptionTone: option.descriptionTone,
-															disabled: option.disabled,
-															badge: option.badge
-														}))}
-														className="w-52"
-														on:change={onWebSearchChange}
-													/>
-												</div>
-												{#if currentWebSearchModeDescription}
-													<div class="text-xs leading-5 text-gray-500 dark:text-gray-400">
-														{currentWebSearchModeDescription}
-													</div>
-												{/if}
-												{#if webSearchAvailabilityNote}
-													<div class="text-xs leading-5 text-gray-500 dark:text-gray-400">
-														{webSearchAvailabilityNote}
-													</div>
-												{/if}
-											</div>
 										<div class="flex items-center justify-between glass-item px-4 py-3">
 											<div class="text-sm font-medium">
 												{$i18n.t('iframe Sandbox Allow Same Origin')}

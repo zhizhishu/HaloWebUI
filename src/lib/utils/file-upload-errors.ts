@@ -153,8 +153,8 @@ const getEmbeddingHintKey = (code: string, isAdmin: boolean): string | null => {
 	}
 
 	return isAdmin
-		? 'Go to /settings/documents to configure an embedding model, or switch the default file processing mode to "Full Context" or "Native File".'
-		: 'Ask an administrator to configure document retrieval, or switch the default file processing mode to "Full Context" or "Native File" if you have admin access.';
+		? 'Go to Settings > Documents > Embedding Models to choose and save a usable embedding engine and model.'
+		: 'Ask an administrator to configure an embedding model in Settings > Documents > Embedding Models.';
 };
 
 const getEmbeddingServiceHintKey = (code: string, isAdmin: boolean): string | null => {

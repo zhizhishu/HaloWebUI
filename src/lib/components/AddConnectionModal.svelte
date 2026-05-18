@@ -560,6 +560,8 @@
 			: {})
 	});
 
+	const normalizedKey = () => key.trim();
+
 	const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 	const updateModelHealthState = (modelId: string, nextState: ModelHealthState) => {
@@ -588,7 +590,7 @@
 
 		return {
 			url: normalizedUrl,
-			key,
+			key: normalizedKey(),
 			config: getOpenAIConnectionConfig(parsedOpenAIHeaders ?? undefined)
 		};
 	};
@@ -599,7 +601,7 @@
 
 		return {
 			url: normalizedUrl,
-			key,
+			key: normalizedKey(),
 			config: {
 				auth_type,
 				...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
@@ -614,7 +616,7 @@
 
 		return {
 			url: normalizedUrl,
-			key,
+			key: normalizedKey(),
 			config: {
 				auth_type,
 				...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
@@ -633,7 +635,7 @@
 
 		return {
 			url: normalizedUrl,
-			key,
+			key: normalizedKey(),
 			config: {
 				auth_type,
 				...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
@@ -653,7 +655,7 @@
 
 	const buildOllamaHealthCheckPayload = () => ({
 		url: normalizedUrl,
-		key,
+		key: normalizedKey(),
 		config: {
 			...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {})
 		}
@@ -693,7 +695,7 @@
 
 		const res = await verifyOllamaConnection(localStorage.token, {
 			url: verifyUrl,
-			key
+			key: normalizedKey()
 		}).catch((error) => {
 			showConnectionErrorToast(error);
 		});
@@ -712,7 +714,7 @@
 			localStorage.token,
 			{
 				url: verifyUrl,
-				key,
+				key: normalizedKey(),
 				purpose: 'connection',
 				config: getOpenAIConnectionConfig(parsedOpenAIHeaders ?? undefined)
 			},
@@ -936,7 +938,7 @@
 
 		const res = await verifyGeminiConnection(localStorage.token, {
 			url: verifyUrl,
-			key,
+			key: normalizedKey(),
 			config: {
 				auth_type,
 				...(_headers ? { headers: _headers } : {})
@@ -971,7 +973,7 @@
 
 		const res = await verifyGrokConnection(localStorage.token, {
 			url: verifyUrl,
-			key,
+			key: normalizedKey(),
 			config: {
 				auth_type,
 				...(_headers ? { headers: _headers } : {})
@@ -1006,7 +1008,7 @@
 
 		const res = await verifyAnthropicConnection(localStorage.token, {
 			url: verifyUrl,
-			key,
+			key: normalizedKey(),
 			config: {
 				auth_type,
 				anthropic_version: anthropicVersion,
@@ -1120,7 +1122,7 @@
 
 			const connection = {
 				url: submitUrl,
-				key,
+				key: normalizedKey(),
 				config: {
 					enable: enable,
 					tags: tags,

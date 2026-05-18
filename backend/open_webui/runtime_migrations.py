@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import contextlib
 import fcntl
 import json
@@ -9,8 +10,10 @@ import shutil
 import sqlite3
 import subprocess
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
@@ -38,10 +41,25 @@ HALO_DATA_MIGRATION_TABLE = "halowebui_data_migrations"
 HALO_TARGET_HEAD = "4c8d9e0f1a2b"
 HALO_CONNECTION_METADATA_BACKFILL_KEY = "connection_metadata_backfill_v2"
 HALO_IMAGE_GENERATION_OPTIONS_CLEANUP_KEY = "image_generation_options_cleanup_v2"
+HALO_LEGACY_WEB_SEARCH_SETTINGS_CLEANUP_KEY = "legacy_web_search_settings_cleanup_v1"
+OPENWEBUI_090_095_REVISIONS = (
+    "a3dd5bedd151",
+    "d4e5f6a7b8c9",
+    "b7c8d9e0f1a2",
+    "e1f2a3b4c5d6",
+    "c1d2e3f4a5b6",
+    "56359461a091",
+    "4de81c2a3af1",
+    "a0b1c2d3e4f5",
+)
 HALO_SOURCE_FAMILIES = {
     "c440947495f3": "owui_070_family",
     "a1b2c3d4e5f6": "owui_080_family",
     "b2c3d4e5f6a7": "owui_081_0810_family",
+    **{
+        revision: "owui_090_095_family"
+        for revision in OPENWEBUI_090_095_REVISIONS
+    },
 }
 HALO_PEEWEE_MIGRATIONS = [
     "001_initial_schema",
@@ -166,6 +184,8 @@ def ensure_runtime_migrated() -> Optional[DetectionResult]:
                 _migrate_080_family(conn, detection.backend)
             elif detection.family == "owui_081_0810_family":
                 _migrate_081_0810_family(conn, detection.backend)
+            elif detection.family == "owui_090_095_family":
+                _migrate_090_095_family(conn, detection.backend)
             else:
                 raise RuntimeMigrationError(f"未知迁移家族: {detection.family}")
 
@@ -199,7 +219,7 @@ def ensure_runtime_migrated() -> Optional[DetectionResult]:
                 target_revision=HALO_TARGET_HEAD,
                 status="failed",
                 backup_path=str(backup),
-                details={**manifest, "error": str(exc)},
+                details=_migration_failure_details(manifest, exc),
             )
             conn.commit()
             raise RuntimeMigrationError(
@@ -284,6 +304,8 @@ def migrate_auto(
                 _migrate_080_family(conn, detection.backend)
             elif detection.family == "owui_081_0810_family":
                 _migrate_081_0810_family(conn, detection.backend)
+            elif detection.family == "owui_090_095_family":
+                _migrate_090_095_family(conn, detection.backend)
             _seed_migratehistory(conn)
             _stamp_halo_head(conn)
             _write_state(
@@ -307,7 +329,7 @@ def migrate_auto(
                 target_revision=HALO_TARGET_HEAD,
                 status="failed",
                 backup_path=str(backup),
-                details={**manifest, "error": str(exc)},
+                details=_migration_failure_details(manifest, exc),
             )
             conn.commit()
             raise
@@ -395,12 +417,31 @@ def _detect_database(conn: Connection, url: URL) -> DetectionResult:
             tables=tables,
         )
 
+    if revision in _known_halo_alembic_revisions() and _verify_halo_intermediate(
+        tables
+    ):
+        return DetectionResult(
+            family="already_halo",
+            revision=revision,
+            backend=_backend_name(url),
+            tables=tables,
+        )
+
+    if revision:
+        return DetectionResult(
+            family="unknown",
+            revision=revision,
+            backend=_backend_name(url),
+            tables=tables,
+        )
+
     fingerprint_matches = [
         family_name
         for family_name in (
             "owui_070_family",
             "owui_080_family",
             "owui_081_0810_family",
+            "owui_090_095_family",
         )
         if _verify_family(conn, family_name, tables)
     ]
@@ -463,9 +504,74 @@ def _verify_family(conn: Connection, family: str, tables: set[str]) -> bool:
             "chat_message",
             "prompt_history",
         }
-        return required.issubset(tables) and _column_exists(conn, "user", "scim")
+        return (
+            required.issubset(tables)
+            and _column_exists(conn, "user", "scim")
+            and not _column_exists(conn, "chat", "tasks")
+            and not _column_exists(conn, "chat", "summary")
+        )
+
+    if family == "owui_090_095_family":
+        required = {
+            "auth",
+            "user",
+            "group",
+            "group_member",
+            "prompt",
+            "chat",
+            "access_grant",
+            "skill",
+            "chat_message",
+            "prompt_history",
+            "api_key",
+        }
+        return (
+            required.issubset(tables)
+            and _column_exists(conn, "user", "oauth")
+            and _column_exists(conn, "user", "scim")
+            and _column_exists(conn, "chat", "tasks")
+            and _column_exists(conn, "chat", "summary")
+        )
 
     return False
+
+
+@lru_cache(maxsize=1)
+def _known_halo_alembic_revisions() -> frozenset[str]:
+    revisions: set[str] = {HALO_TARGET_HEAD}
+    versions_dir = BACKEND_DIR / "open_webui" / "migrations" / "versions"
+    for path in versions_dir.glob("*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except Exception:
+            log.warning("Failed to inspect Alembic revision file: %s", path)
+            continue
+
+        for node in tree.body:
+            targets = []
+            value = None
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+                value = node.value
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+                value = node.value
+
+            if not any(
+                isinstance(target, ast.Name) and target.id == "revision"
+                for target in targets
+            ):
+                continue
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                revisions.add(value.value)
+            break
+
+    return frozenset(revisions)
+
+
+def _verify_halo_intermediate(tables: set[str]) -> bool:
+    required = {"alembic_version", "auth", "user", "chat", "model"}
+    return required.issubset(tables)
 
 
 def _format_unknown_database_error(
@@ -476,7 +582,7 @@ def _format_unknown_database_error(
         "检测到未知数据库形态，已阻止启动以避免误迁移。"
         f" backend={backend}, alembic_version={revision_text}. "
         "仅支持官方 OpenWebUI 0.7.0~0.7.2、官方 0.8.0、官方 0.8.1~0.8.10、"
-        "以及 ztx888/HaloWebUI 0.7.3-7/0.7.3-8/当前 main。"
+        "官方 OpenWebUI 0.9.0~0.9.5、以及 ztx888/HaloWebUI 0.7.3-7/0.7.3-8/当前 main。"
     )
 
 
@@ -666,21 +772,43 @@ def _write_manifest(backup_path: Path, manifest: dict[str, Any]) -> None:
     )
 
 
+def _migration_failure_details(manifest: dict[str, Any], exc: Exception) -> dict[str, Any]:
+    return {
+        **manifest,
+        "error": str(exc),
+        "error_type": exc.__class__.__name__,
+        "traceback": traceback.format_exc(),
+    }
+
+
+def _format_incomplete_state_error(row: Any) -> str:
+    message = (
+        "检测到上次迁移未完成，已阻止继续启动。"
+        f" 最近一次备份: {row.get('backup_path')}"
+    )
+    details = _json_object(row.get("details"))
+    error = details.get("error")
+    error_type = details.get("error_type")
+    if error:
+        if error_type:
+            message += f" 上次失败原因: {error_type}: {error}"
+        else:
+            message += f" 上次失败原因: {error}"
+    return message
+
+
 def _ensure_no_incomplete_state(conn: Connection) -> None:
     tables = set(inspect(conn).get_table_names())
     if HALO_STATE_TABLE not in tables:
         return
     row = conn.execute(
         text(
-            f'SELECT status, backup_path FROM "{HALO_STATE_TABLE}" '
+            f'SELECT status, backup_path, details FROM "{HALO_STATE_TABLE}" '
             "ORDER BY started_at DESC LIMIT 1"
         )
     ).mappings().first()
     if row and row["status"] != "completed":
-        raise RuntimeMigrationError(
-            "检测到上次迁移未完成，已阻止继续启动。"
-            f" 最近一次备份: {row.get('backup_path')}"
-        )
+        raise RuntimeMigrationError(_format_incomplete_state_error(row))
 
 
 def _ensure_state_table(conn: Connection) -> None:
@@ -815,6 +943,44 @@ def _backfill_user_connection_metadata(conn: Connection) -> dict[str, int]:
     return {"scanned_users": scanned_users, "updated_users": updated_users}
 
 
+def _cleanup_legacy_web_search_user_settings(conn: Connection) -> dict[str, int]:
+    from open_webui.models.users import User
+
+    scanned_users = 0
+    updated_users = 0
+
+    if not _table_exists(conn, "user"):
+        return {"scanned_users": 0, "updated_users": 0}
+
+    rows = conn.execute(text('SELECT id, settings FROM "user"')).mappings().all()
+    for row in rows:
+        scanned_users += 1
+        settings_dict = _settings_payload_to_dict(row.get("settings"))
+        ui = settings_dict.get("ui")
+        if not isinstance(ui, dict):
+            continue
+
+        changed = False
+        for key in ("webSearchMode", "webSearch"):
+            if key in ui:
+                ui.pop(key, None)
+                changed = True
+
+        if not changed:
+            continue
+
+        values = {"settings": settings_dict}
+        if "updated_at" in User.__table__.c:
+            values["updated_at"] = _now()
+
+        conn.execute(
+            User.__table__.update().where(User.__table__.c.id == row["id"]).values(**values)
+        )
+        updated_users += 1
+
+    return {"scanned_users": scanned_users, "updated_users": updated_users}
+
+
 def _cleanup_legacy_image_generation_options(conn: Connection) -> dict[str, int]:
     from open_webui.utils.image_generation_options import (
         sanitize_chat_payload_image_generation_options,
@@ -926,6 +1092,15 @@ def _run_post_halo_data_migrations(conn: Connection) -> None:
             HALO_IMAGE_GENERATION_OPTIONS_CLEANUP_KEY,
             details,
         )
+    if not _has_completed_data_migration(
+        conn, HALO_LEGACY_WEB_SEARCH_SETTINGS_CLEANUP_KEY
+    ):
+        details = _cleanup_legacy_web_search_user_settings(conn)
+        _mark_data_migration_completed(
+            conn,
+            HALO_LEGACY_WEB_SEARCH_SETTINGS_CLEANUP_KEY,
+            details,
+        )
 
 
 def _write_state(
@@ -995,6 +1170,10 @@ def _migrate_081_0810_family(conn: Connection, backend: str) -> None:
     _migrate_080_family(conn, backend)
 
 
+def _migrate_090_095_family(conn: Connection, backend: str) -> None:
+    _migrate_080_family(conn, backend)
+
+
 def _ensure_group_user_ids(conn: Connection, backend: str) -> None:
     if not _table_exists(conn, "group"):
         return
@@ -1035,6 +1214,7 @@ def _ensure_user_legacy_auth_columns(conn: Connection, backend: str) -> None:
         return
 
     _ensure_column(conn, "user", "api_key", "TEXT")
+    _ensure_column(conn, "user", "oauth", "JSON")
     _ensure_column(conn, "user", "oauth_sub", "TEXT")
     _ensure_column(conn, "user", "note", "TEXT")
 

@@ -154,13 +154,13 @@ def make_unsupported_binary_diagnostic(filename: str | None = None) -> dict[str,
 def _get_embedding_hint(user: Any) -> str:
     if getattr(user, "role", None) == "admin":
         return (
-            'Go to /settings/documents to configure an embedding model, '
-            'or switch the default file processing mode to "Full Context" or "Native File".'
+            "Go to Settings > Documents > Embedding Models to choose and save "
+            "a usable embedding engine and model."
         )
 
     return (
-        'Ask an administrator to configure document retrieval, or switch '
-        'the default file processing mode to "Full Context" or "Native File" if you have admin access.'
+        "Ask an administrator to configure an embedding model in "
+        "Settings > Documents > Embedding Models."
     )
 
 

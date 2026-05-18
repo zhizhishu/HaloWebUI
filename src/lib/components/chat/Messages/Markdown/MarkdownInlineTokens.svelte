@@ -9,24 +9,37 @@
 
 	import { WEBUI_BASE_URL } from '$lib/constants';
 	import { copyToClipboard, unescapeHtml } from '$lib/utils';
+	import { getDataUrlDownloadName, rewriteDataUrlDownloadLinks } from '$lib/utils/download-links';
 
 	import Image from '$lib/components/common/Image.svelte';
+	import {
+		resolveGeneratedFileContentUrl,
+		resolveGeneratedFileDownloadUrl,
+		rewriteGeneratedFileHtmlLinks,
+		type GeneratedMessageFile
+	} from '$lib/utils/generated-file-links';
 	import KatexRenderer from './KatexRenderer.svelte';
 	import Source from './Source.svelte';
 	import SourceToken from './SourceToken.svelte';
-	import {
-		isSvgMarkup,
-		mergeSvgMarkupTokens,
-		type RenderableHtmlToken
-	} from './svgMarkupTokens';
+	import { isSvgMarkup, mergeSvgMarkupTokens, type RenderableHtmlToken } from './svgMarkupTokens';
 
 	export let id: string;
 	export let tokens: Token[] = [];
 	export let onSourceClick: Function = () => {};
 	export let charAnimation = false;
+	export let generatedFiles: GeneratedMessageFile[] = [];
 
 	let renderTokens: RenderableHtmlToken[] = [];
 	$: renderTokens = mergeSvgMarkupTokens(tokens);
+
+	const resolveLinkHref = (href: string) =>
+		resolveGeneratedFileDownloadUrl(href, generatedFiles) ?? href;
+
+	const resolveContentSrc = (href: string) =>
+		resolveGeneratedFileContentUrl(href, generatedFiles) ?? href;
+
+	const resolveDownloadName = (href: string, label: string = '') =>
+		getDataUrlDownloadName(href, label);
 </script>
 
 {#each renderTokens as token}
@@ -38,7 +51,12 @@
 		{/if}
 	{:else if token.type === 'html'}
 		{@const isSvgMarkupToken = isSvgMarkup(token.text)}
-		{@const html = DOMPurify.sanitize(token.text, { ADD_ATTR: ['style'] })}
+		{@const html = rewriteDataUrlDownloadLinks(
+			rewriteGeneratedFileHtmlLinks(
+				DOMPurify.sanitize(token.text, { ADD_ATTR: ['style'] }),
+				generatedFiles
+			)
+		)}
 		{#if isSvgMarkupToken}
 			<span class="font-mono whitespace-pre-wrap break-all">{token.text}</span>
 		{:else if html && html.includes('<video')}
@@ -51,20 +69,35 @@
 			{@html html}
 		{/if}
 	{:else if token.type === 'link'}
+		{@const href = resolveLinkHref(token.href ?? '')}
+		{@const download = resolveDownloadName(href, token.text ?? '')}
 		{#if token.tokens}
-			<a href={token.href} target="_blank" rel="nofollow" title={token.title}>
+			<a
+				{href}
+				target={download ? undefined : '_blank'}
+				download={download ?? undefined}
+				rel="nofollow"
+				title={token.title}
+			>
 				<svelte:self
 					id={`${id}-a`}
 					tokens={token.tokens}
 					{charAnimation}
 					{onSourceClick}
+					{generatedFiles}
 				/>
 			</a>
 		{:else}
-			<a href={token.href} target="_blank" rel="nofollow" title={token.title}>{token.text}</a>
+			<a
+				{href}
+				target={download ? undefined : '_blank'}
+				download={download ?? undefined}
+				rel="nofollow"
+				title={token.title}>{token.text}</a
+			>
 		{/if}
 	{:else if token.type === 'image'}
-		<Image src={token.href} alt={token.text} />
+		<Image src={resolveContentSrc(token.href ?? '')} alt={token.text} />
 	{:else if token.type === 'strong'}
 		<strong>
 			<svelte:self
@@ -72,6 +105,7 @@
 				tokens={token.tokens}
 				{charAnimation}
 				{onSourceClick}
+				{generatedFiles}
 			/>
 		</strong>
 	{:else if token.type === 'em'}
@@ -81,6 +115,7 @@
 				tokens={token.tokens}
 				{charAnimation}
 				{onSourceClick}
+				{generatedFiles}
 			/>
 		</em>
 	{:else if token.type === 'codespan'}
@@ -102,6 +137,7 @@
 				tokens={token.tokens}
 				{charAnimation}
 				{onSourceClick}
+				{generatedFiles}
 			/>
 		</del>
 	{:else if token.type === 'inlineKatex'}

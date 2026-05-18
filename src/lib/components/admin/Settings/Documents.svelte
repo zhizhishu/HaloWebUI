@@ -751,6 +751,12 @@
 			? runtimeCapabilities.messages.colbert_reranking
 			: runtimeCapabilities.messages.local_reranking;
 
+	const getEmbeddingModelSetupMessage = () =>
+		tr(
+			'当前检索模式需要可用的嵌入模型。请进入“嵌入模型”设置页，选择并保存一个可用的嵌入引擎和模型。',
+			'Retrieval mode requires a usable embedding model. Go to Embedding Models, choose a usable embedding engine and model, then save.'
+		);
+
 	$: localEmbeddingUnavailable =
 		embeddingEngine === '' && !runtimeCapabilities.local_embedding_available;
 	$: localRerankingUnavailable =
@@ -762,7 +768,7 @@
 
 	const embeddingModelUpdateHandler = async () => {
 		if (localEmbeddingUnavailable) {
-			toast.error(runtimeCapabilities.messages.local_embedding);
+			toast.error(getEmbeddingModelSetupMessage());
 			return false;
 		}
 		if (embeddingEngine === '' && embeddingModel.split('/').length - 1 > 1) {
@@ -1313,28 +1319,52 @@
 								<HaloSelect
 									bind:value={RAGConfig.FILE_PROCESSING_DEFAULT_MODE}
 									options={[
-										{ value: 'retrieval', label: tr('检索模式', 'Retrieval Mode') },
-										{ value: 'full_context', label: tr('完整上下文模式', 'Full Context Mode') },
-										{ value: 'native_file', label: tr('原生文件模式', 'Native File Mode') }
+										{
+											value: 'retrieval',
+											label: tr('检索模式（推荐）', 'Retrieval Mode (Recommended)'),
+											badge: tr('推荐', 'Recommended'),
+											description: tr(
+												'默认推荐，适合多数场景。',
+												'Recommended default for most cases.'
+											),
+											descriptionTone: 'info'
+										},
+										{
+											value: 'full_context',
+											label: tr('完整上下文模式', 'Full Context Mode'),
+											description: tr(
+												'适合中小文件，内容会全部发送给模型。',
+												'Best for small to medium files; all content is sent to the model.'
+											)
+										},
+										{
+											value: 'native_file',
+											label: tr('原生文件模式', 'Native File Mode'),
+											description: tr(
+												'需要模型上游支持，否则模型读不到文件。',
+												'Requires upstream model support, or the model cannot read the file.'
+											)
+										}
 									]}
 									className="w-fit"
+									contentClassName="w-[20rem]"
 								/>
 							</div>
 							<div class="text-xs text-gray-500 dark:text-gray-400">
 								{#if RAGConfig.FILE_PROCESSING_DEFAULT_MODE === 'retrieval'}
 									{tr(
-										'上传后立即解析、切分并建立向量索引，适合知识库与长文档问答。',
-										'Parse, chunk, and index uploads immediately. Best for knowledge bases and long-document Q&A.'
+										'默认推荐，适合多数场景；上传后会解析并建立索引。',
+										'Recommended default for most cases; uploads are parsed and indexed.'
 									)}
 								{:else if RAGConfig.FILE_PROCESSING_DEFAULT_MODE === 'full_context'}
 									{tr(
-										'上传后只提取全文，不建立索引；发送消息时整份注入模型上下文。',
-										'Extract the full text without indexing it, then inject the full content into the model context during chat.'
+										'适合中小文件；上传后提取全文，内容会全部发送给模型。',
+										'Best for small to medium files; extracted content is sent fully to the model.'
 									)}
 								{:else}
 									{tr(
-										'上传后只保存原文件，不做本地解析；优先直接交给支持原生文件输入的模型。',
-										'Store the original file without local parsing, and prefer models that support native file input.'
+										'上传后只保存原文件，不做本地解析；需要模型上游支持，否则模型读不到文件。',
+										'Store the original file without local parsing; upstream model support is required or the model cannot read the file.'
 									)}
 								{/if}
 							</div>
@@ -1963,7 +1993,7 @@
 
 							{#if localEmbeddingUnavailable}
 								<div class="mt-3 rounded-xl border border-amber-200/70 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-300">
-									{runtimeCapabilities.messages.local_embedding}
+									{getEmbeddingModelSetupMessage()}
 								</div>
 							{/if}
 

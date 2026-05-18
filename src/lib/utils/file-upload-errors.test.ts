@@ -58,8 +58,12 @@ describe('file upload errors', () => {
 			{ isAdmin: false }
 		);
 
-		expect(admin.hint).toContain('/settings/documents');
+		expect(admin.hint).toContain('Embedding Models');
+		expect(admin.hint).toContain('usable embedding engine and model');
 		expect(member.hint).toContain('administrator');
+		expect(member.hint).toContain('embedding model');
+		expect(admin.hint).not.toContain('Full Context');
+		expect(member.hint).not.toContain('Native File');
 	});
 
 	it('localizes missing chardet diagnostics', () => {
