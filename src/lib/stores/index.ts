@@ -210,6 +210,8 @@ type OllamaModelDetails = {
 
 type Settings = {
 	models?: string[];
+	pinnedModels?: string[];
+	modelSelectorTagOrder?: string[];
 	backgroundImageUrl?: string | null;
 	conversationMode?: boolean;
 	speechAutoSend?: boolean;
