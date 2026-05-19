@@ -99,6 +99,7 @@
 	import { resolveModelBuiltinWebSearchState } from '$lib/utils/model-web-search-preference';
 	import { applyUserSettingsSnapshot } from '$lib/utils/user-settings';
 	import { buildWebSearchModeOptions } from '$lib/utils/native-web-search';
+	import { filterAvailableToolIds } from '$lib/utils/tool-selection';
 
 	import { generateChatCompletion } from '$lib/apis/ollama';
 	import {
@@ -392,7 +393,7 @@
 		atSelectedModel !== undefined ? [getModelSelectionId(atSelectedModel)] : selectedModels;
 	let activeAssistant: ChatAssistantSnapshot | null = null;
 
-	let selectedToolIds = [];
+	let selectedToolIds: string[] = [];
 	let toolSelectionTouched = false;
 	let selectedSkillIds = [];
 	let skillSelectionTouched = false;
@@ -659,6 +660,8 @@
 
 		return nextSelectedModels.length > 0 ? nextSelectedModels : [''];
 	};
+	const getAvailableSelectedToolIds = (ids: unknown = selectedToolIds) =>
+		filterAvailableToolIds(ids, $tools);
 	const getVisibleSkillIds = () =>
 		($skillsStore ?? []).map((skill) => String(skill?.id ?? '')).filter((id) => id);
 	const filterVisibleSkillIds = (ids: string[] = []) => {
@@ -1062,6 +1065,7 @@
 		}
 
 		const requestMessages = await buildFloatingRequestMessages(messages);
+		const requestToolIds = getAvailableSelectedToolIds();
 		const requestSkillIds = collectRequestSkillIds(messages);
 		const requestedWebSearchMode = canUseChatWebSearch()
 			? normalizeWebSearchMode(webSearchMode, 'off')
@@ -1087,7 +1091,7 @@
 				stop: getRequestStopTokens()
 			},
 			files: Array.isArray(requestFiles) ? requestFiles : [],
-			tool_ids: selectedToolIds.length > 0 ? selectedToolIds : undefined,
+			tool_ids: requestToolIds.length > 0 ? requestToolIds : undefined,
 			skill_ids: requestSkillIds.length > 0 ? requestSkillIds : undefined,
 			skill_selection_touched: skillSelectionTouched ? true : undefined,
 			tool_servers: $toolServers,
@@ -1427,26 +1431,30 @@
 		}
 	};
 
-	const buildComposerStatePayload = () => ({
-		selected_tool_ids: selectedToolIds,
-		tool_selection_touched: toolSelectionTouched,
-		selected_skill_ids: selectedSkillIds,
-		skill_selection_touched: skillSelectionTouched,
-		web_search_mode: webSearchMode,
-		web_search_mode_source: webSearchModeSource,
-		image_generation_enabled: imageGenerationEnabled,
-		image_generation_options: sanitizeChatImageGenerationOptions(imageGenerationOptions),
-		code_interpreter_enabled: codeInterpreterEnabled,
-		reasoning_effort: reasoningEffort,
-		max_thinking_tokens: maxThinkingTokens
-	});
+	const buildComposerStatePayload = () => {
+		const availableSelectedToolIds = getAvailableSelectedToolIds();
+
+		return {
+			selected_tool_ids: availableSelectedToolIds,
+			tool_selection_touched: toolSelectionTouched,
+			selected_skill_ids: selectedSkillIds,
+			skill_selection_touched: skillSelectionTouched,
+			web_search_mode: webSearchMode,
+			web_search_mode_source: webSearchModeSource,
+			image_generation_enabled: imageGenerationEnabled,
+			image_generation_options: sanitizeChatImageGenerationOptions(imageGenerationOptions),
+			code_interpreter_enabled: codeInterpreterEnabled,
+			reasoning_effort: reasoningEffort,
+			max_thinking_tokens: maxThinkingTokens
+		};
+	};
 
 	const buildLocalChatSessionState = () => ({
 		...buildComposerStatePayload(),
 		webSearchMode: webSearchMode,
 		webSearchModeSource: webSearchModeSource,
 		webSearchModeTouched: webSearchModeSource === 'user',
-		selectedToolIds,
+		selectedToolIds: getAvailableSelectedToolIds(),
 		toolSelectionTouched,
 		selectedSkillIds,
 		skillSelectionTouched,
@@ -1489,7 +1497,7 @@
 
 		const restoredToolIds = state.selected_tool_ids ?? state.selectedToolIds;
 		if (Array.isArray(restoredToolIds)) {
-			selectedToolIds = restoredToolIds.map((id) => String(id ?? '').trim()).filter(Boolean);
+			selectedToolIds = getAvailableSelectedToolIds(restoredToolIds);
 		}
 		if (
 			state.tool_selection_touched !== undefined ||
@@ -1705,8 +1713,8 @@
 		webSearchMode = nextWebSearchState.mode;
 		webSearchModeSource = nextWebSearchState.source;
 		selectedToolIds = Array.isArray(input.selectedToolIds)
-			? input.selectedToolIds.map((id) => String(id ?? '').trim()).filter(Boolean)
-			: selectedToolIds;
+			? getAvailableSelectedToolIds(input.selectedToolIds)
+			: getAvailableSelectedToolIds(selectedToolIds);
 		toolSelectionTouched = Boolean(input.toolSelectionTouched ?? toolSelectionTouched);
 		selectedSkillIds = Array.isArray(input.selectedSkillIds)
 			? input.selectedSkillIds.map((id) => String(id ?? '').trim()).filter(Boolean)
@@ -2157,6 +2165,13 @@
 		}
 	}
 
+	$: if (Array.isArray($tools)) {
+		const filteredToolIds = getAvailableSelectedToolIds(selectedToolIds);
+		if (!arraysEqual(filteredToolIds, selectedToolIds)) {
+			selectedToolIds = filteredToolIds;
+		}
+	}
+
 	const setToolIds = async () => {
 		if (!$tools) {
 			tools.set(await getTools(localStorage.token));
@@ -2172,9 +2187,7 @@
 
 		const model = atSelectedModel ?? getModelById(selectedModels[0]);
 		if (model) {
-			selectedToolIds = (model?.info?.meta?.toolIds ?? []).filter((id) =>
-				$tools.find((t) => t.id === id)
-			);
+			selectedToolIds = getAvailableSelectedToolIds(model?.info?.meta?.toolIds ?? []);
 		}
 	};
 
@@ -3041,18 +3054,14 @@
 		}
 
 		if ($page.url.searchParams.get('tools')) {
-			selectedToolIds = $page.url.searchParams
-				.get('tools')
-				?.split(',')
-				.map((id) => id.trim())
-				.filter((id) => id);
+			selectedToolIds = getAvailableSelectedToolIds(
+				$page.url.searchParams.get('tools')?.split(',')
+			);
 			toolSelectionTouched = true;
 		} else if ($page.url.searchParams.get('tool-ids')) {
-			selectedToolIds = $page.url.searchParams
-				.get('tool-ids')
-				?.split(',')
-				.map((id) => id.trim())
-				.filter((id) => id);
+			selectedToolIds = getAvailableSelectedToolIds(
+				$page.url.searchParams.get('tool-ids')?.split(',')
+			);
 			toolSelectionTouched = true;
 		}
 
@@ -4720,7 +4729,7 @@
 				},
 
 				files: Array.isArray(files) ? files : [],
-				tool_ids: selectedToolIds.length > 0 ? selectedToolIds : undefined,
+				tool_ids: requestToolIds.length > 0 ? requestToolIds : undefined,
 				skill_ids: requestSkillIds.length > 0 ? requestSkillIds : undefined,
 				skill_selection_touched: skillSelectionTouched ? true : undefined,
 				tool_servers: $toolServers,

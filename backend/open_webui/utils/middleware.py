@@ -133,6 +133,7 @@ from open_webui.utils.misc import (
 from open_webui.utils.tools import (
     get_tools,
     get_tool_servers_data,
+    sanitize_tool_ids_for_request,
     validate_tool_ids_access,
 )
 from open_webui.utils.mcp import (
@@ -3872,6 +3873,8 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
     # Server side tools
     tool_ids = metadata.get("tool_ids", None)
+    tool_ids = sanitize_tool_ids_for_request(tool_ids, user, request)
+    metadata["tool_ids"] = tool_ids
     # Client side tools
     tool_servers = metadata.get("tool_servers", None)
 

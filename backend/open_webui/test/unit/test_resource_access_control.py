@@ -180,3 +180,42 @@ def test_validate_tool_ids_access_rejects_missing_workspace_tool(monkeypatch):
         tools_mod.validate_tool_ids_access(["missing_tool"], _make_user("reader-1"))
 
     assert exc_info.value.status_code == 404
+
+
+def test_sanitize_tool_ids_for_request_drops_missing_workspace_tool(monkeypatch):
+    monkeypatch.setattr(
+        tools_mod.Tools,
+        "get_tool_by_id",
+        lambda tool_id: _make_resource(
+            owner_id="owner-1",
+            access_control={
+                "read": {"group_ids": [], "user_ids": ["reader-1"]},
+                "write": {"group_ids": [], "user_ids": []},
+            },
+        )
+        if tool_id == "allowed_tool"
+        else None,
+    )
+    monkeypatch.setattr(access_mod.Groups, "get_groups_by_member_id", lambda _user_id: [])
+
+    assert tools_mod.sanitize_tool_ids_for_request(
+        ["allowed_tool", "missing_tool"], _make_user("reader-1")
+    ) == ["allowed_tool"]
+
+
+def test_sanitize_tool_ids_for_request_drops_stale_mcp_indices(monkeypatch):
+    monkeypatch.setattr(tools_mod.Tools, "get_tool_by_id", lambda _tool_id: None)
+    monkeypatch.setattr(
+        tools_mod,
+        "get_user_mcp_server_connections",
+        lambda _request, _user: [
+            {"config": {"enable": True}},
+            {"config": {"enable": False}},
+        ],
+    )
+
+    assert tools_mod.sanitize_tool_ids_for_request(
+        ["mcp:0", "mcp:1", "mcp:9", "mcp:not-a-number"],
+        _make_user("admin-1", role="admin"),
+        _make_request(),
+    ) == ["mcp:0"]

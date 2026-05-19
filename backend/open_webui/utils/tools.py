@@ -42,14 +42,174 @@ from open_webui.utils.mcp import execute_mcp_tool
 from open_webui.utils.shared_tool_servers import (
     MCP_SHARED_TOOL_PREFIX,
     OPENAPI_SHARED_TOOL_PREFIX,
+    can_read_shared_tool_server,
     can_use_direct_tool_servers,
+    get_shared_tool_id_value,
+    get_shared_tool_kind_from_tool_id,
+    get_shared_tool_servers_by_ids,
     validate_requested_shared_tool_ids_access,
 )
-from open_webui.utils.user_tools import can_user_use_mcp_server_tools
+from open_webui.utils.user_tools import (
+    can_user_use_mcp_server_tools,
+    get_user_mcp_server_connections,
+    get_user_tool_server_connections,
+)
 
 import copy
 
 log = logging.getLogger(__name__)
+
+
+def _normalize_tool_ids(tool_ids: list[Any] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+
+    for raw_tool_id in tool_ids or []:
+        tool_id = str(raw_tool_id or "").strip()
+        if not tool_id or tool_id in seen:
+            continue
+
+        seen.add(tool_id)
+        normalized.append(tool_id)
+
+    return normalized
+
+
+def _parse_indexed_tool_id(tool_id: str, prefix: str) -> Optional[int]:
+    if not tool_id.startswith(prefix):
+        return None
+
+    try:
+        return int(tool_id.split(":", 1)[1])
+    except Exception:
+        return None
+
+
+def _is_server_connection_enabled(connection: dict) -> bool:
+    config = connection.get("config") or {}
+    if isinstance(config, dict) and "enable" in config:
+        return bool(config.get("enable"))
+    if "enabled" in connection:
+        return bool(connection.get("enabled"))
+    return True
+
+
+def sanitize_tool_ids_for_request(
+    tool_ids: list[Any] | None,
+    user: UserModel,
+    request: Optional[Request] = None,
+) -> list[str]:
+    """Drop stale tool selections from old chats before tool runtime loading.
+
+    This keeps deleted MCP/OpenAPI/workspace tools from making an otherwise
+    valid chat impossible to continue. Strict validation still remains
+    available through validate_tool_ids_access for admin/config APIs.
+    """
+
+    normalized_tool_ids = _normalize_tool_ids(tool_ids)
+    if not normalized_tool_ids:
+        return []
+
+    sanitized_tool_ids: list[str] = []
+    skipped_tool_ids: list[str] = []
+    shared_tool_cache: dict[str, Any] = {}
+
+    def skip(tool_id: str) -> None:
+        skipped_tool_ids.append(tool_id)
+
+    def get_shared_tool_server(shared_id: str):
+        if shared_id not in shared_tool_cache:
+            shared_tool_cache[shared_id] = get_shared_tool_servers_by_ids(
+                [shared_id]
+            ).get(shared_id)
+        return shared_tool_cache[shared_id]
+
+    tool_server_connections: Optional[list[dict]] = None
+    mcp_server_connections: Optional[list[dict]] = None
+
+    for tool_id in normalized_tool_ids:
+        shared_kind = get_shared_tool_kind_from_tool_id(tool_id)
+        if shared_kind:
+            if request is None:
+                sanitized_tool_ids.append(tool_id)
+                continue
+
+            shared_id = get_shared_tool_id_value(tool_id)
+            if not shared_id:
+                skip(tool_id)
+                continue
+
+            shared_tool_server = get_shared_tool_server(shared_id)
+            if not shared_tool_server or not can_read_shared_tool_server(
+                request, user, shared_tool_server
+            ):
+                skip(tool_id)
+                continue
+
+            sanitized_tool_ids.append(tool_id)
+            continue
+
+        server_idx = _parse_indexed_tool_id(tool_id, "server:")
+        if server_idx is not None:
+            if request is None or not can_use_direct_tool_servers(request, user):
+                skip(tool_id)
+                continue
+
+            if tool_server_connections is None:
+                tool_server_connections = get_user_tool_server_connections(
+                    request, user
+                )
+
+            if (
+                server_idx < 0
+                or server_idx >= len(tool_server_connections)
+                or not _is_server_connection_enabled(
+                    tool_server_connections[server_idx]
+                )
+            ):
+                skip(tool_id)
+                continue
+
+            sanitized_tool_ids.append(tool_id)
+            continue
+
+        mcp_idx = _parse_indexed_tool_id(tool_id, "mcp:")
+        if mcp_idx is not None:
+            if request is None or not can_user_use_mcp_server_tools(request, user):
+                skip(tool_id)
+                continue
+
+            if mcp_server_connections is None:
+                mcp_server_connections = get_user_mcp_server_connections(
+                    request, user
+                )
+
+            if (
+                mcp_idx < 0
+                or mcp_idx >= len(mcp_server_connections)
+                or not _is_server_connection_enabled(mcp_server_connections[mcp_idx])
+            ):
+                skip(tool_id)
+                continue
+
+            sanitized_tool_ids.append(tool_id)
+            continue
+
+        tool = Tools.get_tool_by_id(tool_id)
+        if tool is None or not can_read_resource(user, tool):
+            skip(tool_id)
+            continue
+
+        sanitized_tool_ids.append(tool_id)
+
+    if skipped_tool_ids:
+        log.info(
+            "[TOOLS] Ignored stale or inaccessible tool selections for user %s: %s",
+            getattr(user, "id", None),
+            skipped_tool_ids,
+        )
+
+    return sanitized_tool_ids
 
 
 def validate_tool_ids_access(

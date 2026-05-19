@@ -32,6 +32,7 @@ from open_webui.utils.plugin import load_function_module_by_id
 from open_webui.utils.tools import (
     get_tools,
     get_tool_servers_data,
+    sanitize_tool_ids_for_request,
     validate_tool_ids_access,
 )
 from open_webui.utils.mcp import (
@@ -346,6 +347,9 @@ async def generate_function_chat_completion(
     # Check if tool_ids is None
     if tool_ids is None:
         tool_ids = []
+
+    tool_ids = sanitize_tool_ids_for_request(tool_ids, user, request)
+    metadata["tool_ids"] = tool_ids
 
     validate_tool_ids_access(tool_ids, user, request)
 
