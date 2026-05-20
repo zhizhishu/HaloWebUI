@@ -442,10 +442,6 @@
 		syncWebSearchModeWithOptions();
 	});
 
-	$: if (!imageGenerationEnabled && imageGenerationPanelOpen) {
-		imageGenerationPanelOpen = false;
-	}
-
 	$: currentWebSearchTooltip = (() => {
 		switch (normalizedWebSearchMode) {
 			case 'auto':
@@ -1746,29 +1742,31 @@
 											</button>
 										</InputMenu>
 
-										{#if $config?.features?.enable_image_generation && ($_user.role === 'admin' || $_user?.permissions?.features?.image_generation) && imageGenerationEnabled}
-											<Tooltip
-												content={tr('图片生成已开启，点击关闭', 'Image generation is on. Click to disable')}
-												placement="top"
-											>
-												<button
-													type="button"
-													class={imageGenerationBadgeClass}
-													aria-label={tr('关闭图片生成', 'Disable image generation')}
-													on:click={disableImageGeneration}
+										{#if $config?.features?.enable_image_generation && ($_user.role === 'admin' || $_user?.permissions?.features?.image_generation) && (imageGenerationEnabled || imageGenerationPanelOpen)}
+											{#if imageGenerationEnabled}
+												<Tooltip
+													content={tr('图片生成已开启，点击关闭', 'Image generation is on. Click to disable')}
+													placement="top"
 												>
-													<span class={featureBadgeIconSlotClass}>
-														<ImageIcon
-															class={`${imageGenerationIconClass} ${featureBadgePrimaryIconMotionClass}`}
-															strokeWidth={1.9}
-														/>
-														<XMark className={imageGenerationCloseIconClass} strokeWidth="2.5" />
-													</span>
-													<span class={imageGenerationBadgeLabelClass}>
-														{tr('图片', 'Image')}
-													</span>
-												</button>
-											</Tooltip>
+													<button
+														type="button"
+														class={imageGenerationBadgeClass}
+														aria-label={tr('关闭图片生成', 'Disable image generation')}
+														on:click={disableImageGeneration}
+													>
+														<span class={featureBadgeIconSlotClass}>
+															<ImageIcon
+																class={`${imageGenerationIconClass} ${featureBadgePrimaryIconMotionClass}`}
+																strokeWidth={1.9}
+															/>
+															<XMark className={imageGenerationCloseIconClass} strokeWidth="2.5" />
+														</span>
+														<span class={imageGenerationBadgeLabelClass}>
+															{tr('图片', 'Image')}
+														</span>
+													</button>
+												</Tooltip>
+											{/if}
 
 											<ImageGenerationPanel
 												bind:open={imageGenerationPanelOpen}

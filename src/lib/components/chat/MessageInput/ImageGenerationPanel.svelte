@@ -1,9 +1,7 @@
 <script lang="ts">
-	import { DropdownMenu } from 'bits-ui';
 	import { getContext, tick } from 'svelte';
 	import { toast } from 'svelte-sonner';
 
-	import { flyAndScale } from '$lib/utils/transitions';
 	import { translateWithDefault } from '$lib/i18n';
 	import type { Model } from '$lib/stores';
 	import { getImageGenerationModels, type ImageGenerationModel } from '$lib/apis/images';
@@ -35,10 +33,10 @@
 	import Switch from '$lib/components/common/Switch.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
+	import Modal from '$lib/components/common/Modal.svelte';
 	import {
 		Check,
 		CircleHelp,
-		ChevronDown,
 		Image as ImageIcon,
 		SlidersHorizontal,
 		Sparkles,
@@ -498,14 +496,14 @@
 
 		imageGenerationEnabled = true;
 		await tick();
-		document.getElementById('chat-input')?.focus();
+		if (!open) {
+			document.getElementById('chat-input')?.focus();
+		}
 	};
 
-	const handleOpenChange = (state: boolean) => {
-		open = state;
-		if (state) {
-			imageGenerationEnabled = true;
-		}
+	const openPanel = () => {
+		open = true;
+		imageGenerationEnabled = true;
 	};
 
 	const setOpenAIRoute = (value: string) => {
@@ -779,481 +777,482 @@
 	})();
 </script>
 
-<DropdownMenu.Root bind:open closeFocus={false} typeahead={false} onOpenChange={handleOpenChange}>
-	{#if imageGenerationEnabled || open}
-		<Tooltip content={tr('打开参数设置', 'Open generation settings')} placement="top">
-			<DropdownMenu.Trigger
-				class="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-gray-200 bg-gray-100/90 px-2.5 text-sm font-medium leading-none text-gray-700 transition hover:bg-gray-200/80 dark:border-gray-700 dark:bg-gray-800/80 dark:text-gray-100 dark:hover:bg-gray-700"
-				aria-label={tr('参数设置', 'Generation settings')}
-				aria-pressed={open}
+{#if imageGenerationEnabled || open}
+	<Tooltip content={tr('打开参数设置', 'Open generation settings')} placement="top">
+		<button
+			type="button"
+			class="flex h-8 shrink-0 items-center gap-1.5 rounded-full border border-gray-200 bg-gray-100/90 px-2.5 text-sm font-medium leading-none text-gray-700 transition hover:bg-gray-200/80 dark:border-gray-700 dark:bg-gray-800/80 dark:text-gray-100 dark:hover:bg-gray-700"
+			aria-label={tr('参数设置', 'Generation settings')}
+			aria-pressed={open}
+			on:click={openPanel}
+		>
+			<span
+				class="flex size-4 shrink-0 items-center justify-center text-gray-700 dark:text-gray-100"
 			>
-				<span class="flex size-4 shrink-0 items-center justify-center text-gray-700 dark:text-gray-100">
-					<SlidersHorizontal class="size-4" strokeWidth={2} />
-				</span>
-				<span class="max-w-[5rem] truncate">{tr('参数设置', 'Settings')}</span>
-				<ChevronDown class="size-3.5 shrink-0 text-gray-500 dark:text-gray-300" strokeWidth={2.1} />
-			</DropdownMenu.Trigger>
-		</Tooltip>
-	{/if}
+				<SlidersHorizontal class="size-4" strokeWidth={2} />
+			</span>
+			<span class="max-w-[5rem] truncate">{tr('参数设置', 'Settings')}</span>
+		</button>
+	</Tooltip>
+{/if}
 
-	<DropdownMenu.Content
-		class="z-50 w-[42rem] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-2xl border border-gray-200/80 bg-white text-gray-900 shadow-2xl outline-none dark:border-gray-700/70 dark:bg-gray-900 dark:text-gray-100"
-		side="top"
-		align="start"
-		sideOffset={12}
-		collisionPadding={12}
-		transition={flyAndScale}
+<Modal
+	bind:show={open}
+	size="full"
+	containerClassName="p-2 sm:p-4"
+	className="flex h-[calc(100dvh-1rem)] w-full !max-w-[58rem] flex-col overflow-hidden rounded-2xl border border-gray-200/80 bg-white text-gray-900 shadow-2xl dark:border-gray-700/70 dark:bg-gray-900 dark:text-gray-100 sm:h-[min(46rem,calc(100dvh-2rem))]"
+>
+	<div
+		class="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 px-4 py-3 dark:border-gray-800 sm:px-5"
 	>
-		<div class="max-h-[min(78vh,44rem)] overflow-y-auto p-3">
-			<div class="flex items-start justify-between gap-3">
-				<div class="min-w-0">
-					<div class="flex items-center gap-2">
-						<div
-							class="flex size-8 items-center justify-center rounded-lg bg-teal-50 text-teal-600 dark:bg-teal-500/15 dark:text-teal-200"
-						>
-							<ImageIcon class="size-4" strokeWidth={2} />
-						</div>
-						<div>
-							<div class="text-sm font-semibold">{tr('图片生成', 'Image generation')}</div>
-							<div class="mt-0.5 text-xs leading-5 text-gray-500 dark:text-gray-400">
-								{modelSummary}
-							</div>
-						</div>
-					</div>
-				</div>
-				<div class="flex shrink-0 items-center gap-2">
-					<Switch bind:state={imageGenerationEnabled} />
-					<button
-						type="button"
-						class="flex size-7 items-center justify-center rounded-full text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
-						aria-label={tr('关闭', 'Close')}
-						on:click={() => (open = false)}
-					>
-						<X class="size-4" strokeWidth={2} />
-					</button>
-				</div>
-			</div>
-
-			{#if loading}
+		<div class="min-w-0">
+			<div class="flex items-start gap-3">
 				<div
-					class="mt-4 flex items-center gap-2 rounded-lg border border-gray-200/70 bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:border-gray-700/70 dark:bg-gray-800/60 dark:text-gray-400"
+					class="flex size-9 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-600 dark:bg-teal-500/15 dark:text-teal-200"
 				>
-					<Spinner className="size-3.5" />
-					{tr('正在加载当前模型的图片参数...', 'Loading image options for the current model...')}
+					<ImageIcon class="size-4" strokeWidth={2} />
 				</div>
-			{/if}
-
-			<div class="mt-4 grid gap-4 lg:grid-cols-[1.08fr_0.92fr]">
-				<div class="space-y-4">
-					<section class="space-y-2">
-						<div class="flex items-center justify-between">
-							<div class="text-xs font-semibold text-gray-500 dark:text-gray-400">
-								{tr('图片比例', 'Aspect ratio')}
-							</div>
-							{#if !canUseAspectRatioControl && !canUseExactSizeControl}
-								<Tooltip
-									content={tr(
-										'当前模型没有暴露可选择的比例或尺寸参数。',
-										'The current model does not expose selectable aspect ratio or size options.'
-									)}
-									placement="top"
-								>
-									<CircleHelp class={helpIconClass} strokeWidth={1.9} />
-								</Tooltip>
-							{/if}
-						</div>
-						<div class="grid grid-cols-3 gap-2 sm:grid-cols-6">
-							{#each ratioPresets as preset}
-								{@const usable =
-									!preset.ratio ||
-									canUseAspectRatioControl ||
-									(canUseExactSizeControl && Boolean(preset.size))}
-								<button
-									type="button"
-									disabled={!usable}
-									class="group flex min-h-[5.5rem] flex-col items-center justify-center gap-2 rounded-lg border px-2 py-2 text-xs transition
-										{selectedRatioId === preset.id
-										? 'border-teal-400 bg-teal-50 text-teal-700 dark:border-teal-400/60 dark:bg-teal-500/15 dark:text-teal-100'
-										: 'border-gray-200 bg-gray-50/80 text-gray-700 hover:border-gray-300 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-200 dark:hover:border-gray-600'}
-										{!usable ? optionDisabledClass : ''}"
-									title={!usable
-										? tr(
-												'当前模型不支持这个比例。',
-												'The current model does not support this ratio.'
-											)
-										: ''}
-									on:click={() => selectRatioPreset(preset)}
-								>
-									<div class="flex h-8 w-10 items-center justify-center">
-										<div
-											class="max-h-8 min-h-[1.1rem] w-full max-w-8 rounded border-2 {preset.preview}
-												{selectedRatioId === preset.id
-												? 'border-teal-500 bg-teal-100 dark:border-teal-300 dark:bg-teal-300/20'
-												: 'border-gray-400 bg-white dark:border-gray-500 dark:bg-gray-900'}"
-										/>
-									</div>
-									<div class="leading-4">
-										<div>{tr(preset.labelZh, preset.labelEn)}</div>
-										<div class="text-[11px] text-gray-400 dark:text-gray-500">
-											{preset.ratio ?? tr('自动', 'Auto')}
-										</div>
-									</div>
-								</button>
-							{/each}
-						</div>
-					</section>
-
-					<section class="space-y-2">
-						<div
-							class="flex items-center gap-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400"
-						>
-							<Wand2 class="size-3.5" strokeWidth={1.9} />
-							{tr('风格', 'Style')}
-						</div>
-						<div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
-							{#each stylePresets as preset}
-								<button
-									type="button"
-									class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-left transition hover:border-teal-300 hover:bg-teal-50 dark:border-gray-700 dark:bg-gray-850 dark:hover:border-teal-500/50 dark:hover:bg-teal-500/10"
-									on:click={() => applyPromptPreset(preset)}
-								>
-									<div class="text-sm font-medium">{tr(preset.labelZh, preset.labelEn)}</div>
-									<div class="mt-1 line-clamp-2 text-xs leading-4 text-gray-500 dark:text-gray-400">
-										{tr(preset.descriptionZh, preset.descriptionEn)}
-									</div>
-								</button>
-							{/each}
-						</div>
-					</section>
-
-					<section class="space-y-2">
-						<div
-							class="flex items-center gap-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400"
-						>
-								<Sparkles class="size-3.5" strokeWidth={1.9} />
-								{tr('创作灵感', 'Inspiration')}
-							</div>
-						<div class="grid gap-2 sm:grid-cols-3">
-							{#each ideaPresets as preset}
-								<button
-									type="button"
-									class="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-left transition hover:border-teal-300 hover:bg-teal-50 dark:border-gray-700 dark:bg-gray-800/60 dark:hover:border-teal-500/50 dark:hover:bg-teal-500/10"
-									on:click={() => applyPromptPreset(preset)}
-								>
-									<div class="text-sm font-medium">{tr(preset.labelZh, preset.labelEn)}</div>
-									<div class="mt-1 line-clamp-2 text-xs leading-4 text-gray-500 dark:text-gray-400">
-										{tr(preset.descriptionZh, preset.descriptionEn)}
-									</div>
-								</button>
-							{/each}
-						</div>
-					</section>
-
-					<section class="space-y-2">
-						<div class="flex items-center justify-between">
-							<div class="text-xs font-semibold text-gray-500 dark:text-gray-400">
-								{tr('负面提示词', 'Negative prompt')}
-							</div>
-							{#if !canUseNegativePrompt}
-								<div class="text-[11px] text-gray-400">
-									{tr('当前模型不支持', 'Not supported')}
-								</div>
-							{/if}
-						</div>
-						<textarea
-							rows="3"
-							disabled={!canUseNegativePrompt}
-							value={imageGenerationOptions?.negative_prompt ?? ''}
-							placeholder={canUseNegativePrompt
-								? tr('写下不希望出现在图片里的内容', 'Describe what should not appear in the image')
-								: tr(
-										'当前模型不会使用负面提示词。',
-										'The current model will not use a negative prompt.'
-									)}
-							class="min-h-[5.5rem] w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm leading-5 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-teal-300 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:border-teal-500/70 dark:disabled:bg-gray-800/60"
-							on:input={handleNegativePromptInput}
-						/>
-					</section>
-				</div>
-
-				<div class="space-y-4">
-					<section
-						class="rounded-lg border border-gray-200 bg-gray-50/80 p-3 dark:border-gray-700 dark:bg-gray-800/50"
-					>
-						<div
-							class="mb-3 flex items-center gap-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400"
-						>
-							<SlidersHorizontal class="size-3.5" strokeWidth={1.9} />
-							{tr('生成参数', 'Generation settings')}
-						</div>
-
-						<div class="space-y-3">
-							{#if hasOpenAIRouteChoice}
-								<div>
-									<div class="mb-1.5 text-xs font-medium text-gray-600 dark:text-gray-300">
-										{tr('接口模式', 'Route mode')}
-									</div>
-									<div class="grid gap-1.5">
-										{#each openaiRouteOptions as option}
-											<button
-												type="button"
-												disabled={option.disabled}
-												class="flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 text-left text-xs transition
-													{openaiRouteSelectedValue === option.value
-													? 'border-teal-400 bg-white text-teal-700 dark:border-teal-400/60 dark:bg-teal-500/15 dark:text-teal-100'
-													: 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-200 dark:hover:border-gray-600'}
-													{option.disabled ? optionDisabledClass : ''}"
-												on:click={() => {
-													if (!option.disabled) setOpenAIRoute(option.value);
-												}}
-											>
-												<span class="min-w-0">
-													<span class="block font-medium">{option.label}</span>
-													{#if option.description}
-														<span class="mt-0.5 line-clamp-2 text-gray-500 dark:text-gray-400">
-															{option.description}
-														</span>
-													{/if}
-												</span>
-												{#if openaiRouteSelectedValue === option.value}
-													<Check class="size-4 shrink-0 text-teal-500" strokeWidth={2.2} />
-												{/if}
-											</button>
-										{/each}
-									</div>
-								</div>
-							{:else}
-								<div
-									class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-500 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-400"
-								>
-									{tr(
-										'当前模型没有可切换的接口模式。',
-										'The current model does not expose switchable image routes.'
-									)}
-								</div>
-							{/if}
-
-							<div>
-								<div class="mb-1.5 flex items-center justify-between">
-									<div class="text-xs font-medium text-gray-600 dark:text-gray-300">
-										{tr('生成数量', 'Images')}
-									</div>
-									{#if !supportsBatch}
-										<div class="text-[11px] text-gray-400">
-											{tr('当前模型只支持 1 张', 'This model only supports 1 image')}
-										</div>
-									{/if}
-								</div>
-								<div class="grid grid-cols-4 gap-1.5">
-									{#each countOptions as count}
-										<button
-											type="button"
-											disabled={!canUseBatch && count > 1}
-											class="rounded-lg border px-2 py-1.5 text-xs font-medium transition
-												{currentCount === count
-												? 'border-teal-400 bg-white text-teal-700 dark:border-teal-400/60 dark:bg-teal-500/15 dark:text-teal-100'
-												: 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-200'}
-												{!canUseBatch && count > 1 ? optionDisabledClass : ''}"
-											on:click={() => {
-												if (canUseBatch || count === 1) setOption({ n: count });
-											}}
-										>
-											{count}
-										</button>
-									{/each}
-								</div>
-							</div>
-
-							<div>
-								<div class="mb-1.5 flex items-center justify-between">
-									<div class="flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-300">
-										<span>
-											{hasBuiltinResolutionOption
-												? tr('清晰度', 'Resolution')
-												: tr('尺寸档位', 'Size tier')}
-										</span>
-										<Tooltip content={qualityHelpDescription} placement="top">
-											<button
-												type="button"
-												class="-m-1 rounded-full p-1 outline-none transition hover:bg-gray-100 focus:bg-gray-100 dark:hover:bg-gray-800 dark:focus:bg-gray-800"
-												aria-label={qualityHelpDescription}
-											>
-												<CircleHelp class={helpIconClass} strokeWidth={1.9} />
-											</button>
-										</Tooltip>
-									</div>
-									<div class="text-[11px] text-gray-400">
-										{canUseQuality ? currentQualityLabel : qualityUnavailableLabel}
-									</div>
-								</div>
-								<div class="grid grid-cols-2 gap-1.5">
-									{#if hasBuiltinResolutionOption}
-										{#each resolutionOptions as option}
-											<button
-												type="button"
-												disabled={!canUseQuality}
-												class="rounded-lg border px-2 py-1.5 text-xs font-medium transition
-													{currentQuality === option.value
-													? 'border-teal-400 bg-white text-teal-700 dark:border-teal-400/60 dark:bg-teal-500/15 dark:text-teal-100'
-													: 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-200'}
-													{!canUseQuality ? optionDisabledClass : ''}"
-												on:click={() => canUseQuality && setOption({ resolution: option.value })}
-											>
-												{option.label}
-											</button>
-										{/each}
-									{:else}
-										{#each builtinImageSizeOptions as option}
-											<button
-												type="button"
-												disabled={!canUseQuality}
-												class="rounded-lg border px-2 py-1.5 text-xs font-medium transition
-													{currentQuality === option.value
-													? 'border-teal-400 bg-white text-teal-700 dark:border-teal-400/60 dark:bg-teal-500/15 dark:text-teal-100'
-													: 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-200'}
-													{!canUseQuality ? optionDisabledClass : ''}"
-												on:click={() => canUseQuality && setOption({ image_size: option.value })}
-											>
-												{option.label}
-											</button>
-										{/each}
-									{/if}
-								</div>
-							</div>
-
-							<div>
-								<div class="mb-1.5 flex items-center justify-between">
-									<div class="text-xs font-medium text-gray-600 dark:text-gray-300">
-										{tr('背景', 'Background')}
-									</div>
-									{#if !canUseBackground}
-										<div class="text-[11px] text-gray-400">
-											{tr('当前模型不支持', 'Not supported')}
-										</div>
-									{/if}
-								</div>
-								<div class="grid grid-cols-2 gap-1.5">
-									{#each backgroundOptions as option}
-										<button
-											type="button"
-											disabled={!canUseBackground && option.value !== ''}
-											class="rounded-lg border px-2 py-1.5 text-xs font-medium transition
-												{currentBackground === option.value
-												? 'border-teal-400 bg-white text-teal-700 dark:border-teal-400/60 dark:bg-teal-500/15 dark:text-teal-100'
-												: 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-200'}
-												{!canUseBackground && option.value !== '' ? optionDisabledClass : ''}"
-											on:click={() => {
-												if (canUseBackground || option.value === '')
-													setOption({ background: option.value || null });
-											}}
-										>
-											{tr(option.labelZh, option.labelEn)}
-										</button>
-									{/each}
-								</div>
-							</div>
-
-							<div>
-								<div class="mb-1.5 flex items-center justify-between">
-									<div class="text-xs font-medium text-gray-600 dark:text-gray-300">
-										{tr('步数', 'Steps')}
-									</div>
-									<div class="text-[11px] text-gray-400">
-										{canUseSteps
-											? currentSteps === 0
-												? tr('自动', 'Auto')
-												: currentSteps
-											: stepsUnavailableLabel}
-									</div>
-								</div>
-								<input
-									type="range"
-									min="0"
-									max="80"
-									step="5"
-									disabled={!canUseSteps}
-									value={currentSteps}
-									class="h-2 w-full cursor-pointer appearance-none rounded-full bg-gray-200 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-gray-700"
-									on:input={handleStepsInput}
-								/>
-							</div>
-						</div>
-					</section>
-
-					{#if hasCustomImage}
-						<section
-							class="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-850"
-						>
-							<div class="mb-2 text-xs font-semibold text-gray-500 dark:text-gray-400">
-								{tr('自定义模型参数', 'Custom model options')}
-							</div>
-							<div class="space-y-2">
-								{#if getImageValveProperty(customValvesSpec, 'image_size')}
-									<label class="block">
-										<span class="mb-1 block text-xs text-gray-500 dark:text-gray-400">
-											{getImageValveProperty(customValvesSpec, 'image_size')?.title ??
-												tr('图片尺寸', 'Image size')}
-										</span>
-										<select
-											class="w-full rounded-lg border border-gray-200 bg-gray-50 px-2 py-2 text-xs outline-none dark:border-gray-700 dark:bg-gray-900"
-											value={`${customValves?.image_size ?? customImageSizeOptions[0]?.value ?? ''}`}
-											on:change={handleCustomValveChange('image_size')}
-										>
-											{#each customImageSizeOptions as option}
-												<option value={option.value}>{option.label}</option>
-											{/each}
-										</select>
-									</label>
-								{/if}
-								{#if getImageValveProperty(customValvesSpec, 'aspect_ratio')}
-									<label class="block">
-										<span class="mb-1 block text-xs text-gray-500 dark:text-gray-400">
-											{getImageValveProperty(customValvesSpec, 'aspect_ratio')?.title ??
-												tr('图片比例', 'Aspect ratio')}
-										</span>
-										<select
-											class="w-full rounded-lg border border-gray-200 bg-gray-50 px-2 py-2 text-xs outline-none dark:border-gray-700 dark:bg-gray-900"
-											value={`${customValves?.aspect_ratio ?? customAspectRatioOptions[0]?.value ?? ''}`}
-											on:change={handleCustomValveChange('aspect_ratio')}
-										>
-											{#each customAspectRatioOptions as option}
-												<option value={option.value}>{option.label}</option>
-											{/each}
-										</select>
-									</label>
-								{/if}
-								{#if getImageValveProperty(customValvesSpec, 'resolution')}
-									<label class="block">
-										<span class="mb-1 block text-xs text-gray-500 dark:text-gray-400">
-											{getImageValveProperty(customValvesSpec, 'resolution')?.title ??
-												tr('清晰度', 'Resolution')}
-										</span>
-										<select
-											class="w-full rounded-lg border border-gray-200 bg-gray-50 px-2 py-2 text-xs outline-none dark:border-gray-700 dark:bg-gray-900"
-											value={`${customValves?.resolution ?? customResolutionOptions[0]?.value ?? ''}`}
-											on:change={handleCustomValveChange('resolution')}
-										>
-											{#each customResolutionOptions as option}
-												<option value={option.value}>{option.label}</option>
-											{/each}
-										</select>
-									</label>
-								{/if}
-							</div>
-						</section>
-					{/if}
-
-					<div class="flex items-center justify-end gap-2 pt-1">
-						<button
-							type="button"
-							class="rounded-lg bg-gray-900 px-3 py-2 text-xs font-semibold text-white transition hover:bg-gray-800 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
-							on:click={() => (open = false)}
-						>
-							{tr('完成', 'Done')}
-						</button>
+				<div class="min-w-0">
+					<div class="text-base font-semibold leading-6">{tr('图片生成', 'Image generation')}</div>
+					<div class="mt-0.5 text-xs leading-5 text-gray-500 dark:text-gray-400">
+						{modelSummary}
 					</div>
 				</div>
 			</div>
 		</div>
-	</DropdownMenu.Content>
-</DropdownMenu.Root>
+		<div class="flex shrink-0 items-center gap-2">
+			<Switch bind:state={imageGenerationEnabled} />
+			<button
+				type="button"
+				class="flex size-8 items-center justify-center rounded-full text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+				aria-label={tr('关闭', 'Close')}
+				on:click={() => (open = false)}
+			>
+				<X class="size-4" strokeWidth={2} />
+			</button>
+		</div>
+	</div>
+
+	<div class="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
+		{#if loading}
+			<div
+				class="mb-4 flex items-center gap-2 rounded-lg border border-gray-200/70 bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:border-gray-700/70 dark:bg-gray-800/60 dark:text-gray-400"
+			>
+				<Spinner className="size-3.5" />
+				{tr('正在加载当前模型的图片参数...', 'Loading image options for the current model...')}
+			</div>
+		{/if}
+
+		<div class="grid gap-4 lg:grid-cols-[1.08fr_0.92fr]">
+			<div class="space-y-4">
+				<section class="space-y-2">
+					<div class="flex items-center justify-between">
+						<div class="text-xs font-semibold text-gray-500 dark:text-gray-400">
+							{tr('图片比例', 'Aspect ratio')}
+						</div>
+						{#if !canUseAspectRatioControl && !canUseExactSizeControl}
+							<Tooltip
+								content={tr(
+									'当前模型没有暴露可选择的比例或尺寸参数。',
+									'The current model does not expose selectable aspect ratio or size options.'
+								)}
+								placement="top"
+							>
+								<CircleHelp class={helpIconClass} strokeWidth={1.9} />
+							</Tooltip>
+						{/if}
+					</div>
+					<div class="grid grid-cols-3 gap-2 sm:grid-cols-6">
+						{#each ratioPresets as preset}
+							{@const usable =
+								!preset.ratio ||
+								canUseAspectRatioControl ||
+								(canUseExactSizeControl && Boolean(preset.size))}
+							<button
+								type="button"
+								disabled={!usable}
+								class="group flex min-h-[5.5rem] flex-col items-center justify-center gap-2 rounded-lg border px-2 py-2 text-xs transition
+										{selectedRatioId === preset.id
+									? 'border-teal-400 bg-teal-50 text-teal-700 dark:border-teal-400/60 dark:bg-teal-500/15 dark:text-teal-100'
+									: 'border-gray-200 bg-gray-50/80 text-gray-700 hover:border-gray-300 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-200 dark:hover:border-gray-600'}
+										{!usable ? optionDisabledClass : ''}"
+								title={!usable
+									? tr('当前模型不支持这个比例。', 'The current model does not support this ratio.')
+									: ''}
+								on:click={() => selectRatioPreset(preset)}
+							>
+								<div class="flex h-8 w-10 items-center justify-center">
+									<div
+										class="max-h-8 min-h-[1.1rem] w-full max-w-8 rounded border-2 {preset.preview}
+												{selectedRatioId === preset.id
+											? 'border-teal-500 bg-teal-100 dark:border-teal-300 dark:bg-teal-300/20'
+											: 'border-gray-400 bg-white dark:border-gray-500 dark:bg-gray-900'}"
+									/>
+								</div>
+								<div class="leading-4">
+									<div>{tr(preset.labelZh, preset.labelEn)}</div>
+									<div class="text-[11px] text-gray-400 dark:text-gray-500">
+										{preset.ratio ?? tr('自动', 'Auto')}
+									</div>
+								</div>
+							</button>
+						{/each}
+					</div>
+				</section>
+
+				<section class="space-y-2">
+					<div
+						class="flex items-center gap-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400"
+					>
+						<Wand2 class="size-3.5" strokeWidth={1.9} />
+						{tr('风格', 'Style')}
+					</div>
+					<div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
+						{#each stylePresets as preset}
+							<button
+								type="button"
+								class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-left transition hover:border-teal-300 hover:bg-teal-50 dark:border-gray-700 dark:bg-gray-850 dark:hover:border-teal-500/50 dark:hover:bg-teal-500/10"
+								on:click={() => applyPromptPreset(preset)}
+							>
+								<div class="text-sm font-medium">{tr(preset.labelZh, preset.labelEn)}</div>
+								<div class="mt-1 line-clamp-2 text-xs leading-4 text-gray-500 dark:text-gray-400">
+									{tr(preset.descriptionZh, preset.descriptionEn)}
+								</div>
+							</button>
+						{/each}
+					</div>
+				</section>
+
+				<section class="space-y-2">
+					<div
+						class="flex items-center gap-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400"
+					>
+						<Sparkles class="size-3.5" strokeWidth={1.9} />
+						{tr('创作灵感', 'Inspiration')}
+					</div>
+					<div class="grid gap-2 sm:grid-cols-3">
+						{#each ideaPresets as preset}
+							<button
+								type="button"
+								class="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-left transition hover:border-teal-300 hover:bg-teal-50 dark:border-gray-700 dark:bg-gray-800/60 dark:hover:border-teal-500/50 dark:hover:bg-teal-500/10"
+								on:click={() => applyPromptPreset(preset)}
+							>
+								<div class="text-sm font-medium">{tr(preset.labelZh, preset.labelEn)}</div>
+								<div class="mt-1 line-clamp-2 text-xs leading-4 text-gray-500 dark:text-gray-400">
+									{tr(preset.descriptionZh, preset.descriptionEn)}
+								</div>
+							</button>
+						{/each}
+					</div>
+				</section>
+
+				<section class="space-y-2">
+					<div class="flex items-center justify-between">
+						<div class="text-xs font-semibold text-gray-500 dark:text-gray-400">
+							{tr('负面提示词', 'Negative prompt')}
+						</div>
+						{#if !canUseNegativePrompt}
+							<div class="text-[11px] text-gray-400">
+								{tr('当前模型不支持', 'Not supported')}
+							</div>
+						{/if}
+					</div>
+					<textarea
+						rows="3"
+						disabled={!canUseNegativePrompt}
+						value={imageGenerationOptions?.negative_prompt ?? ''}
+						placeholder={canUseNegativePrompt
+							? tr('写下不希望出现在图片里的内容', 'Describe what should not appear in the image')
+							: tr(
+									'当前模型不会使用负面提示词。',
+									'The current model will not use a negative prompt.'
+								)}
+						class="min-h-[5.5rem] w-full resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm leading-5 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-teal-300 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:border-teal-500/70 dark:disabled:bg-gray-800/60"
+						on:input={handleNegativePromptInput}
+					/>
+				</section>
+			</div>
+
+			<div class="space-y-4">
+				<section
+					class="rounded-lg border border-gray-200 bg-gray-50/80 p-3 dark:border-gray-700 dark:bg-gray-800/50"
+				>
+					<div
+						class="mb-3 flex items-center gap-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400"
+					>
+						<SlidersHorizontal class="size-3.5" strokeWidth={1.9} />
+						{tr('生成参数', 'Generation settings')}
+					</div>
+
+					<div class="space-y-3">
+						{#if hasOpenAIRouteChoice}
+							<div>
+								<div class="mb-1.5 text-xs font-medium text-gray-600 dark:text-gray-300">
+									{tr('接口模式', 'Route mode')}
+								</div>
+								<div class="grid gap-1.5">
+									{#each openaiRouteOptions as option}
+										<button
+											type="button"
+											disabled={option.disabled}
+											class="flex items-center justify-between gap-2 rounded-lg border px-2.5 py-2 text-left text-xs transition
+													{openaiRouteSelectedValue === option.value
+												? 'border-teal-400 bg-white text-teal-700 dark:border-teal-400/60 dark:bg-teal-500/15 dark:text-teal-100'
+												: 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-200 dark:hover:border-gray-600'}
+													{option.disabled ? optionDisabledClass : ''}"
+											on:click={() => {
+												if (!option.disabled) setOpenAIRoute(option.value);
+											}}
+										>
+											<span class="min-w-0">
+												<span class="block font-medium">{option.label}</span>
+												{#if option.description}
+													<span class="mt-0.5 line-clamp-2 text-gray-500 dark:text-gray-400">
+														{option.description}
+													</span>
+												{/if}
+											</span>
+											{#if openaiRouteSelectedValue === option.value}
+												<Check class="size-4 shrink-0 text-teal-500" strokeWidth={2.2} />
+											{/if}
+										</button>
+									{/each}
+								</div>
+							</div>
+						{:else}
+							<div
+								class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-500 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-400"
+							>
+								{tr(
+									'当前模型没有可切换的接口模式。',
+									'The current model does not expose switchable image routes.'
+								)}
+							</div>
+						{/if}
+
+						<div>
+							<div class="mb-1.5 flex items-center justify-between">
+								<div class="text-xs font-medium text-gray-600 dark:text-gray-300">
+									{tr('生成数量', 'Images')}
+								</div>
+								{#if !supportsBatch}
+									<div class="text-[11px] text-gray-400">
+										{tr('当前模型只支持 1 张', 'This model only supports 1 image')}
+									</div>
+								{/if}
+							</div>
+							<div class="grid grid-cols-4 gap-1.5">
+								{#each countOptions as count}
+									<button
+										type="button"
+										disabled={!canUseBatch && count > 1}
+										class="rounded-lg border px-2 py-1.5 text-xs font-medium transition
+												{currentCount === count
+											? 'border-teal-400 bg-white text-teal-700 dark:border-teal-400/60 dark:bg-teal-500/15 dark:text-teal-100'
+											: 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-200'}
+												{!canUseBatch && count > 1 ? optionDisabledClass : ''}"
+										on:click={() => {
+											if (canUseBatch || count === 1) setOption({ n: count });
+										}}
+									>
+										{count}
+									</button>
+								{/each}
+							</div>
+						</div>
+
+						<div>
+							<div class="mb-1.5 flex items-center justify-between">
+								<div
+									class="flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-300"
+								>
+									<span>
+										{hasBuiltinResolutionOption
+											? tr('清晰度', 'Resolution')
+											: tr('尺寸档位', 'Size tier')}
+									</span>
+									<Tooltip content={qualityHelpDescription} placement="top">
+										<button
+											type="button"
+											class="-m-1 rounded-full p-1 outline-none transition hover:bg-gray-100 focus:bg-gray-100 dark:hover:bg-gray-800 dark:focus:bg-gray-800"
+											aria-label={qualityHelpDescription}
+										>
+											<CircleHelp class={helpIconClass} strokeWidth={1.9} />
+										</button>
+									</Tooltip>
+								</div>
+								<div class="text-[11px] text-gray-400">
+									{canUseQuality ? currentQualityLabel : qualityUnavailableLabel}
+								</div>
+							</div>
+							<div class="grid grid-cols-2 gap-1.5">
+								{#if hasBuiltinResolutionOption}
+									{#each resolutionOptions as option}
+										<button
+											type="button"
+											disabled={!canUseQuality}
+											class="rounded-lg border px-2 py-1.5 text-xs font-medium transition
+													{currentQuality === option.value
+												? 'border-teal-400 bg-white text-teal-700 dark:border-teal-400/60 dark:bg-teal-500/15 dark:text-teal-100'
+												: 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-200'}
+													{!canUseQuality ? optionDisabledClass : ''}"
+											on:click={() => canUseQuality && setOption({ resolution: option.value })}
+										>
+											{option.label}
+										</button>
+									{/each}
+								{:else}
+									{#each builtinImageSizeOptions as option}
+										<button
+											type="button"
+											disabled={!canUseQuality}
+											class="rounded-lg border px-2 py-1.5 text-xs font-medium transition
+													{currentQuality === option.value
+												? 'border-teal-400 bg-white text-teal-700 dark:border-teal-400/60 dark:bg-teal-500/15 dark:text-teal-100'
+												: 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-200'}
+													{!canUseQuality ? optionDisabledClass : ''}"
+											on:click={() => canUseQuality && setOption({ image_size: option.value })}
+										>
+											{option.label}
+										</button>
+									{/each}
+								{/if}
+							</div>
+						</div>
+
+						<div>
+							<div class="mb-1.5 flex items-center justify-between">
+								<div class="text-xs font-medium text-gray-600 dark:text-gray-300">
+									{tr('背景', 'Background')}
+								</div>
+								{#if !canUseBackground}
+									<div class="text-[11px] text-gray-400">
+										{tr('当前模型不支持', 'Not supported')}
+									</div>
+								{/if}
+							</div>
+							<div class="grid grid-cols-2 gap-1.5">
+								{#each backgroundOptions as option}
+									<button
+										type="button"
+										disabled={!canUseBackground && option.value !== ''}
+										class="rounded-lg border px-2 py-1.5 text-xs font-medium transition
+												{currentBackground === option.value
+											? 'border-teal-400 bg-white text-teal-700 dark:border-teal-400/60 dark:bg-teal-500/15 dark:text-teal-100'
+											: 'border-gray-200 bg-white text-gray-700 hover:border-gray-300 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-200'}
+												{!canUseBackground && option.value !== '' ? optionDisabledClass : ''}"
+										on:click={() => {
+											if (canUseBackground || option.value === '')
+												setOption({ background: option.value || null });
+										}}
+									>
+										{tr(option.labelZh, option.labelEn)}
+									</button>
+								{/each}
+							</div>
+						</div>
+
+						<div>
+							<div class="mb-1.5 flex items-center justify-between">
+								<div class="text-xs font-medium text-gray-600 dark:text-gray-300">
+									{tr('步数', 'Steps')}
+								</div>
+								<div class="text-[11px] text-gray-400">
+									{canUseSteps
+										? currentSteps === 0
+											? tr('自动', 'Auto')
+											: currentSteps
+										: stepsUnavailableLabel}
+								</div>
+							</div>
+							<input
+								type="range"
+								min="0"
+								max="80"
+								step="5"
+								disabled={!canUseSteps}
+								value={currentSteps}
+								class="h-2 w-full cursor-pointer appearance-none rounded-full bg-gray-200 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-gray-700"
+								on:input={handleStepsInput}
+							/>
+						</div>
+					</div>
+				</section>
+
+				{#if hasCustomImage}
+					<section
+						class="rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-850"
+					>
+						<div class="mb-2 text-xs font-semibold text-gray-500 dark:text-gray-400">
+							{tr('自定义模型参数', 'Custom model options')}
+						</div>
+						<div class="space-y-2">
+							{#if getImageValveProperty(customValvesSpec, 'image_size')}
+								<label class="block">
+									<span class="mb-1 block text-xs text-gray-500 dark:text-gray-400">
+										{getImageValveProperty(customValvesSpec, 'image_size')?.title ??
+											tr('图片尺寸', 'Image size')}
+									</span>
+									<select
+										class="w-full rounded-lg border border-gray-200 bg-gray-50 px-2 py-2 text-xs outline-none dark:border-gray-700 dark:bg-gray-900"
+										value={`${customValves?.image_size ?? customImageSizeOptions[0]?.value ?? ''}`}
+										on:change={handleCustomValveChange('image_size')}
+									>
+										{#each customImageSizeOptions as option}
+											<option value={option.value}>{option.label}</option>
+										{/each}
+									</select>
+								</label>
+							{/if}
+							{#if getImageValveProperty(customValvesSpec, 'aspect_ratio')}
+								<label class="block">
+									<span class="mb-1 block text-xs text-gray-500 dark:text-gray-400">
+										{getImageValveProperty(customValvesSpec, 'aspect_ratio')?.title ??
+											tr('图片比例', 'Aspect ratio')}
+									</span>
+									<select
+										class="w-full rounded-lg border border-gray-200 bg-gray-50 px-2 py-2 text-xs outline-none dark:border-gray-700 dark:bg-gray-900"
+										value={`${customValves?.aspect_ratio ?? customAspectRatioOptions[0]?.value ?? ''}`}
+										on:change={handleCustomValveChange('aspect_ratio')}
+									>
+										{#each customAspectRatioOptions as option}
+											<option value={option.value}>{option.label}</option>
+										{/each}
+									</select>
+								</label>
+							{/if}
+							{#if getImageValveProperty(customValvesSpec, 'resolution')}
+								<label class="block">
+									<span class="mb-1 block text-xs text-gray-500 dark:text-gray-400">
+										{getImageValveProperty(customValvesSpec, 'resolution')?.title ??
+											tr('清晰度', 'Resolution')}
+									</span>
+									<select
+										class="w-full rounded-lg border border-gray-200 bg-gray-50 px-2 py-2 text-xs outline-none dark:border-gray-700 dark:bg-gray-900"
+										value={`${customValves?.resolution ?? customResolutionOptions[0]?.value ?? ''}`}
+										on:change={handleCustomValveChange('resolution')}
+									>
+										{#each customResolutionOptions as option}
+											<option value={option.value}>{option.label}</option>
+										{/each}
+									</select>
+								</label>
+							{/if}
+						</div>
+					</section>
+				{/if}
+			</div>
+		</div>
+	</div>
+	<div
+		class="flex shrink-0 items-center justify-end border-t border-gray-100 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] dark:border-gray-800 sm:px-5"
+	>
+		<button
+			type="button"
+			class="rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-gray-800 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
+			on:click={() => (open = false)}
+		>
+			{tr('完成', 'Done')}
+		</button>
+	</div>
+</Modal>
