@@ -42,10 +42,7 @@
 		getLocalizedFileUploadDiagnostic,
 		localizeFileUploadError
 	} from '$lib/utils/file-upload-errors';
-	import {
-		findModelByIdentity,
-		getModelSelectionId
-	} from '$lib/utils/model-identity';
+	import { findModelByIdentity, getModelSelectionId } from '$lib/utils/model-identity';
 	import { transcribeAudio } from '$lib/apis/audio';
 	import { uploadFile } from '$lib/apis/files';
 	import { generateAutoCompletion } from '$lib/apis';
@@ -62,6 +59,7 @@
 	import ThinkingControl from './MessageInput/ThinkingControl.svelte';
 	import SendMenu from './MessageInput/SendMenu.svelte';
 	import CommandSuggestionList from './MessageInput/CommandSuggestionList.svelte';
+	import ImageGenerationPanel from './MessageInput/ImageGenerationPanel.svelte';
 
 	import RichTextInput from '../common/RichTextInput.svelte';
 	import { getSuggestionRenderer } from '../common/RichTextInput/suggestions';
@@ -79,19 +77,20 @@
 		type WebSearchModeSource
 	} from '$lib/utils/web-search-mode';
 	import {
-		buildWebSearchModeOptions
+		buildWebSearchModeOptions,
+		getSmartWebSearchRouteLabel
 	} from '$lib/utils/native-web-search';
 	import { translateWithDefault } from '$lib/i18n';
 
 	import XMark from '../icons/XMark.svelte';
 	import Headphone from '../icons/Headphone.svelte';
 	import GlobeAlt from '../icons/GlobeAlt.svelte';
-	import Photo from '../icons/Photo.svelte';
 	import CommandLine from '../icons/CommandLine.svelte';
 	import { KokoroWorker } from '$lib/workers/KokoroWorker';
 	import ToolServersModal from './ToolServersModal.svelte';
 	import Wrench from '../icons/Wrench.svelte';
 	import Sparkles from '../icons/Sparkles.svelte';
+	import { Image as ImageIcon } from 'lucide-svelte';
 
 	const i18n = getContext('i18n');
 
@@ -206,10 +205,14 @@
 
 	export let imageGenerationEnabled = false;
 	export let imageGenerationOptions: {
+		size?: string | null;
 		image_size?: string | null;
 		aspect_ratio?: string | null;
 		resolution?: string | null;
 		n?: number | null;
+		negative_prompt?: string | null;
+		steps?: number | null;
+		background?: string | null;
 		image_route_mode?: string | null;
 	} = {};
 	export let webSearchMode: WebSearchMode = 'off';
@@ -371,7 +374,9 @@
 	$: webSearchFeatureEnabled =
 		Boolean($config?.features?.enable_halo_web_search ?? $config?.features?.enable_web_search) ||
 		Boolean($config?.features?.enable_native_web_search);
-	$: selectedModelLookupIds = selectedModelIds.filter((id) => typeof id === 'string' && id.trim() !== '');
+	$: selectedModelLookupIds = selectedModelIds.filter(
+		(id) => typeof id === 'string' && id.trim() !== ''
+	);
 	$: selectedModelObjects = selectedModelIds
 		.map((id) =>
 			atSelectedModel && getModelSelectionId(atSelectedModel) === id
@@ -380,10 +385,10 @@
 		)
 		.filter(Boolean);
 	$: hasResolvedSelectedModels =
-		selectedModelLookupIds.length === 0 || selectedModelObjects.length === selectedModelLookupIds.length;
+		selectedModelLookupIds.length === 0 ||
+		selectedModelObjects.length === selectedModelLookupIds.length;
 	$: primarySelectedModel =
-		atSelectedModel ??
-		(selectedModelObjects.length === 1 ? selectedModelObjects[0] : null);
+		atSelectedModel ?? (selectedModelObjects.length === 1 ? selectedModelObjects[0] : null);
 	$: atSelectedModelListItem = atSelectedModel
 		? (findModelByIdentity($models, getModelSelectionId(atSelectedModel)) ?? atSelectedModel)
 		: null;
@@ -399,7 +404,11 @@
 		normalizedWebSearchMode === 'native'
 			? $i18n.t('Model Built-in')
 			: normalizedWebSearchMode === 'auto'
-				? $i18n.t('Smart')
+				? getSmartWebSearchRouteLabel(
+						(key, options) => $i18n.t(key, options),
+						$config,
+						hasResolvedSelectedModels ? selectedModelObjects : []
+					)
 				: currentWebSearchModeLabel;
 	$: fallbackWebSearchMode =
 		(['auto', 'halo', 'native', 'off'] as WebSearchMode[]).find((mode) =>
@@ -424,6 +433,11 @@
 		webSearchModeSource = 'user';
 	};
 
+	const disableImageGeneration = () => {
+		imageGenerationEnabled = false;
+		imageGenerationPanelOpen = false;
+	};
+
 	afterUpdate(() => {
 		syncWebSearchModeWithOptions();
 	});
@@ -431,7 +445,10 @@
 	$: currentWebSearchTooltip = (() => {
 		switch (normalizedWebSearchMode) {
 			case 'auto':
-				return $i18n.t('智能联网搜索已开启');
+				return tr(
+					'智能联网已开启：会自动判断是否需要联网。',
+					'Smart web search is enabled: it will automatically decide whether web search is needed.'
+				);
 			case 'native':
 				return $i18n.t('模型原生联网搜索已开启');
 			case 'halo':
@@ -445,21 +462,27 @@
 		'group shrink-0 rounded-full flex items-center border transition-colors duration-200 cursor-pointer bg-sky-50/90 hover:bg-sky-100/85 dark:bg-slate-800/70 dark:hover:bg-slate-800/90 border-sky-200/60 dark:border-sky-500/20';
 	const webSearchBadgeClass = `${featureBadgeBaseClass} px-2.5 py-1.5 gap-1.5`;
 	const compactFeatureBadgeClass = `${featureBadgeBaseClass} px-1.5 py-1.5 gap-1`;
+	const imageGenerationBadgeBaseClass =
+		'group shrink-0 rounded-full flex items-center border transition-colors duration-200 cursor-pointer bg-teal-50/90 hover:bg-teal-100/85 dark:bg-teal-500/15 dark:hover:bg-teal-500/20 border-teal-200/80 dark:border-teal-400/25';
+	const imageGenerationBadgeClass = `${imageGenerationBadgeBaseClass} px-2.5 py-1.5 gap-1.5`;
 	const featureBadgeLabelClass =
 		'whitespace-nowrap text-slate-600 dark:text-slate-200 text-xs font-medium leading-none';
+	const imageGenerationBadgeLabelClass =
+		'whitespace-nowrap text-teal-700 dark:text-teal-100 text-xs font-medium leading-none';
 	const featureBadgeIconSlotClass = 'relative flex size-4 items-center justify-center';
 	const featureBadgePrimaryIconMotionClass =
 		'transition-all duration-200 ease-out group-hover:scale-75 group-hover:opacity-0 group-focus:scale-75 group-focus:opacity-0';
 	const featureBadgeCloseIconMotionClass =
 		'absolute inset-0 m-auto size-3 scale-75 opacity-0 transition-all duration-200 ease-out group-hover:scale-100 group-hover:opacity-100 group-focus:scale-100 group-focus:opacity-100';
 	const webSearchIconClass = 'size-4 text-sky-500 dark:text-sky-300';
-	const imageGenerationIconClass = 'size-4 text-teal-500 dark:text-teal-300';
+	const imageGenerationIconClass = 'size-4 text-teal-600 dark:text-teal-200';
 	const codeInterpreterIconClass = 'size-4 text-violet-500 dark:text-violet-300';
 	const webSearchCloseIconClass = `${featureBadgeCloseIconMotionClass} text-sky-600 dark:text-sky-300`;
-	const imageGenerationCloseIconClass = `${featureBadgeCloseIconMotionClass} text-teal-600 dark:text-teal-300`;
+	const imageGenerationCloseIconClass = `${featureBadgeCloseIconMotionClass} text-teal-700 dark:text-teal-200`;
 	const codeInterpreterCloseIconClass = `${featureBadgeCloseIconMotionClass} text-violet-600 dark:text-violet-300`;
 
 	let showTools = false;
+	let imageGenerationPanelOpen = false;
 
 	let loaded = false;
 	let recording = false;
@@ -757,9 +780,7 @@
 			errorHint: '',
 			diagnostic: null,
 			itemId: tempItemId,
-			...(fullContext
-				? { context: 'full', processing_mode: 'full_context' }
-				: {})
+			...(fullContext ? { context: 'full', processing_mode: 'full_context' } : {})
 		};
 
 		if (fileItem.size == 0) {
@@ -852,9 +873,7 @@
 				}
 			}
 
-			if (
-				IMAGE_INPUT_MIME_TYPES.includes(file['type'])
-			) {
+			if (IMAGE_INPUT_MIME_TYPES.includes(file['type'])) {
 				if (visionCapableModels.length === 0) {
 					toast.error($i18n.t('Selected model(s) do not support image inputs'));
 					continue;
@@ -1182,11 +1201,15 @@
 								dir={$settings?.chatDirection ?? 'auto'}
 							>
 								{#if files.length > 0}
-									<div class="px-2.5 mt-0.5 mb-1.5 pt-1.5 flex items-end gap-2 overflow-x-auto scrollbar-none">
+									<div
+										class="px-2.5 mt-0.5 mb-1.5 pt-1.5 flex items-end gap-2 overflow-x-auto scrollbar-none"
+									>
 										{#each files as file, fileIdx}
 											{#if file.type === 'image'}
 												<div class="relative group shrink-0">
-													<div class="relative flex items-center rounded-xl ring-1 ring-gray-200/60 dark:ring-white/10">
+													<div
+														class="relative flex items-center rounded-xl ring-1 ring-gray-200/60 dark:ring-white/10"
+													>
 														<Image
 															src={file.preview_url || file.url}
 															alt="input"
@@ -1290,7 +1313,9 @@
 															navigator.maxTouchPoints > 0 ||
 															navigator.msMaxTouchPoints > 0
 														))}
-												placeholder={placeholder ? placeholder : $i18n.t('How can I help you today?')}
+												placeholder={placeholder
+													? placeholder
+													: $i18n.t('How can I help you today?')}
 												largeTextAsFile={$settings?.largeTextAsFile ?? false}
 												autocomplete={$config?.features?.enable_autocomplete_generation &&
 													($settings?.promptAutocomplete ?? false)}
@@ -1386,16 +1411,16 @@
 														}
 													}
 
-															if (e.key === 'Escape') {
-																atSelectedModel = undefined;
-																selectedToolIds = [];
-																toolSelectionTouched = true;
-																selectedSkillIds = [];
-																skillSelectionTouched = true;
-																setWebSearchModeFromUser('off');
-																imageGenerationEnabled = false;
-															}
-													}}
+													if (e.key === 'Escape') {
+														atSelectedModel = undefined;
+														selectedToolIds = [];
+														toolSelectionTouched = true;
+														selectedSkillIds = [];
+														skillSelectionTouched = true;
+														setWebSearchModeFromUser('off');
+														imageGenerationEnabled = false;
+													}
+												}}
 												on:paste={async (e) => {
 													e = e.detail.event;
 
@@ -1580,17 +1605,17 @@
 													e.target.style.height = Math.min(e.target.scrollHeight, 320) + 'px';
 												}
 
-													if (e.key === 'Escape') {
-														console.log('Escape');
-														atSelectedModel = undefined;
-														selectedToolIds = [];
-														toolSelectionTouched = true;
-														selectedSkillIds = [];
-														skillSelectionTouched = true;
-														setWebSearchModeFromUser('off');
-														imageGenerationEnabled = false;
-													}
-												}}
+												if (e.key === 'Escape') {
+													console.log('Escape');
+													atSelectedModel = undefined;
+													selectedToolIds = [];
+													toolSelectionTouched = true;
+													selectedSkillIds = [];
+													skillSelectionTouched = true;
+													setWebSearchModeFromUser('off');
+													imageGenerationEnabled = false;
+												}
+											}}
 											rows="1"
 											on:input={async (e) => {
 												e.target.style.height = '';
@@ -1641,7 +1666,7 @@
 								</div>
 
 								<div class=" flex justify-between mt-1.5 mb-3 mx-0.5 max-w-full" dir="ltr">
-									<div class="ml-1 self-end flex items-center flex-1 max-w-[80%] gap-0.5">
+									<div class="ml-1 self-end flex items-center flex-1 max-w-[80%] gap-1">
 										<InputMenu
 											bind:selectedToolIds
 											bind:toolSelectionTouched
@@ -1651,12 +1676,6 @@
 											{webSearchModeOptions}
 											onWebSearchModeChange={setWebSearchModeFromUser}
 											bind:imageGenerationEnabled
-											bind:imageGenerationOptions
-											currentModel={primarySelectedModel}
-											hasReferenceImage={hasReferenceImageForImageGeneration}
-											onAdvancedImageOptions={() => {
-												showControls.set(true);
-											}}
 											bind:codeInterpreterEnabled
 											{screenCaptureHandler}
 											{inputFilesHandler}
@@ -1723,6 +1742,42 @@
 											</button>
 										</InputMenu>
 
+										{#if $config?.features?.enable_image_generation && ($_user.role === 'admin' || $_user?.permissions?.features?.image_generation) && (imageGenerationEnabled || imageGenerationPanelOpen)}
+											{#if imageGenerationEnabled}
+												<Tooltip
+													content={tr('图片生成已开启，点击关闭', 'Image generation is on. Click to disable')}
+													placement="top"
+												>
+													<button
+														type="button"
+														class={imageGenerationBadgeClass}
+														aria-label={tr('关闭图片生成', 'Disable image generation')}
+														on:click={disableImageGeneration}
+													>
+														<span class={featureBadgeIconSlotClass}>
+															<ImageIcon
+																class={`${imageGenerationIconClass} ${featureBadgePrimaryIconMotionClass}`}
+																strokeWidth={1.9}
+															/>
+															<XMark className={imageGenerationCloseIconClass} strokeWidth="2.5" />
+														</span>
+														<span class={imageGenerationBadgeLabelClass}>
+															{tr('图片', 'Image')}
+														</span>
+													</button>
+												</Tooltip>
+											{/if}
+
+											<ImageGenerationPanel
+												bind:open={imageGenerationPanelOpen}
+												bind:prompt
+												bind:imageGenerationEnabled
+												bind:imageGenerationOptions
+												currentModel={primarySelectedModel}
+												hasReferenceImage={hasReferenceImageForImageGeneration}
+											/>
+										{/if}
+
 										<div class="flex gap-1 items-center overflow-x-auto scrollbar-none flex-1">
 											{#if toolServers.length + selectedToolIds.length > 0}
 												<Tooltip
@@ -1748,9 +1803,7 @@
 											{/if}
 
 											{#if selectedSkillIds.length > 0}
-												<Tooltip
-													content={`已选择 ${selectedSkillIds.length} 个技能`}
-												>
+												<Tooltip content={`已选择 ${selectedSkillIds.length} 个技能`}>
 													<button
 														class="translate-y-[0.5px] flex gap-1 items-center text-amber-700 dark:text-amber-300 hover:text-amber-800 dark:hover:text-amber-200 rounded-lg p-1 self-center transition"
 														aria-label="Selected Skills"
@@ -1797,7 +1850,7 @@
 											{/if}
 
 											{#if $_user}
-													{#if webSearchFeatureEnabled && ($_user.role === 'admin' || $_user?.permissions?.features?.web_search) && webSearchActive}
+												{#if webSearchFeatureEnabled && ($_user.role === 'admin' || $_user?.permissions?.features?.web_search) && webSearchActive}
 													<Tooltip
 														content={`${currentWebSearchTooltip} ${tr('点击关闭', 'Click to disable')}`}
 														placement="top"
@@ -1805,11 +1858,11 @@
 														<button
 															type="button"
 															class={webSearchBadgeClass}
-																aria-label={$i18n.t('关闭联网搜索')}
-																on:click={() => {
-																	setWebSearchModeFromUser('off');
-																}}
-															>
+															aria-label={$i18n.t('关闭联网搜索')}
+															on:click={() => {
+																setWebSearchModeFromUser('off');
+															}}
+														>
 															<span class={featureBadgeIconSlotClass}>
 																<GlobeAlt
 																	className={`${webSearchIconClass} ${featureBadgePrimaryIconMotionClass}`}
@@ -1824,29 +1877,8 @@
 													</Tooltip>
 												{/if}
 
-												{#if $config?.features?.enable_image_generation && ($_user.role === 'admin' || $_user?.permissions?.features?.image_generation) && imageGenerationEnabled}
-													<Tooltip content={$i18n.t('已开启AI绘图，点击关闭')} placement="top">
-														<button
-															type="button"
-															class={compactFeatureBadgeClass}
-															aria-label={$i18n.t('关闭AI绘图')}
-															on:click={() => {
-																imageGenerationEnabled = false;
-															}}
-														>
-															<span class={featureBadgeIconSlotClass}>
-																<Photo
-																	className={`${imageGenerationIconClass} ${featureBadgePrimaryIconMotionClass}`}
-																	strokeWidth="1.75"
-																/>
-																<XMark className={imageGenerationCloseIconClass} strokeWidth="2.5" />
-															</span>
-														</button>
-													</Tooltip>
-												{/if}
-
-												{#if $config?.features?.enable_code_interpreter && ($_user.role === 'admin' || $_user?.permissions?.features?.code_interpreter) && codeInterpreterEnabled}
-													<Tooltip content={$i18n.t('已开启代码解释器，点击关闭')} placement="top">
+													{#if $config?.features?.enable_code_interpreter && ($_user.role === 'admin' || $_user?.permissions?.features?.code_interpreter) && codeInterpreterEnabled}
+														<Tooltip content={$i18n.t('已开启代码解释器，点击关闭')} placement="top">
 														<button
 															type="button"
 															class={compactFeatureBadgeClass}
@@ -1860,7 +1892,10 @@
 																	className={`${codeInterpreterIconClass} ${featureBadgePrimaryIconMotionClass}`}
 																	strokeWidth="1.75"
 																/>
-																<XMark className={codeInterpreterCloseIconClass} strokeWidth="2.5" />
+																<XMark
+																	className={codeInterpreterCloseIconClass}
+																	strokeWidth="2.5"
+																/>
 															</span>
 														</button>
 													</Tooltip>

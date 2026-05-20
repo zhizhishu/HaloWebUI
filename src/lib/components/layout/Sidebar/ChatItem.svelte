@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
-	import { goto, invalidate, invalidateAll } from '$app/navigation';
-	import { onMount, getContext, createEventDispatcher, tick, onDestroy } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { getContext, createEventDispatcher, tick } from 'svelte';
 	const i18n = getContext('i18n');
 
 	const dispatch = createEventDispatcher();
@@ -11,9 +11,7 @@
 		cloneChatById,
 		deleteChatById,
 		getAllTags,
-		getChatById,
 		getChatList,
-		getChatListByTagName,
 		getPinnedChatList,
 		updateChatById
 	} from '$lib/apis/chats';
@@ -36,28 +34,44 @@
 	import GarbageBin from '$lib/components/icons/GarbageBin.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import ArchiveBox from '$lib/components/icons/ArchiveBox.svelte';
-	import DragGhost from '$lib/components/common/DragGhost.svelte';
 	import Check from '$lib/components/icons/Check.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
-	import Document from '$lib/components/icons/Document.svelte';
 
 	export let className = '';
 	export let uiStyle: 'flat' | 'card' = 'flat';
+	export let variant: 'default' | 'folder' = 'default';
 
 	export let id;
 	export let title;
 	export let assistantId: string | null = null;
+	export let folderId: string | null = null;
+	export let folderOptions: Array<{
+		id: string;
+		name: string;
+		parent_id?: string | null;
+		depth: number;
+	}> = [];
 
 	export let selected = false;
 	export let shiftKey = false;
 
+	$: isFolderVariant = variant === 'folder';
+
 	$: itemShellClass =
-		uiStyle === 'card'
+		isFolderVariant
+			? 'w-full flex justify-between rounded-md border border-transparent px-2.5 py-1.5 text-[13px] transition-colors duration-150'
+			: uiStyle === 'card'
 			? 'w-full flex justify-between rounded-xl border border-transparent px-3 py-2 transition-colors duration-150'
 			: 'w-full flex justify-between rounded-lg px-3 py-2 transition-colors duration-150';
 
 	$: itemStateClass =
-		uiStyle === 'card'
+		isFolderVariant
+			? id === $chatId || confirmEdit
+				? 'bg-white text-gray-900 border-gray-200/80 shadow-sm font-medium dark:bg-gray-900/80 dark:text-gray-100 dark:border-gray-700/70'
+				: selected
+					? 'bg-white/70 text-gray-800 border-gray-200/60 dark:bg-gray-900/55 dark:text-gray-200 dark:border-gray-800/70'
+					: 'text-gray-600 group-hover:bg-white/70 group-hover:border-gray-200/70 dark:text-gray-300 dark:group-hover:bg-gray-900/55 dark:group-hover:border-gray-800/70'
+			: uiStyle === 'card'
 			? id === $chatId || confirmEdit
 				? 'bg-white/85 dark:bg-gray-900/60 border-gray-200/70 dark:border-gray-800/70 shadow-sm font-medium'
 				: selected
@@ -70,7 +84,13 @@
 					: 'group-hover:bg-gray-100 dark:group-hover:bg-gray-850';
 
 	$: menuFromClass =
-		uiStyle === 'card'
+		isFolderVariant
+			? id === $chatId || confirmEdit
+				? 'from-white dark:from-gray-900'
+				: selected
+					? 'from-white/70 dark:from-gray-900/55'
+					: 'invisible group-hover:visible from-white/70 dark:from-gray-900/55'
+			: uiStyle === 'card'
 			? id === $chatId || confirmEdit
 				? 'from-white/85 dark:from-gray-900/60'
 				: selected
@@ -82,21 +102,13 @@
 					? 'from-gray-100 dark:from-gray-850'
 					: 'invisible group-hover:visible from-gray-100 dark:from-gray-850';
 
-	let chat = null;
+	$: titleClass = isFolderVariant
+		? 'text-left self-center overflow-hidden w-full h-[19px] leading-5'
+		: 'text-left self-center overflow-hidden w-full h-[20px]';
+
+	$: menuOffsetClass = isFolderVariant ? 'top-[4px]' : 'top-[6px]';
 
 	let mouseOver = false;
-	let draggable = false;
-	$: if (mouseOver) {
-		loadChat();
-	}
-
-	const loadChat = async () => {
-		if (!chat) {
-			draggable = false;
-			chat = await getChatById(localStorage.token, id);
-			draggable = true;
-		}
-	};
 
 	let showShareChatModal = false;
 	let confirmEdit = false;
@@ -185,66 +197,6 @@
 
 	let itemElement;
 
-	let dragged = false;
-	let x = 0;
-	let y = 0;
-
-	const dragImage = new Image();
-	dragImage.src =
-		'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
-
-	const onDragStart = (event) => {
-		event.stopPropagation();
-
-		event.dataTransfer.setDragImage(dragImage, 0, 0);
-
-		// Set the data to be transferred
-		event.dataTransfer.setData(
-			'text/plain',
-			JSON.stringify({
-				type: 'chat',
-				id: id,
-				item: chat
-			})
-		);
-
-		dragged = true;
-		itemElement.style.opacity = '0.5'; // Optional: Visual cue to show it's being dragged
-	};
-
-	const onDrag = (event) => {
-		event.stopPropagation();
-
-		x = event.clientX;
-		y = event.clientY;
-	};
-
-	const onDragEnd = (event) => {
-		event.stopPropagation();
-
-		itemElement.style.opacity = '1'; // Reset visual cue after drag
-		dragged = false;
-	};
-
-	onMount(() => {
-		if (itemElement) {
-			// Event listener for when dragging starts
-			itemElement.addEventListener('dragstart', onDragStart);
-			// Event listener for when dragging occurs (optional)
-			itemElement.addEventListener('drag', onDrag);
-			// Event listener for when dragging ends
-			itemElement.addEventListener('dragend', onDragEnd);
-		}
-	});
-
-	onDestroy(() => {
-		if (itemElement) {
-			itemElement.removeEventListener('dragstart', onDragStart);
-			itemElement.removeEventListener('drag', onDrag);
-			itemElement.removeEventListener('dragend', onDragEnd);
-		}
-	});
-
 	let showDeleteConfirm = false;
 
 	const chatTitleInputKeydownHandler = (e) => {
@@ -275,24 +227,7 @@
 	</div>
 </DeleteConfirmDialog>
 
-{#if dragged && x && y}
-	<DragGhost {x} {y}>
-		<div class=" bg-black/80 backdrop-blur-2xl px-2 py-1 rounded-lg w-fit max-w-40">
-			<div class="flex items-center gap-1">
-				<Document className=" size-[18px]" strokeWidth="2" />
-				<div class=" text-xs text-white line-clamp-1">
-					{title}
-				</div>
-			</div>
-		</div>
-	</DragGhost>
-{/if}
-
-<div
-	bind:this={itemElement}
-	class=" w-full {className} relative group"
-	draggable={draggable && !confirmEdit}
->
+<div bind:this={itemElement} class=" w-full {className} relative group">
 	{#if confirmEdit}
 		<div class="{itemShellClass} {itemStateClass} whitespace-nowrap text-ellipsis">
 			<input
@@ -332,7 +267,7 @@
 			draggable="false"
 		>
 			<div class=" flex self-center flex-1 w-full">
-				<div dir="auto" class="text-left self-center overflow-hidden w-full h-[20px]">
+				<div dir="auto" class={titleClass}>
 					{title}
 				</div>
 				{#if $activeChatIds.has(id)}
@@ -353,7 +288,7 @@
 	<div
 		class="{menuFromClass} absolute {className === 'pr-2'
 			? 'right-[8px]'
-			: 'right-0'}  top-[6px] py-0.5 pr-0.5 mr-1.5 pl-5 bg-linear-to-l from-80%
+			: 'right-0'} {menuOffsetClass} py-0.5 pr-0.5 mr-1.5 pl-5 bg-linear-to-l from-80%
 
               to-transparent"
 		on:mouseenter={(e) => {
@@ -422,6 +357,8 @@
 			<div class="flex self-center space-x-1 z-10">
 				<ChatMenu
 					chatId={id}
+					currentFolderId={folderId}
+					{folderOptions}
 					cloneChatHandler={() => {
 						cloneChatHandler(id);
 					}}

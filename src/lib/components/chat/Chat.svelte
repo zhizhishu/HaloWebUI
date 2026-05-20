@@ -73,6 +73,7 @@
 	} from '$lib/utils/model-identity';
 	import {
 		buildModelSelectionHint,
+		resolveAvailableChatModelSelectionValues,
 		resolveChatModelSelection,
 		resolveChatModelSelections,
 		type ChatModelResolution
@@ -98,7 +99,10 @@
 	import { isDedicatedImageGenerationModel } from '$lib/utils/model-capabilities';
 	import { resolveModelBuiltinWebSearchState } from '$lib/utils/model-web-search-preference';
 	import { applyUserSettingsSnapshot } from '$lib/utils/user-settings';
-	import { buildWebSearchModeOptions } from '$lib/utils/native-web-search';
+	import {
+		buildWebSearchModeOptions,
+		resolveConfiguredDefaultWebSearchMode
+	} from '$lib/utils/native-web-search';
 	import { filterAvailableToolIds } from '$lib/utils/tool-selection';
 
 	import { generateChatCompletion } from '$lib/apis/ollama';
@@ -401,6 +405,7 @@
 	type ImageGenerationOptions = {
 		model?: string | null;
 		model_ref?: Record<string, unknown> | null;
+		size?: string | null;
 		image_size?: string | null;
 		aspect_ratio?: string | null;
 		resolution?: string | null;
@@ -1135,8 +1140,6 @@
 
 	setContext('floatingChatRequestFactory', buildFloatingChatRequest);
 
-	const getPreferredDefaultWebSearchMode = (): WebSearchMode => 'off';
-
 	const isChatWebSearchFeatureEnabled = () =>
 		Boolean($config?.features?.enable_halo_web_search ?? $config?.features?.enable_web_search) ||
 		Boolean($config?.features?.enable_native_web_search);
@@ -1144,6 +1147,16 @@
 	const canUseChatWebSearch = () =>
 		isChatWebSearchFeatureEnabled() &&
 		($user?.role === 'admin' || $user?.permissions?.features?.web_search);
+
+	const getPreferredDefaultWebSearchMode = (
+		selectedModelsForMode: Model[] = getResolvedSelectedWebSearchModels()
+	): WebSearchMode =>
+		resolveConfiguredDefaultWebSearchMode(
+			(key, options) => get(i18n).t(key, options),
+			$config,
+			selectedModelsForMode,
+			canUseChatWebSearch()
+		);
 
 	let lastAutoImageGenerationSelectionKey = '';
 	const syncImageGenerationForDedicatedModel = ({ force = false } = {}) => {
@@ -1273,6 +1286,7 @@
 	const chatImageGenerationOptionKeys = [
 		'model',
 		'model_ref',
+		'size',
 		'image_size',
 		'aspect_ratio',
 		'resolution',
@@ -2134,17 +2148,17 @@
 		if (value) {
 			try {
 				const stored = JSON.parse(value);
-				const valid = stored
-					.map((id: string) => {
-						const resolution = resolveChatModelSelection($models, { value: id });
-						return resolution.status === 'resolved' ? resolution.value : resolution.value;
-					})
-					.filter((id: string) => id);
+				const resolvedStored = Array.isArray(stored)
+					? resolveAvailableChatModelSelectionValues($models, stored)
+					: { values: [], droppedUnavailable: false };
+				const valid = resolvedStored.values;
 				if (valid.length > 0) {
 					selectedModels = valid;
 					if (usedLegacy) {
 						migrateStorageItem(sessionStorage, scopedKey, legacyKey, value);
 					}
+				} else if (resolvedStored.droppedUnavailable) {
+					removeSessionSelectedModels();
 				}
 			} catch {}
 		}
@@ -2934,12 +2948,11 @@
 			const hadExplicitSelectedModels = selectedModels.some(
 				(modelId) => `${modelId ?? ''}`.trim() !== ''
 			);
-			selectedModels = selectedModels
-				.map((modelId) => {
-					const resolution = resolveChatModelSelection($models, { value: modelId });
-					return resolution.status === 'resolved' ? resolution.value : resolution.value;
-				})
-				.filter((modelId) => modelId);
+			const resolvedSelectedModels = resolveAvailableChatModelSelectionValues($models, selectedModels);
+			selectedModels = resolvedSelectedModels.values;
+			if (resolvedSelectedModels.droppedUnavailable) {
+				removeSessionSelectedModels();
+			}
 			if (
 				selectedModels.length === 0 ||
 				(selectedModels.length === 1 && selectedModels[0] === '')
@@ -3097,10 +3110,12 @@
 
 		// Only validate model IDs when models are actually loaded
 		if (modelsMap.size > 0) {
-			selectedModels = selectedModels.map((modelId) => {
-				const resolution = resolveChatModelSelection($models, { value: modelId });
-				return resolution.status === 'resolved' ? resolution.value : resolution.value;
-			});
+			const resolvedSelectedModels = resolveAvailableChatModelSelectionValues($models, selectedModels);
+			selectedModels =
+				resolvedSelectedModels.values.length > 0 ? resolvedSelectedModels.values : [''];
+			if (resolvedSelectedModels.droppedUnavailable) {
+				removeSessionSelectedModels();
+			}
 		}
 
 		const userSettings = await getUserSettings(localStorage.token);
@@ -4643,6 +4658,7 @@
 			messages = systemMsg ? [systemMsg, ...limitedHistory] : limitedHistory;
 		}
 
+		const requestToolIds = getAvailableSelectedToolIds();
 		const requestSkillIds = collectRequestSkillIds(messages);
 		const requestedWebSearchMode = canUseChatWebSearch()
 			? normalizeWebSearchMode(webSearchMode, 'off')
@@ -4766,18 +4782,21 @@
 				id: responseMessageId,
 
 				...(!$temporaryChatEnabled &&
-				!imageGenerationActive &&
 				(messages.length == 1 ||
 					(messages.length == 2 &&
 						messages.at(0)?.role === 'system' &&
 						messages.at(1)?.role === 'user')) &&
 				(selectedModels[0] === getModelRequestId(model) || atSelectedModel !== undefined)
 					? {
-							background_tasks: {
-								title_generation: $settings?.title?.auto ?? true,
-								tags_generation: $settings?.autoTags ?? true,
-								follow_up_generation: $settings?.autoFollowUps ?? true
-							}
+							background_tasks: imageGenerationActive
+								? {
+										title_generation: $settings?.title?.auto ?? true
+									}
+								: {
+										title_generation: $settings?.title?.auto ?? true,
+										tags_generation: $settings?.autoTags ?? true,
+										follow_up_generation: $settings?.autoFollowUps ?? true
+									}
 						}
 					: !$temporaryChatEnabled &&
 					  !imageGenerationActive &&
@@ -4934,6 +4953,14 @@
 	const inferOpenAIErrorFamily = (status: number | null, errorMessage: string): string => {
 		const message = `${errorMessage ?? ''}`.toLowerCase();
 
+		if (
+			message.includes('server disconnected without sending a response') ||
+			message.includes('remote protocol error') ||
+			message.includes('connection closed before receiving response') ||
+			message.includes('peer closed connection without sending complete message body')
+		) {
+			return 'upstream_response_lost';
+		}
 		if (status === 401 || status === 403) {
 			return 'auth_error';
 		}
@@ -5017,6 +5044,9 @@
 		if (family === 'timeout') {
 			return ['api_request_timeout'];
 		}
+		if (family === 'upstream_response_lost') {
+			return ['api_response_disconnected', 'proxy_error', 'possible_upstream_billed'];
+		}
 		if (status === 500) {
 			return ['api_server_error', 'proxy_error'];
 		}
@@ -5032,6 +5062,9 @@
 		}
 		if (family === 'rate_limited' || family === 'timeout' || family === 'cloudflare_timeout') {
 			return 'wait_retry';
+		}
+		if (family === 'upstream_response_lost') {
+			return 'check_upstream_before_retry';
 		}
 		if (family === 'upstream_service_error' && status !== null && status >= 500) {
 			return status === 500 ? 'retry_or_switch' : 'wait_retry';
@@ -5066,6 +5099,10 @@
 				return status
 					? $i18n.t('error.title.cloudflare_timeout', { status: statusValue })
 					: $i18n.t('error.title.cloudflare_timeout_no_status');
+			case 'upstream_response_lost':
+				return status
+					? $i18n.t('error.title.upstream_response_lost', { status: statusValue })
+					: $i18n.t('error.title.upstream_response_lost_no_status');
 			default:
 				return status
 					? $i18n.t('error.title.upstream_service_error', { status: statusValue })

@@ -1,5 +1,5 @@
 import type { Model, NativeWebSearchSupport } from '$lib/stores';
-import type { WebSearchMode } from '$lib/utils/web-search-mode';
+import { normalizeWebSearchMode, type WebSearchMode } from '$lib/utils/web-search-mode';
 import nativeWebSearchRules from '$lib/data/native-web-search-rules.json';
 
 type Translator = (key: string, options?: Record<string, unknown>) => string;
@@ -9,6 +9,7 @@ type WebSearchConfigLike = {
 		enable_web_search?: boolean;
 		enable_halo_web_search?: boolean;
 		enable_native_web_search?: boolean;
+		default_web_search_mode?: string;
 	};
 };
 
@@ -324,11 +325,8 @@ function buildNativeModeDescription(t: Translator, summary: NativeWebSearchSumma
 	if (summary.allUnsupported) {
 		return t('Model-native web search is unavailable for this model.');
 	}
-	if (summary.supportedCount === 0 && summary.unknownCount > 0) {
-		return t('Current model has not been verified for built-in web search yet. You can still try it manually.');
-	}
 
-	return t('Use model-native web search directly for all selected models.');
+	return t('使用模型自带的联网搜索。');
 }
 
 function buildAutoModeDescription(
@@ -336,20 +334,42 @@ function buildAutoModeDescription(
 	haloEnabled: boolean,
 	summary: NativeWebSearchSummary
 ): string {
-	if (summary.allUnsupported) {
-		return haloEnabled
-			? t('Current model does not support built-in web search. Auto will use HaloWebUI instead.')
-			: t('Model-native web search is unavailable for this model.');
-	}
-	if (summary.supportedCount === 0 && summary.unknownCount > 0) {
-		return haloEnabled
-			? t('Current model has not been verified for built-in web search yet. Auto will keep using HaloWebUI.')
-			: t('Native web search availability for this model is currently unknown.');
+	if (summary.hasSelection && !haloEnabled && !summary.anySupported) {
+		return t('No web search route is available for the current selection.');
 	}
 
-	return haloEnabled
-		? t('Prefer model-native web search and keep HaloWebUI as fallback.')
-		: t('Prefer native web search whenever it is supported.');
+	if (summary.allUnsupported && !haloEnabled) {
+		return t('Model-native web search is unavailable for this model.');
+	}
+	if (summary.supportedCount === 0 && summary.unknownCount > 0 && !haloEnabled) {
+		return t(
+			'No automatic web search route is available for the current selection. You can still try model-native web search manually.'
+		);
+	}
+
+	return t('自动判断是否需要联网，适合日常使用。');
+}
+
+export function getSmartWebSearchRouteLabel(
+	t: Translator,
+	config: WebSearchConfigLike | null | undefined,
+	models: Array<ModelLike | null | undefined>
+): string {
+	const haloEnabled = Boolean(
+		config?.features?.enable_halo_web_search ?? config?.features?.enable_web_search
+	);
+	const nativeEnabled = Boolean(config?.features?.enable_native_web_search);
+	const summary = summarizeNativeWebSearchSupport(models);
+
+	if (nativeEnabled && summary.anySupported) {
+		return t('Smart · Model Native');
+	}
+
+	if (haloEnabled) {
+		return t('Smart · HaloWebUI');
+	}
+
+	return t('Smart');
 }
 
 export function buildWebSearchModeOptions(
@@ -363,22 +383,29 @@ export function buildWebSearchModeOptions(
 	const nativeEnabled = Boolean(config?.features?.enable_native_web_search);
 	const summary = summarizeNativeWebSearchSupport(models);
 	const nativeImpossible = summary.hasSelection && summary.allUnsupported;
-	const autoImpossible = !haloEnabled && nativeImpossible;
+	const autoImpossible = summary.hasSelection && !haloEnabled && !summary.anySupported;
+	const nativeDescriptionTone: WebSearchModeOption['descriptionTone'] = summary.allUnsupported
+		? 'warning'
+		: summary.supportedCount === 0 && summary.unknownCount > 0
+			? 'info'
+			: 'default';
+	const autoDescriptionTone: WebSearchModeOption['descriptionTone'] =
+		summary.allUnsupported || (summary.supportedCount === 0 && summary.unknownCount > 0)
+			? 'info'
+			: 'default';
 
 	return [
 		{
 			value: 'off',
-			label: t('Off'),
-			description: t('Do not use any web search mode for this chat.')
+			label: t('关闭联网'),
+			description: t('本次对话不联网。')
 		},
 		...(haloEnabled
 			? [
 					{
 						value: 'halo' as WebSearchMode,
-						label: 'HaloWebUI',
-						description: t(
-							'Always use HaloWebUI web search for consistent behavior across selected models.'
-						)
+						label: 'HaloWebUI 搜索',
+						description: t('使用 HaloWebUI 搜索网页。')
 					}
 				]
 			: []),
@@ -388,27 +415,46 @@ export function buildWebSearchModeOptions(
 						value: 'native' as WebSearchMode,
 						label: t('模型原生联网'),
 						description: buildNativeModeDescription(t, summary),
-						descriptionTone:
-							summary.allUnsupported
-								? 'warning'
-								: summary.supportedCount === 0 && summary.unknownCount > 0
-									? 'info'
-									: 'default',
+						descriptionTone: nativeDescriptionTone,
 						disabled: nativeImpossible
-					},
+					}
+				]
+			: []),
+		...(haloEnabled || nativeEnabled
+			? [
 					{
 						value: 'auto' as WebSearchMode,
 						label: t('Smart Web Search'),
-						shortLabel: t('Smart'),
+						shortLabel: getSmartWebSearchRouteLabel(t, config, models),
 						description: buildAutoModeDescription(t, haloEnabled, summary),
-						descriptionTone:
-							summary.allUnsupported || (summary.supportedCount === 0 && summary.unknownCount > 0)
-								? 'info'
-								: 'default',
+						descriptionTone: autoDescriptionTone,
 						disabled: autoImpossible,
 						badge: haloEnabled && !autoImpossible ? t('Recommended') : undefined
 					}
 				]
 			: [])
 	];
+}
+
+export function resolveConfiguredDefaultWebSearchMode(
+	t: Translator,
+	config: WebSearchConfigLike | null | undefined,
+	models: Array<ModelLike | null | undefined>,
+	canUseWebSearch: boolean
+): WebSearchMode {
+	if (!canUseWebSearch) {
+		return 'off';
+	}
+
+	const configuredMode = normalizeWebSearchMode(config?.features?.default_web_search_mode, 'off');
+	if (configuredMode === 'off') {
+		return 'off';
+	}
+
+	const availableModes = buildWebSearchModeOptions(t, config, models);
+	return availableModes.some(
+		(option) => option.value === configuredMode && option.disabled !== true
+	)
+		? configuredMode
+		: 'off';
 }

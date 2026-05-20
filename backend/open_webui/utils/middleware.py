@@ -114,6 +114,7 @@ from open_webui.utils.skill_runtime import (
     get_selected_skill_context,
 )
 from open_webui.utils.task import (
+    build_fallback_chat_title,
     get_task_model_id,
     is_dedicated_image_generation_model,
     prompt_template,
@@ -906,6 +907,10 @@ _API_ERROR_FAMILY_CONFIG: dict[str, dict[str, Any]] = {
         "reasons": ["api_request_timeout"],
         "suggestion": "wait_retry",
     },
+    "upstream_response_lost": {
+        "reasons": ["api_response_disconnected", "proxy_error", "possible_upstream_billed"],
+        "suggestion": "check_upstream_before_retry",
+    },
     "upstream_service_error": {
         "reasons": ["api_upstream_error", "proxy_error"],
         "suggestion": "wait_retry",
@@ -1008,9 +1013,24 @@ def _resolve_api_error_status(
     return None
 
 
+def _is_api_response_disconnected_error(raw_message: str) -> bool:
+    text = (raw_message or "").lower()
+    return any(
+        marker in text
+        for marker in (
+            "server disconnected without sending a response",
+            "remote protocol error",
+            "connection closed before receiving response",
+            "peer closed connection without sending complete message body",
+        )
+    )
+
+
 def _classify_api_error_family(*, status: int | None, raw_message: str) -> str:
     text = (raw_message or "").lower()
 
+    if _is_api_response_disconnected_error(raw_message):
+        return "upstream_response_lost"
     if status in {401, 403}:
         return "auth_error"
     if status == 404:
@@ -1097,6 +1117,12 @@ def _build_api_error_title(*, family: str, status: int | None) -> str:
             if status
             else "上游服务响应超时，请求失败"
         )
+    if family == "upstream_response_lost":
+        return (
+            f"上游结果没有完整返回，请求失败（HTTP {status}）"
+            if status
+            else "上游结果没有完整返回，请求失败"
+        )
     return (
         f"上游服务返回错误，请求失败（HTTP {status}）"
         if status
@@ -1111,6 +1137,7 @@ def _build_api_error_body(*, family: str, evidence: dict[str, str]) -> str:
         "model_not_found": "上游没有找到当前模型或目标接口。请检查模型名、连接配置，或确认该模型在上游可用。",
         "rate_limited": "上游在短时间内拒绝了更多请求。通常与速率限制、额度或并发控制有关。",
         "timeout": "请求已发出，但上游在限定时间内没有完成响应。",
+        "upstream_response_lost": "请求已经发到模型服务，可能已经在上游完成或产生计费，但中转站/反代在把结果返回 HaloWebUI 前断开了。先查上游日志或计费记录，再决定是否重试，避免重复扣费。",
         "upstream_service_error": "上游服务返回了异常响应。问题可能来自上游服务本身、代理转发，或当前请求与上游能力不完全匹配。",
     }
 
@@ -1198,6 +1225,54 @@ WEB_SEARCH_RUNTIME_MODES = {
     WEB_SEARCH_MODE_NATIVE,
     WEB_SEARCH_MODE_AUTO,
 }
+
+AUTO_WEB_SEARCH_DECISION_PROMPT = """### Task:
+Decide whether the assistant should use web search before answering the latest user message.
+
+### Rules:
+- Use web search when the user asks to search, browse, open, verify, check a URL, or when the answer depends on current, recent, fast-changing, or external facts.
+- Use web search for news, weather, prices, schedules, sports, laws, regulations, software/library versions, product availability, company/public figures, and anything explicitly described as latest/current/today/recent.
+- Do not use web search for translation, rewriting, summarizing supplied content, coding from provided context, math, brainstorming, or general knowledge that does not depend on current facts.
+- Do not use web search if the user explicitly asks not to search or not to use the internet.
+- When web search is needed, provide 1-3 concise search queries in the user's language.
+
+### Output:
+Return only JSON in this shape:
+{
+  "should_search": true,
+  "queries": ["query1"],
+  "reason": "short reason"
+}
+
+If web search is not needed, return:
+{
+  "should_search": false,
+  "queries": [],
+  "reason": "short reason"
+}
+
+Today's date: {{CURRENT_DATE}}
+
+### Chat History:
+<chat_history>
+{{CHAT_HISTORY}}
+</chat_history>
+"""
+
+_AUTO_WEB_SEARCH_URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
+_AUTO_WEB_SEARCH_NEGATIVE_RE = re.compile(
+    r"不要(?:联网|搜索|查|检索)|别(?:联网|搜索|查|检索)|不用(?:联网|搜索|查|检索)|"
+    r"无需(?:联网|搜索|查|检索)|不要用网|不要上网|不需要联网|"
+    r"do not (?:search|browse|use (?:the )?(?:web|internet))|"
+    r"don't (?:search|browse|use (?:the )?(?:web|internet))|"
+    r"without (?:searching|browsing|web|internet)",
+    re.IGNORECASE,
+)
+_AUTO_WEB_SEARCH_EXPLICIT_RE = re.compile(
+    r"联网(?:搜|查|搜索)|用(?:一下)?联网|开启联网搜索|搜一下|搜索一下|查一下|查查|帮我搜|帮我查|上网查|网上查|核实一下|验证一下|"
+    r"\b(?:search|browse|web search|look up|google|verify|fact[- ]check)\b",
+    re.IGNORECASE,
+)
 
 _NATIVE_WEB_SEARCH_RETRY_PATTERNS = (
     "responses api",
@@ -1337,6 +1412,185 @@ def _get_generation_response_content(response: Any) -> Optional[str]:
         raise ValueError(error_detail)
 
     return None
+
+
+def _stringify_message_content_for_auto_web_search(content: Any) -> str:
+    if isinstance(content, str):
+        return strip_reasoning_details(content)
+
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            if isinstance(item.get("text"), str):
+                parts.append(item["text"])
+            elif isinstance(item.get("content"), str):
+                parts.append(item["content"])
+        return strip_reasoning_details("\n".join(parts))
+
+    return ""
+
+
+def _build_auto_web_search_chat_history(messages: list[dict]) -> str:
+    lines = []
+    for message in messages[-6:]:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "unknown").upper()
+        content = _stringify_message_content_for_auto_web_search(
+            message.get("content")
+        ).strip()
+        if not content:
+            continue
+        lines.append(f'{role}: """{content[:2000]}"""')
+    return "\n".join(lines).strip()
+
+
+def _extract_json_object_from_text(text: str) -> dict:
+    if not isinstance(text, str) or not text.strip():
+        return {}
+
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start < 0 or end <= start:
+        return {}
+
+    try:
+        parsed = json.loads(text[start:end])
+    except Exception:
+        return {}
+
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_auto_web_search_queries(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    queries = []
+    seen = set()
+    for item in value:
+        query = str(item or "").strip()
+        if not query:
+            continue
+        key = query.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        queries.append(query[:300])
+        if len(queries) >= 3:
+            break
+    return queries
+
+
+def _quick_auto_web_search_decision(messages: list[dict]) -> Optional[dict]:
+    user_message = get_last_user_message(messages)
+    if not isinstance(user_message, str) or not user_message.strip():
+        return {
+            "should_search": False,
+            "queries": [],
+            "reason": "empty_user_message",
+            "source": "heuristic",
+        }
+
+    text = user_message.strip()
+    if _AUTO_WEB_SEARCH_NEGATIVE_RE.search(text):
+        return {
+            "should_search": False,
+            "queries": [],
+            "reason": "user_disabled_web_search",
+            "source": "heuristic",
+        }
+
+    if _AUTO_WEB_SEARCH_URL_RE.search(text):
+        return {
+            "should_search": True,
+            "queries": [text[:300]],
+            "reason": "user_referenced_url",
+            "source": "heuristic",
+        }
+
+    if _AUTO_WEB_SEARCH_EXPLICIT_RE.search(text):
+        return {
+            "should_search": True,
+            "queries": [text[:300]],
+            "reason": "user_requested_current_or_external_info",
+            "source": "heuristic",
+        }
+
+    return None
+
+
+async def _resolve_auto_web_search_decision(
+    request: Request,
+    form_data: dict,
+    user: UserModel,
+    task_model_id: str,
+) -> dict:
+    messages = form_data.get("messages") if isinstance(form_data, dict) else []
+    if not isinstance(messages, list):
+        messages = []
+
+    quick_decision = _quick_auto_web_search_decision(messages)
+    if quick_decision is not None:
+        return quick_decision
+
+    if not getattr(request.app.state.config, "ENABLE_SEARCH_QUERY_GENERATION", True):
+        return {
+            "should_search": False,
+            "queries": [],
+            "reason": "search_query_generation_disabled",
+            "source": "config",
+        }
+
+    prompt = AUTO_WEB_SEARCH_DECISION_PROMPT.replace(
+        "{{CURRENT_DATE}}", time.strftime("%Y-%m-%d")
+    ).replace(
+        "{{CHAT_HISTORY}}",
+        _build_auto_web_search_chat_history(messages) or get_last_user_message(messages),
+    )
+
+    payload = {
+        "model": task_model_id,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "metadata": {
+            **(getattr(request.state, "metadata", {}) or {}),
+            "task": str(TASKS.QUERY_GENERATION),
+            "task_body": {
+                "model": form_data.get("model"),
+                "type": "auto_web_search_decision",
+            },
+        },
+    }
+
+    try:
+        response = await generate_chat_completion(request, form_data=payload, user=user)
+        content = _get_generation_response_content(response)
+        parsed = _extract_json_object_from_text(content or "")
+        should_search = parsed.get("should_search") is True
+        queries = _normalize_auto_web_search_queries(parsed.get("queries"))
+        if should_search and not queries:
+            user_message = get_last_user_message(messages)
+            queries = [user_message] if user_message else []
+        return {
+            "should_search": should_search and bool(queries),
+            "queries": queries if should_search else [],
+            "reason": str(parsed.get("reason") or "task_model_decision")[:200],
+            "source": "task_model",
+        }
+    except Exception as exc:
+        log.warning("Auto web search decision failed: %s", exc)
+        return {
+            "should_search": False,
+            "queries": [],
+            "reason": "decision_failed",
+            "source": "error",
+        }
 
 
 def _normalize_web_search_mode(
@@ -1498,8 +1752,7 @@ def _resolve_web_search_strategy(
         elif halo_enabled:
             effective_mode = WEB_SEARCH_MODE_HALO
             notification = (
-                "Current model or connection does not support native web search. "
-                "Falling back to HaloWebUI web search."
+                "当前模型或连接不支持模型原生联网，本次将使用 HaloWebUI 搜索。"
             )
     elif requested_mode == WEB_SEARCH_MODE_AUTO:
         if native_enabled and native_support.get("supported"):
@@ -2974,7 +3227,11 @@ async def chat_completion_tools_handler(
 
 
 async def chat_web_search_handler(
-    request: Request, form_data: dict, extra_params: dict, user
+    request: Request,
+    form_data: dict,
+    extra_params: dict,
+    user,
+    queries: Optional[list[str]] = None,
 ):
     def build_tavily_loader_fallback_notification(notice: dict) -> tuple[str, str] | None:
         if not isinstance(notice, dict):
@@ -3019,52 +3276,55 @@ async def chat_web_search_handler(
         )
 
     event_emitter = extra_params["__event_emitter__"]
-    await event_emitter(
-        {
-            "type": "status",
-            "data": {
-                "action": "web_search",
-                "description": "Generating search query",
-                "done": False,
-            },
-        }
-    )
-
     messages = form_data["messages"]
     user_message = get_last_user_message(messages)
 
-    queries = []
-    try:
-        res = await generate_queries(
-            request,
+    if queries is None:
+        await event_emitter(
             {
-                "model": form_data["model"],
-                "messages": messages,
-                "prompt": user_message,
-                "type": "web_search",
-            },
-            user,
+                "type": "status",
+                "data": {
+                    "action": "web_search",
+                    "description": "Generating search query",
+                    "done": False,
+                },
+            }
         )
-        response = _get_generation_response_content(res)
-        if not response:
-            raise ValueError("Query generation returned no content")
 
+        queries = []
         try:
-            bracket_start = response.find("{")
-            bracket_end = response.rfind("}") + 1
+            res = await generate_queries(
+                request,
+                {
+                    "model": form_data["model"],
+                    "messages": messages,
+                    "prompt": user_message,
+                    "type": "web_search",
+                },
+                user,
+            )
+            response = _get_generation_response_content(res)
+            if not response:
+                raise ValueError("Query generation returned no content")
 
-            if bracket_start == -1 or bracket_end == -1:
-                raise Exception("No JSON object found in the response")
+            try:
+                bracket_start = response.find("{")
+                bracket_end = response.rfind("}") + 1
 
-            json_str = response[bracket_start:bracket_end]
-            queries = json.loads(json_str)
-            queries = queries.get("queries", [])
+                if bracket_start == -1 or bracket_end == -1:
+                    raise Exception("No JSON object found in the response")
+
+                json_str = response[bracket_start:bracket_end]
+                parsed_queries = json.loads(json_str)
+                queries = parsed_queries.get("queries", [])
+            except Exception as e:
+                queries = [user_message]
+
         except Exception as e:
+            log.exception(e)
             queries = [user_message]
-
-    except Exception as e:
-        log.exception(e)
-        queries = [user_message]
+    else:
+        queries = _normalize_auto_web_search_queries(queries)
 
     if len(queries) == 0:
         await event_emitter(
@@ -3738,6 +3998,26 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         metadata["allow_native_web_search_halo_fallback"] = web_search_strategy[
             "allow_halo_retry"
         ]
+        auto_web_search_queries = None
+
+        if (
+            web_search_strategy["requested_mode"] == WEB_SEARCH_MODE_AUTO
+            and web_search_strategy["effective_mode"] != WEB_SEARCH_MODE_OFF
+        ):
+            auto_decision = await _resolve_auto_web_search_decision(
+                request, form_data, user, task_model_id
+            )
+            metadata["auto_web_search_decision"] = auto_decision
+            if not auto_decision.get("should_search"):
+                web_search_strategy = {
+                    **web_search_strategy,
+                    "effective_mode": WEB_SEARCH_MODE_OFF,
+                    "allow_halo_retry": False,
+                }
+                metadata["effective_web_search_mode"] = WEB_SEARCH_MODE_OFF
+                metadata["allow_native_web_search_halo_fallback"] = False
+            else:
+                auto_web_search_queries = auto_decision.get("queries") or None
 
         if web_search_strategy.get("notification"):
             await event_emitter(
@@ -3752,10 +4032,15 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
         if web_search_strategy["effective_mode"] == WEB_SEARCH_MODE_HALO:
             form_data = await chat_web_search_handler(
-                request, form_data, extra_params, user
+                request,
+                form_data,
+                extra_params,
+                user,
+                queries=auto_web_search_queries,
             )
         elif web_search_strategy["effective_mode"] == WEB_SEARCH_MODE_NATIVE:
             form_data["native_web_search"] = True
+            form_data["native_web_search_required"] = True
 
         # In native tool-calling mode, image generation should happen through the
         # `generate_image` tool only. Otherwise the request gets duplicated:
@@ -4180,10 +4465,9 @@ async def process_chat_response(
         message = message_map.get(metadata["message_id"]) if message_map else None
 
         if message:
-            if metadata.get("skip_text_enhancements"):
-                return
-
             messages = get_message_list(message_map, message.get("id"))
+            if not messages:
+                return
 
             # Strip reasoning/thinking HTML blocks from message content to avoid
             # wasting tokens on title/tags/follow-up generation (H-12 KV cache protection).
@@ -4191,62 +4475,71 @@ async def process_chat_response(
                 if msg.get("role") == "assistant" and msg.get("content"):
                     msg["content"] = strip_reasoning_details(msg["content"])
 
-            if tasks and messages:
+            async def apply_chat_title(title: str):
+                Chats.update_chat_title_by_id(metadata["chat_id"], title)
+
+                await event_emitter(
+                    {
+                        "type": "chat:title",
+                        "data": title,
+                    }
+                )
+
+            def parse_generated_chat_title(res) -> str:
+                if not res or not isinstance(res, dict):
+                    return ""
+
+                choices = res.get("choices", [])
+                if len(choices) != 1:
+                    return ""
+
+                title_string = (
+                    choices[0].get("message", {}).get("content")
+                    or message.get("content")
+                    or ""
+                ).strip()
+                if not title_string:
+                    return ""
+
+                json_start = title_string.find("{")
+                json_end = title_string.rfind("}")
+                if json_start != -1 and json_end >= json_start:
+                    title_json = title_string[json_start : json_end + 1]
+                    try:
+                        return str(json.loads(title_json).get("title") or "").strip()
+                    except Exception:
+                        return ""
+
+                return title_string.strip(" \"'")
+
+            async def generate_or_fallback_chat_title() -> str:
+                try:
+                    res = await generate_title(
+                        request,
+                        {
+                            "model": message["model"],
+                            "messages": messages,
+                            "chat_id": metadata["chat_id"],
+                        },
+                        user,
+                    )
+                    title = parse_generated_chat_title(res)
+                except Exception as e:
+                    log.debug(f"Error generating chat title: {e}")
+                    title = ""
+
+                return title or build_fallback_chat_title(messages)
+
+            if tasks:
                 if TASKS.TITLE_GENERATION in tasks:
                     if tasks[TASKS.TITLE_GENERATION]:
-                        res = await generate_title(
-                            request,
-                            {
-                                "model": message["model"],
-                                "messages": messages,
-                                "chat_id": metadata["chat_id"],
-                            },
-                            user,
-                        )
+                        title = await generate_or_fallback_chat_title()
+                        await apply_chat_title(title)
+                    elif len([msg for msg in messages if msg.get("role") == "user"]) == 1:
+                        await apply_chat_title(build_fallback_chat_title(messages))
 
-                        if res and isinstance(res, dict):
-                            if len(res.get("choices", [])) == 1:
-                                title_string = (
-                                    res.get("choices", [])[0]
-                                    .get("message", {})
-                                    .get("content")
-                                ) or message.get("content") or "New Chat"
-                            else:
-                                title_string = ""
-
-                            title_string = title_string[
-                                title_string.find("{") : title_string.rfind("}") + 1
-                            ]
-
-                            try:
-                                title = json.loads(title_string).get(
-                                    "title", "New Chat"
-                                )
-                            except Exception as e:
-                                title = ""
-
-                            if not title:
-                                title = messages[0].get("content", "New Chat")
-
-                            Chats.update_chat_title_by_id(metadata["chat_id"], title)
-
-                            await event_emitter(
-                                {
-                                    "type": "chat:title",
-                                    "data": title,
-                                }
-                            )
-                    elif len(messages) == 2:
-                        title = messages[0].get("content", "New Chat")
-
-                        Chats.update_chat_title_by_id(metadata["chat_id"], title)
-
-                        await event_emitter(
-                            {
-                                "type": "chat:title",
-                                "data": message.get("content", "New Chat"),
-                            }
-                        )
+                if metadata.get("skip_text_enhancements"):
+                    return
 
                 if TASKS.TAGS_GENERATION in tasks and tasks[TASKS.TAGS_GENERATION]:
                     res = await generate_chat_tags(

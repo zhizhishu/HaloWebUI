@@ -179,15 +179,53 @@
 		);
 	}
 
+	function hasDetailsOfType(content: string, type: string): boolean {
+		return new RegExp(`<details\\b(?=[^>]*\\btype=["']${type}["'])`, 'i').test(
+			content ?? ''
+		);
+	}
+
+	function hasActiveDetailsOfType(content: string, type: string): boolean {
+		const detailsRegex = new RegExp(
+			`<details\\b(?=[^>]*\\btype=["']${type}["'])[^>]*>`,
+			'gi'
+		);
+		let match: RegExpExecArray | null;
+
+		while ((match = detailsRegex.exec(content ?? '')) !== null) {
+			if (!/\bdone=["']?true["']?/i.test(match[0])) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	function hasRawThinkingOutput(content: string): boolean {
+		return /<(think|thinking|reasoning)\b[^>]*>/i.test(content ?? '');
+	}
+
+	function hasActiveRawThinkingOutput(content: string): boolean {
+		const openCount = (content.match(/<(think|thinking|reasoning)\b[^>]*>/gi) ?? []).length;
+		const closeCount = (content.match(/<\/(think|thinking|reasoning)>/gi) ?? []).length;
+		return openCount > closeCount;
+	}
+
+	$: messageContent = message?.content ?? '';
 	$: hasVisibleAssistantOutput = getVisibleAssistantOutput(message?.content ?? '') !== '';
 	$: visibleMessageFiles = (message?.files ?? []).filter(
 		(file) => file?.source !== 'code_interpreter' && file?.generated !== true
 	);
 	$: hasVisibleMessageFiles = messageHasVisibleFiles(message?.files);
 	$: renderableMessageError = getRenderableMessageError(message?.error, message?.files);
-	$: hasVisibleThinkingOutput =
-		/<details\b[^>]*type="reasoning"/i.test(message?.content ?? '') ||
-		/<(think|thinking|reasoning)\b[^>]*>/i.test(message?.content ?? '');
+	$: hasAnyThinkingOutput =
+		hasDetailsOfType(messageContent, 'reasoning') || hasRawThinkingOutput(messageContent);
+	$: hasActiveThinkingOutput =
+		hasActiveDetailsOfType(messageContent, 'reasoning') ||
+		hasActiveRawThinkingOutput(messageContent);
+	$: hasAnyToolCallOutput =
+		hasDetailsOfType(messageContent, 'tool_calls') || /<tool_calls\b/i.test(messageContent);
+	$: hasActiveToolCallOutput = hasActiveDetailsOfType(messageContent, 'tool_calls');
 	$: displayStatusHistory = (
 		message?.statusHistory ?? [...(message?.status ? [message?.status] : [])]
 	).filter((status) => {
@@ -201,6 +239,39 @@
 
 		return true;
 	});
+	$: hasActiveVisibleStatus = displayStatusHistory.some(
+		(status) => !status?.hidden && status?.done === false
+	);
+	$: hasActiveImageGenerationStatus = displayStatusHistory.some(
+		(status) => !status?.hidden && status?.action === 'image_generation' && status?.done === false
+	);
+	$: showImageGenerationPlaceholder =
+		hasActiveImageGenerationStatus &&
+		!message.done &&
+		!message.error &&
+		!renderableMessageError &&
+		!hasVisibleAssistantOutput &&
+		!hasVisibleMessageFiles;
+	$: showInitialThinkingIndicator =
+		!message.done &&
+		!message.error &&
+		!showImageGenerationPlaceholder &&
+		!hasVisibleAssistantOutput &&
+		!hasAnyThinkingOutput &&
+		!hasAnyToolCallOutput;
+	$: showContinuationIndicator =
+		!showInitialThinkingIndicator &&
+		!message.done &&
+		!message.error &&
+		!renderableMessageError &&
+		!hasActiveThinkingOutput &&
+		!hasActiveToolCallOutput &&
+		!hasActiveVisibleStatus &&
+		(hasVisibleAssistantOutput ||
+			hasAnyThinkingOutput ||
+			hasAnyToolCallOutput ||
+			hasVisibleMessageFiles ||
+			displayStatusHistory.length > 0);
 
 	export let siblings;
 
@@ -1169,7 +1240,35 @@
 										class="w-full flex flex-col relative {!message.done ? 'streaming-fade' : ''}"
 										id="response-content-container"
 									>
-										{#if !message.done && !message.error && !hasVisibleAssistantOutput && !hasVisibleThinkingOutput}
+										{#if showImageGenerationPlaceholder}
+											<div class="my-2 w-full max-w-[420px] select-none" aria-live="polite">
+												<div
+													class="image-generation-placeholder relative aspect-[4/3] overflow-hidden rounded-lg border border-gray-200/80 bg-gray-50 dark:border-gray-700/70 dark:bg-gray-900"
+												>
+													<div class="absolute inset-0 image-generation-sweep" />
+													<div
+														class="absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center"
+													>
+														<div
+															class="flex size-12 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 shadow-sm dark:border-gray-700 dark:bg-gray-850 dark:text-gray-300"
+														>
+															<Sparkles className="size-5" strokeWidth="1.8" />
+														</div>
+														<div class="space-y-1">
+															<div class="text-sm font-medium text-gray-700 dark:text-gray-200">
+																{tr('图片正在生成', 'Generating image')}
+															</div>
+															<div class="text-xs text-gray-500 dark:text-gray-400">
+																{tr(
+																	'请稍候，完成后会显示最终图片',
+																	'The final image will appear here'
+																)}
+															</div>
+														</div>
+													</div>
+												</div>
+											</div>
+										{:else if showInitialThinkingIndicator}
 											<!-- Keep the waiting indicator visible even before backend status steps arrive -->
 											<ThinkingIndicator
 												statusHistory={displayStatusHistory}
@@ -1241,6 +1340,19 @@
 											/>
 										{/if}
 
+										{#if showContinuationIndicator}
+											<div
+												class="status-description flex items-center gap-1.5 py-1 text-[13px] leading-5 text-gray-500 dark:text-gray-400"
+											>
+												<Spinner className="size-3.5" />
+												<span class="shimmer">
+													{hasVisibleAssistantOutput
+														? $i18n.t('Continuing response...')
+														: $i18n.t('Waiting for model response')}
+												</span>
+											</div>
+										{/if}
+
 										{#if renderableMessageError}
 											<Error
 												content={renderableMessageError === true
@@ -1257,11 +1369,6 @@
 									<div class="message-outline-toolbar-row flex items-end mt-2 gap-3 flex-wrap">
 						{#if (message?.sources || message?.citations) && (model?.info?.meta?.capabilities?.citations ?? true)}
 							<div class="flex shrink-0 items-center gap-2">
-								<Citations
-									bind:this={citationsRef}
-									id={message?.id}
-									sources={message?.sources ?? message?.citations}
-								/>
 								<Tooltip
 									content={($settings?.showInlineCitations ?? true)
 										? tr('隐藏正文引用标签', 'Hide inline citations')
@@ -1273,7 +1380,7 @@
 										aria-label={($settings?.showInlineCitations ?? true)
 											? tr('隐藏正文引用标签', 'Hide inline citations')
 											: tr('显示正文引用标签', 'Show inline citations')}
-										class="text-gray-600 dark:text-gray-300 rounded-xl bg-white/60 dark:bg-gray-800/60 backdrop-blur-xl shadow-sm hover:bg-white/80 dark:hover:bg-gray-700/60 transition-all duration-200 flex items-center justify-center border border-gray-200/50 dark:border-gray-700/50 h-[36px] w-[36px] shrink-0"
+										class="text-gray-600 dark:text-gray-300 rounded-xl bg-white/60 dark:bg-gray-800/60 backdrop-blur-xl hover:bg-white/80 dark:hover:bg-gray-700/60 transition-all duration-200 flex items-center justify-center border border-gray-200/50 dark:border-gray-700/50 h-[36px] w-[36px] shrink-0"
 										on:click={toggleInlineCitations}
 									>
 										{#if $settings?.showInlineCitations ?? true}
@@ -1283,6 +1390,11 @@
 										{/if}
 									</button>
 								</Tooltip>
+								<Citations
+									bind:this={citationsRef}
+									id={message?.id}
+									sources={message?.sources ?? message?.citations}
+								/>
 							</div>
 						{/if}
 						{#if message.done || siblings.length > 1}
@@ -1290,7 +1402,7 @@
 								bind:this={buttonsContainerElement}
 								class="flex items-center gap-0.5 overflow-x-auto buttons text-gray-600 dark:text-gray-300 px-1.5 h-[37px] rounded-xl {isLastMessage
 									? 'visible opacity-100'
-									: 'invisible group-hover/message:visible opacity-0 group-hover/message:opacity-100'} transition-all duration-300 bg-white/60 dark:bg-gray-800/60 backdrop-blur-xl shadow-sm border border-gray-200/50 dark:border-gray-700/50 w-fit min-w-0 max-w-full toolbar-appear"
+									: 'invisible group-hover/message:visible opacity-0 group-hover/message:opacity-100'} transition-all duration-300 bg-white/60 dark:bg-gray-800/60 backdrop-blur-xl border border-gray-200/50 dark:border-gray-700/50 w-fit min-w-0 max-w-full toolbar-appear"
 							>
 								{#if siblings.length > 1}
 									<div class="flex self-center min-w-fit" dir="ltr">
@@ -1846,6 +1958,42 @@
 
 	.buttons button:hover::after {
 		opacity: 0.04;
+	}
+
+	.image-generation-placeholder::before {
+		content: '';
+		position: absolute;
+		inset: 0;
+		background-image: linear-gradient(rgba(148, 163, 184, 0.12) 1px, transparent 1px),
+			linear-gradient(90deg, rgba(148, 163, 184, 0.12) 1px, transparent 1px);
+		background-size: 24px 24px;
+		mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.08));
+	}
+
+	.image-generation-sweep {
+		background: linear-gradient(
+			110deg,
+			transparent 0%,
+			rgba(255, 255, 255, 0.72) 45%,
+			transparent 70%
+		);
+		animation: image-generation-sweep 1.9s ease-in-out infinite;
+		transform: translateX(-120%);
+	}
+
+	:global(.dark) .image-generation-sweep {
+		background: linear-gradient(
+			110deg,
+			transparent 0%,
+			rgba(148, 163, 184, 0.16) 45%,
+			transparent 70%
+		);
+	}
+
+	@keyframes image-generation-sweep {
+		to {
+			transform: translateX(120%);
+		}
 	}
 
 	.toolbar-appear {
