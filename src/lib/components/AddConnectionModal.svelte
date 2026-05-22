@@ -494,8 +494,8 @@
 		return firstEnabled?.key.trim() ?? '';
 	};
 
-	const getSavableApiKeyPool = (): ApiKeyPool => {
-		const normalized = normalizeApiKeyPool(keyPool, key);
+	const getSavableApiKeyPool = (poolValue = keyPool, fallbackKey = key): ApiKeyPool => {
+		const normalized = normalizeApiKeyPool(poolValue, fallbackKey);
 		const keys = normalized.keys
 			.map((entry, idx) => ({
 				id: entry.id || newApiKeyPoolId(),
@@ -521,27 +521,45 @@
 		};
 	};
 
-	const withApiKeyPoolConfig = <T extends Record<string, any>>(config: T): T & { api_key_pool?: ApiKeyPool } => {
+	const withApiKeyPoolConfig = <T extends Record<string, any>>(
+		config: T,
+		poolValue = keyPool,
+		fallbackKey = key
+	): T & { api_key_pool?: ApiKeyPool } => {
 		if (!isApiKeyPoolProvider()) {
 			return config;
 		}
 		return {
 			...config,
-			api_key_pool: getSavableApiKeyPool()
+			api_key_pool: getSavableApiKeyPool(poolValue, fallbackKey)
 		};
 	};
 
 	const testApiKeyPoolEntry = (entry: ApiKeyPoolEntry) => {
-		const previousPool = keyPool;
-		keyPool = {
-			...keyPool,
-			keys: keyPool.keys.map((item) =>
-				item.id === entry.id ? { ...item, enabled: true } : { ...item, enabled: false }
-			)
+		const testKey = entry.key.trim();
+		if (!testKey) {
+			toast.error($i18n.t('Key is required'));
+			return;
+		}
+
+		const normalized = normalizeApiKeyPool(keyPool, key);
+		const entryIndex = keyPool.keys.findIndex((item) => item.id === entry.id);
+		const testPool: ApiKeyPool = {
+			...normalized,
+			keys: [
+				{
+					id: entry.id || newApiKeyPoolId(),
+					label: normalizeApiKeyPoolLabel(entry.label, entryIndex >= 0 ? entryIndex + 1 : 1),
+					key: testKey,
+					enabled: true
+				}
+			],
+			retry: {
+				...normalized.retry,
+				enabled: false
+			}
 		};
-		Promise.resolve(verifyHandler()).finally(() => {
-			keyPool = previousPool;
-		});
+		void verifyHandler(testPool, testKey);
 	};
 
 	$: apiKeyPoolSummary = (() => {
@@ -716,34 +734,50 @@
 		}
 	};
 
-	const getOpenAIConnectionConfig = (parsedHeaders?: Record<string, string>) =>
-		withApiKeyPoolConfig({
-			...(direct && preserveEmptyPrefixId
-				? { prefix_id: '' }
-				: prefixId.trim()
-					? { prefix_id: prefixId.trim() }
+	const getOpenAIConnectionConfig = (
+		parsedHeaders?: Record<string, string>,
+		poolValue = keyPool,
+		fallbackKey = key
+	) =>
+		withApiKeyPoolConfig(
+			{
+				...(direct && preserveEmptyPrefixId
+					? { prefix_id: '' }
+					: prefixId.trim()
+						? { prefix_id: prefixId.trim() }
+						: {}),
+				force_mode: isForceMode,
+				auth_type,
+				...(azure ? { azure: true } : {}),
+				...(apiVersion ? { api_version: apiVersion } : {}),
+				...(parsedHeaders ? { headers: parsedHeaders } : {}),
+				...(!ollama && !gemini && !grok && !anthropic && !isForceMode && useResponsesApi
+					? {
+							use_responses_api: true,
+							responses_api_exclude_patterns: responsesApiExcludePatterns
+								.map((p) => p.name)
+								.filter((p) => p.trim())
+						}
 					: {}),
-			force_mode: isForceMode,
-			auth_type,
-			...(azure ? { azure: true } : {}),
-			...(apiVersion ? { api_version: apiVersion } : {}),
-			...(parsedHeaders ? { headers: parsedHeaders } : {}),
-			...(!ollama && !gemini && !grok && !anthropic && !isForceMode && useResponsesApi
-				? {
-						use_responses_api: true,
-						responses_api_exclude_patterns: responsesApiExcludePatterns
-							.map((p) => p.name)
-							.filter((p) => p.trim())
-					}
-				: {}),
-			...(!ollama && !direct && !gemini && !grok && !anthropic && !azure && !isForceMode && useResponsesApi
-				? {
-						native_file_inputs_enabled: nativeFileInputsEnabled
-					}
-				: {})
-		});
+				...(!ollama &&
+				!direct &&
+				!gemini &&
+				!grok &&
+				!anthropic &&
+				!azure &&
+				!isForceMode &&
+				useResponsesApi
+					? {
+							native_file_inputs_enabled: nativeFileInputsEnabled
+						}
+					: {})
+			},
+			poolValue,
+			fallbackKey
+		);
 
-	const normalizedKey = () => (isApiKeyPoolProvider() ? getPrimaryKeyFromPool() : key.trim());
+	const normalizedKey = (poolValue = keyPool, fallbackKey = key) =>
+		isApiKeyPoolProvider() ? getPrimaryKeyFromPool(poolValue) : fallbackKey.trim();
 
 	const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -767,48 +801,56 @@
 		return $i18n.t('Test Model');
 	};
 
-	const buildOpenAIHealthCheckPayload = () => {
+	const buildOpenAIHealthCheckPayload = (poolValue = keyPool, fallbackKey = key) => {
 		const parsedOpenAIHeaders = parseHeadersInput();
 		if (headers && parsedOpenAIHeaders === null) return null;
 
 		return {
 			url: normalizedUrl,
-			key: normalizedKey(),
-			config: getOpenAIConnectionConfig(parsedOpenAIHeaders ?? undefined)
+			key: normalizedKey(poolValue, fallbackKey),
+			config: getOpenAIConnectionConfig(parsedOpenAIHeaders ?? undefined, poolValue, fallbackKey)
 		};
 	};
 
-	const buildGeminiHealthCheckPayload = () => {
+	const buildGeminiHealthCheckPayload = (poolValue = keyPool, fallbackKey = key) => {
 		const parsedGeminiHeaders = parseHeadersInput();
 		if (headers && parsedGeminiHeaders === null) return null;
 
-			return {
-				url: normalizedUrl,
-				key: normalizedKey(),
-				config: withApiKeyPoolConfig({
+		return {
+			url: normalizedUrl,
+			key: normalizedKey(poolValue, fallbackKey),
+			config: withApiKeyPoolConfig(
+				{
 					auth_type,
 					...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
 					...(parsedGeminiHeaders ? { headers: parsedGeminiHeaders } : {})
-				})
-			};
+				},
+				poolValue,
+				fallbackKey
+			)
 		};
+	};
 
-	const buildGrokHealthCheckPayload = () => {
+	const buildGrokHealthCheckPayload = (poolValue = keyPool, fallbackKey = key) => {
 		const parsedGrokHeaders = parseHeadersInput();
 		if (headers && parsedGrokHeaders === null) return null;
 
-			return {
-				url: normalizedUrl,
-				key: normalizedKey(),
-				config: withApiKeyPoolConfig({
+		return {
+			url: normalizedUrl,
+			key: normalizedKey(poolValue, fallbackKey),
+			config: withApiKeyPoolConfig(
+				{
 					auth_type,
 					...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
 					...(parsedGrokHeaders ? { headers: parsedGrokHeaders } : {})
-				})
-			};
+				},
+				poolValue,
+				fallbackKey
+			)
 		};
+	};
 
-	const buildAnthropicHealthCheckPayload = () => {
+	const buildAnthropicHealthCheckPayload = (poolValue = keyPool, fallbackKey = key) => {
 		const parsedAnthropicHeaders = parseHeadersInput();
 		if (headers && parsedAnthropicHeaders === null) return null;
 		if (anthropicExtraBody && !parsedAnthropicExtraBody) {
@@ -816,70 +858,77 @@
 			return null;
 		}
 
-			return {
-				url: normalizedUrl,
-				key: normalizedKey(),
-				config: withApiKeyPoolConfig({
+		return {
+			url: normalizedUrl,
+			key: normalizedKey(poolValue, fallbackKey),
+			config: withApiKeyPoolConfig(
+				{
 					auth_type,
 					...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
 					anthropic_version: anthropicVersion,
-				anthropic_beta: anthropicBetas.map((b) => b.name).filter((b) => b.trim()),
-				use_files_api: useFilesApi,
-				files_auto_attach: filesAutoAttach,
-				files_cache_ttl: filesCacheTtl,
-				files_citations: filesCitations,
+					anthropic_beta: anthropicBetas.map((b) => b.name).filter((b) => b.trim()),
+					use_files_api: useFilesApi,
+					files_auto_attach: filesAutoAttach,
+					files_cache_ttl: filesCacheTtl,
+					files_citations: filesCitations,
 					...(parsedAnthropicExtraBody
 						? { anthropic_extra_body: parsedAnthropicExtraBody }
 						: {}),
 					...(parsedAnthropicHeaders ? { headers: parsedAnthropicHeaders } : {})
-				})
-			};
+				},
+				poolValue,
+				fallbackKey
+			)
 		};
+	};
 
-	const buildOllamaHealthCheckPayload = () => ({
+	const buildOllamaHealthCheckPayload = (poolValue = keyPool, fallbackKey = key) => ({
 		url: normalizedUrl,
-		key: normalizedKey(),
+		key: normalizedKey(poolValue, fallbackKey),
 		config: {
 			...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {})
 		}
 	});
 
-	const buildHealthCheckRequest = (): ProviderHealthCheckRequest | null => {
+	const buildHealthCheckRequest = (
+		poolValue = keyPool,
+		fallbackKey = key
+	): ProviderHealthCheckRequest | null => {
 		if (direct) return null;
 
 		if (ollama) {
 			return {
 				provider: 'ollama',
-				connection: buildOllamaHealthCheckPayload()
+				connection: buildOllamaHealthCheckPayload(poolValue, fallbackKey)
 			};
 		}
 
 		if (gemini) {
-			const connection = buildGeminiHealthCheckPayload();
+			const connection = buildGeminiHealthCheckPayload(poolValue, fallbackKey);
 			return connection ? { provider: 'gemini', connection } : null;
 		}
 
 		if (grok) {
-			const connection = buildGrokHealthCheckPayload();
+			const connection = buildGrokHealthCheckPayload(poolValue, fallbackKey);
 			return connection ? { provider: 'grok', connection } : null;
 		}
 
 		if (anthropic) {
-			const connection = buildAnthropicHealthCheckPayload();
+			const connection = buildAnthropicHealthCheckPayload(poolValue, fallbackKey);
 			return connection ? { provider: 'anthropic', connection } : null;
 		}
 
-		const connection = buildOpenAIHealthCheckPayload();
+		const connection = buildOpenAIHealthCheckPayload(poolValue, fallbackKey);
 		return connection ? { provider: 'openai', connection } : null;
 	};
 
-	const verifyOllamaHandler = async () => {
+	const verifyOllamaHandler = async (poolValue = keyPool, fallbackKey = key) => {
 		const verifyUrl = normalizedUrl;
 		const startedAt = nowMs();
 
 		const res = await verifyOllamaConnection(localStorage.token, {
 			url: verifyUrl,
-			key: normalizedKey()
+			key: normalizedKey(poolValue, fallbackKey)
 		}).catch((error) => {
 			showConnectionErrorToast(error);
 		});
@@ -889,7 +938,7 @@
 		}
 	};
 
-	const verifyOpenAIHandler = async () => {
+	const verifyOpenAIHandler = async (poolValue = keyPool, fallbackKey = key) => {
 		const verifyUrl = normalizedUrl;
 		const parsedOpenAIHeaders = parseHeadersInput();
 		if (headers && parsedOpenAIHeaders === null) return;
@@ -899,9 +948,9 @@
 			localStorage.token,
 			{
 				url: verifyUrl,
-				key: normalizedKey(),
+				key: normalizedKey(poolValue, fallbackKey),
 				purpose: 'connection',
-				config: getOpenAIConnectionConfig(parsedOpenAIHeaders ?? undefined)
+				config: getOpenAIConnectionConfig(parsedOpenAIHeaders ?? undefined, poolValue, fallbackKey)
 			},
 			direct
 		).catch((error) => {
@@ -1103,7 +1152,7 @@
 		modelHealthContextKey = nextContextKey;
 	}
 
-	const verifyGeminiHandler = async () => {
+	const verifyGeminiHandler = async (poolValue = keyPool, fallbackKey = key) => {
 		const verifyUrl = normalizedUrl;
 
 		let _headers = null;
@@ -1125,12 +1174,16 @@
 		const startedAt = nowMs();
 		const res = await verifyGeminiConnection(localStorage.token, {
 			url: verifyUrl,
-			key: normalizedKey(),
-			config: withApiKeyPoolConfig({
-				auth_type,
-				...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
-				...(_headers ? { headers: _headers } : {})
-			})
+			key: normalizedKey(poolValue, fallbackKey),
+			config: withApiKeyPoolConfig(
+				{
+					auth_type,
+					...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
+					...(_headers ? { headers: _headers } : {})
+				},
+				poolValue,
+				fallbackKey
+			)
 		}).catch((error) => {
 			showConnectionErrorToast(error);
 		});
@@ -1140,7 +1193,7 @@
 		}
 	};
 
-	const verifyGrokHandler = async () => {
+	const verifyGrokHandler = async (poolValue = keyPool, fallbackKey = key) => {
 		const verifyUrl = normalizedUrl;
 
 		let _headers = null;
@@ -1162,12 +1215,16 @@
 		const startedAt = nowMs();
 		const res = await verifyGrokConnection(localStorage.token, {
 			url: verifyUrl,
-			key: normalizedKey(),
-			config: withApiKeyPoolConfig({
-				auth_type,
-				...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
-				...(_headers ? { headers: _headers } : {})
-			})
+			key: normalizedKey(poolValue, fallbackKey),
+			config: withApiKeyPoolConfig(
+				{
+					auth_type,
+					...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
+					...(_headers ? { headers: _headers } : {})
+				},
+				poolValue,
+				fallbackKey
+			)
 		}).catch((error) => {
 			showConnectionErrorToast(error);
 		});
@@ -1177,7 +1234,7 @@
 		}
 	};
 
-	const verifyAnthropicHandler = async () => {
+	const verifyAnthropicHandler = async (poolValue = keyPool, fallbackKey = key) => {
 		const verifyUrl = normalizedUrl;
 
 		let _headers = null;
@@ -1199,18 +1256,22 @@
 		const startedAt = nowMs();
 		const res = await verifyAnthropicConnection(localStorage.token, {
 			url: verifyUrl,
-			key: normalizedKey(),
-			config: withApiKeyPoolConfig({
-				auth_type,
-				...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
-				anthropic_version: anthropicVersion,
-				anthropic_beta: anthropicBetas.map((b) => b.name).filter((b) => b.trim()),
-				use_files_api: useFilesApi,
-				files_auto_attach: filesAutoAttach,
-				files_cache_ttl: filesCacheTtl,
-				files_citations: filesCitations,
-				...(_headers ? { headers: _headers } : {})
-			})
+			key: normalizedKey(poolValue, fallbackKey),
+			config: withApiKeyPoolConfig(
+				{
+					auth_type,
+					...(prefixId.trim() ? { prefix_id: prefixId.trim() } : {}),
+					anthropic_version: anthropicVersion,
+					anthropic_beta: anthropicBetas.map((b) => b.name).filter((b) => b.trim()),
+					use_files_api: useFilesApi,
+					files_auto_attach: filesAutoAttach,
+					files_cache_ttl: filesCacheTtl,
+					files_citations: filesCitations,
+					...(_headers ? { headers: _headers } : {})
+				},
+				poolValue,
+				fallbackKey
+			)
 		}).catch((error) => {
 			showConnectionErrorToast(error);
 		});
@@ -1220,17 +1281,17 @@
 		}
 	};
 
-	const verifyHandler = () => {
+	const verifyHandler = (poolValue = keyPool, fallbackKey = key) => {
 		if (ollama) {
-			return verifyOllamaHandler();
+			return verifyOllamaHandler(poolValue, fallbackKey);
 		} else if (gemini) {
-			return verifyGeminiHandler();
+			return verifyGeminiHandler(poolValue, fallbackKey);
 		} else if (grok) {
-			return verifyGrokHandler();
+			return verifyGrokHandler(poolValue, fallbackKey);
 		} else if (anthropic) {
-			return verifyAnthropicHandler();
+			return verifyAnthropicHandler(poolValue, fallbackKey);
 		} else {
-			return verifyOpenAIHandler();
+			return verifyOpenAIHandler(poolValue, fallbackKey);
 		}
 	};
 
@@ -1770,7 +1831,7 @@
 										<button
 											type="button"
 											class="p-2 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg transition"
-											on:click={verifyHandler}
+											on:click={() => verifyHandler()}
 											aria-label={$i18n.t('Test Connection')}
 										>
 											<!-- 心跳/脉冲检测图标 -->

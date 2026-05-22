@@ -10,7 +10,7 @@
 	import ModelIcon from '$lib/components/common/ModelIcon.svelte';
 	import AddConnectionModal from '$lib/components/AddConnectionModal.svelte';
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
-	import { getApiKeyPoolModeLabel, getApiKeyPoolSummary } from '$lib/utils/api-key-pool';
+	import { getApiKeyPoolSummary } from '$lib/utils/api-key-pool';
 
 	type ConnectionConfig = {
 		enable?: boolean;
@@ -116,18 +116,6 @@
 						>
 							{$i18n.t('{{count}} keys', { count: keyPoolSummary.total })}
 						</span>
-						<span
-							class="text-xs px-1.5 py-0.5 bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 rounded"
-						>
-							{getApiKeyPoolModeLabel(keyPoolSummary.mode, (key) => $i18n.t(key))}
-						</span>
-						{#if keyPoolSummary.retry}
-							<span
-								class="text-xs px-1.5 py-0.5 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 rounded"
-							>
-								{$i18n.t('Auto retry')}
-							</span>
-						{/if}
 					{/if}
 				</div>
 				{#if config?.remark && url}
