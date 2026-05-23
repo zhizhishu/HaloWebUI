@@ -15,6 +15,7 @@ import re
 import ast
 import hashlib
 import mimetypes
+from copy import deepcopy
 from io import BytesIO
 from difflib import get_close_matches
 from urllib.parse import urlparse
@@ -3650,16 +3651,33 @@ async def chat_web_search_handler(
 
 
 async def chat_image_generation_handler(
-    request: Request, form_data: dict, extra_params: dict, user
+    request: Request,
+    form_data: dict,
+    extra_params: dict,
+    user,
+    *,
+    run_as_task: bool = False,
+    model: Optional[dict] = None,
+    events: Optional[list] = None,
+    tasks: Optional[dict] = None,
 ):
     __event_emitter__ = extra_params["__event_emitter__"]
     __metadata__ = extra_params["__metadata__"]
+    image_generation_options = extra_params.get("__metadata__", {}).get(
+        "image_generation_options", {}
+    )
+    image_generation_options = sanitize_chat_image_generation_options(
+        image_generation_options
+    )
+    requested_n = _get_chat_image_generation_requested_n(image_generation_options)
+
     await __event_emitter__(
         {
             "type": "status",
             "data": {
                 "action": "image_generation",
                 "description": "Image request created",
+                "total": requested_n,
                 "done": True,
             },
         }
@@ -3670,10 +3688,168 @@ async def chat_image_generation_handler(
             "data": {
                 "action": "image_generation",
                 "description": "Waiting for upstream image service",
+                "total": requested_n,
                 "done": False,
             },
         }
     )
+
+    can_run_as_task = bool(
+        run_as_task
+        and __metadata__.get("chat_id")
+        and __metadata__.get("message_id")
+        and __metadata__.get("session_id")
+    )
+    if can_run_as_task:
+        task_form_data = deepcopy(form_data)
+        task_metadata = deepcopy(__metadata__)
+        task_extra_params = {
+            **extra_params,
+            "__metadata__": task_metadata,
+        }
+
+        async def image_generation_task():
+            try:
+                local_response = await _build_chat_image_generation_local_response(
+                    request=request,
+                    form_data=task_form_data,
+                    extra_params=task_extra_params,
+                    user=user,
+                    image_generation_options=image_generation_options,
+                    requested_n=requested_n,
+                )
+                await process_chat_response(
+                    request,
+                    local_response,
+                    task_form_data,
+                    user,
+                    task_metadata,
+                    model or {},
+                    events or [],
+                    tasks,
+                )
+            except asyncio.CancelledError:
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "image_generation",
+                            "description": "Image generation cancelled",
+                            "total": requested_n,
+                            "done": True,
+                            "error": True,
+                        },
+                    }
+                )
+                raise
+            except Exception as e:
+                log.exception(e)
+                error_detail = build_error_detail(
+                    e, default="An error occurred while generating an image"
+                )
+                local_response = _build_chat_image_generation_error_response(
+                    error_detail=error_detail,
+                    requested_n=requested_n,
+                )
+                await __event_emitter__(
+                    {
+                        "type": "status",
+                        "data": {
+                            "action": "image_generation",
+                            "description": "Generated {{count}} of {{total}} images",
+                            "count": 0,
+                            "total": requested_n,
+                            "failed": requested_n,
+                            "done": True,
+                            "error": True,
+                        },
+                    }
+                )
+                await process_chat_response(
+                    request,
+                    local_response,
+                    task_form_data,
+                    user,
+                    task_metadata,
+                    model or {},
+                    events or [],
+                    tasks,
+                )
+
+        task_id, _task = create_task(
+            image_generation_task(),
+            id=__metadata__["chat_id"],
+        )
+        try:
+            Chats.upsert_message_to_chat_by_id_and_message_id(
+                __metadata__["chat_id"],
+                __metadata__["message_id"],
+                {"model": form_data.get("model", "")},
+            )
+        except Exception:
+            pass
+        __metadata__["local_response"] = {"status": True, "task_id": task_id}
+        return form_data
+
+    __metadata__["local_response"] = await _build_chat_image_generation_local_response(
+        request=request,
+        form_data=form_data,
+        extra_params=extra_params,
+        user=user,
+        image_generation_options=image_generation_options,
+        requested_n=requested_n,
+    )
+
+    return form_data
+
+
+def _get_chat_image_generation_requested_n(
+    image_generation_options: dict[str, Any],
+) -> int:
+    try:
+        requested_n = int(image_generation_options.get("n") or 1)
+    except Exception:
+        requested_n = 1
+    return max(1, min(requested_n, 4))
+
+
+def _build_chat_image_generation_error_response(
+    *, error_detail: str, requested_n: int
+) -> dict[str, Any]:
+    failures = [
+        {
+            "index": slot_index,
+            "detail": error_detail,
+        }
+        for slot_index in range(max(1, int(requested_n or 1)))
+    ]
+    image_result_files = _build_chat_image_generation_result_files(
+        images=[],
+        failures=failures,
+        requested_n=requested_n,
+    )
+    return {
+        "choices": [
+            {
+                "message": {
+                    "content": "",
+                    "images": image_result_files,
+                }
+            }
+        ],
+    }
+
+
+async def _build_chat_image_generation_local_response(
+    *,
+    request: Request,
+    form_data: dict,
+    extra_params: dict,
+    user,
+    image_generation_options: dict[str, Any],
+    requested_n: int,
+) -> dict[str, Any]:
+    __event_emitter__ = extra_params["__event_emitter__"]
 
     messages = form_data["messages"]
     user_message = get_last_user_message(messages)
@@ -3703,12 +3879,6 @@ async def chat_image_generation_handler(
 
     prompt = user_message
     negative_prompt = ""
-    image_generation_options = extra_params.get("__metadata__", {}).get(
-        "image_generation_options", {}
-    )
-    image_generation_options = sanitize_chat_image_generation_options(
-        image_generation_options
-    )
 
     system_message_content = ""
 
@@ -3730,7 +3900,7 @@ async def chat_image_generation_handler(
             user=user,
         )
 
-        requested_n = max(1, int(image_generation_options.get("n") or len(images) or 1))
+        requested_n = max(1, int(requested_n or len(images) or 1))
         image_result_files = _build_chat_image_generation_result_files(
             images=images,
             failures=[],
@@ -3751,7 +3921,11 @@ async def chat_image_generation_handler(
                     "description": (
                         "Generated {{count}} of {{total}} images"
                         if requested_n > 1
-                        else "Generated an image"
+                        else (
+                            "Image generation failed"
+                            if failed_count > 0
+                            else "Generated an image"
+                        )
                     ),
                     **(
                         {"count": success_count, "total": requested_n}
@@ -3775,7 +3949,7 @@ async def chat_image_generation_handler(
             ),
             None,
         )
-        __metadata__["local_response"] = {
+        return {
             **({"usage": image_usage} if image_usage else {}),
             "choices": [
                 {
@@ -3821,7 +3995,7 @@ async def chat_image_generation_handler(
                 },
             }
         )
-        __metadata__["local_response"] = {
+        return {
             **({"usage": image_usage} if image_usage else {}),
             "choices": [
                 {
@@ -3842,19 +4016,25 @@ async def chat_image_generation_handler(
                 "type": "status",
                 "data": {
                     "action": "image_generation",
-                    "description": "Image generation failed",
+                    "description": (
+                        "Generated {{count}} of {{total}} images"
+                        if requested_n > 1
+                        else "Image generation failed"
+                    ),
+                    **(
+                        {"count": 0, "total": requested_n, "failed": requested_n}
+                        if requested_n > 1
+                        else {"failed": 1}
+                    ),
                     "done": True,
                     "error": True,
                 },
             }
         )
-        __metadata__["local_response"] = {
-            "error": {
-                "detail": error_detail,
-            }
-        }
-
-    return form_data
+        return _build_chat_image_generation_error_response(
+            error_detail=error_detail,
+            requested_n=requested_n,
+        )
 
 
 async def chat_completion_files_handler(
@@ -4012,7 +4192,7 @@ def apply_params_to_form_data(form_data, model):
     return form_data
 
 
-async def process_chat_payload(request, form_data, user, metadata, model):
+async def process_chat_payload(request, form_data, user, metadata, model, tasks=None):
 
     files_provided = bool(metadata.get("files_provided")) or "files" in form_data
     form_data = apply_params_to_form_data(form_data, model)
@@ -4295,7 +4475,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
             )
         ):
             form_data = await chat_image_generation_handler(
-                request, form_data, extra_params, user
+                request,
+                form_data,
+                extra_params,
+                user,
+                run_as_task=True,
+                model=model,
+                events=events,
+                tasks=tasks,
             )
 
         if "code_interpreter" in features and features["code_interpreter"]:

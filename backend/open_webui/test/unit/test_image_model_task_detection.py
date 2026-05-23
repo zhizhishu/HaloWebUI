@@ -281,7 +281,9 @@ def test_dedicated_image_model_uses_current_chat_model_before_admin_default():
     async def fake_process_filter_functions(**kwargs):
         return kwargs["form_data"], {}
 
-    async def fake_chat_image_generation_handler(request, form_data, extra_params, user):
+    async def fake_chat_image_generation_handler(
+        request, form_data, extra_params, user, **kwargs
+    ):
         captured["image_generation_options"] = extra_params["__metadata__"].get(
             "image_generation_options"
         )

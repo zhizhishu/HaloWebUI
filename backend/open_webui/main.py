@@ -1642,7 +1642,7 @@ async def chat_completion(
         form_data["metadata"] = metadata
 
         form_data, metadata, events = await process_chat_payload(
-            request, form_data, user, metadata, model
+            request, form_data, user, metadata, model, tasks=tasks
         )
         request.state.metadata = metadata
 
@@ -1715,7 +1715,7 @@ async def chat_completion(
 
             try:
                 retry_form_data, retry_metadata, retry_events = await process_chat_payload(
-                    request, retry_form_data, user, retry_metadata, model
+                    request, retry_form_data, user, retry_metadata, model, tasks=tasks
                 )
                 response = await chat_completion_handler(request, retry_form_data, user)
                 return await process_chat_response(
@@ -1762,7 +1762,7 @@ async def chat_completion(
 
             try:
                 retry_form_data, retry_metadata, retry_events = await process_chat_payload(
-                    request, retry_form_data, user, retry_metadata, model
+                    request, retry_form_data, user, retry_metadata, model, tasks=tasks
                 )
                 response = await chat_completion_handler(request, retry_form_data, user)
                 return await process_chat_response(
@@ -1805,7 +1805,7 @@ async def chat_completion(
 
             try:
                 retry_form_data, retry_metadata, retry_events = await process_chat_payload(
-                    request, retry_form_data, user, retry_metadata, model
+                    request, retry_form_data, user, retry_metadata, model, tasks=tasks
                 )
                 response = await chat_completion_handler(request, retry_form_data, user)
                 return await process_chat_response(

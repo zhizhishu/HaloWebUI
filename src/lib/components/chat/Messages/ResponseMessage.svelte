@@ -120,6 +120,9 @@
 			done: boolean;
 			action: string;
 			description: string;
+			hidden?: boolean;
+			error?: boolean;
+			warning?: boolean;
 			count?: number;
 			failed?: number;
 			total?: number;
@@ -130,6 +133,9 @@
 			done: boolean;
 			action: string;
 			description: string;
+			hidden?: boolean;
+			error?: boolean;
+			warning?: boolean;
 			count?: number;
 			failed?: number;
 			total?: number;
@@ -240,9 +246,41 @@
 		const text = `${file?.error ?? ''}`.trim();
 		return text || tr('图片生成失败', 'Image generation failed');
 	};
+	const normalizeImageGenerationSlotCount = (value: unknown, fallback = 1) => {
+		const parsed = Number(value);
+		const count = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+		return Math.max(1, Math.min(Math.floor(count), 4));
+	};
+	const imageGenerationGridColumns = (slotCount: number) => {
+		if (slotCount <= 1) {
+			return 1;
+		}
+		if (slotCount === 3) {
+			return 3;
+		}
+		return 2;
+	};
+	const imageGenerationGridStyle = (slotCount: number) => {
+		const columns = imageGenerationGridColumns(slotCount);
+		const maxWidth = slotCount === 1 ? 280 : slotCount === 3 ? 660 : 560;
+		return `grid-template-columns: repeat(${columns}, minmax(0, 1fr)); max-width: ${maxWidth}px;`;
+	};
+	const getActiveImageGenerationStatus = (statuses: NonNullable<MessageType['statusHistory']>) => {
+		for (let index = statuses.length - 1; index >= 0; index -= 1) {
+			const status = statuses[index];
+			if (!status?.hidden && status?.action === 'image_generation' && status?.done === false) {
+				return status;
+			}
+		}
+		return null;
+	};
 	$: imageGenerationResultFiles = visibleMessageFiles
 		.filter(isImageGenerationResultFile)
 		.sort((a, b) => Number(a?.slot_index ?? 0) - Number(b?.slot_index ?? 0));
+	$: imageGenerationResultSlotCount = normalizeImageGenerationSlotCount(
+		imageGenerationResultFiles.length,
+		1
+	);
 	$: showImageGenerationResultGrid =
 		imageGenerationResultFiles.length > 1 ||
 		imageGenerationResultFiles.some((file) => file?.type === 'image_generation_error');
@@ -277,6 +315,15 @@
 	);
 	$: hasActiveImageGenerationStatus = displayStatusHistory.some(
 		(status) => !status?.hidden && status?.action === 'image_generation' && status?.done === false
+	);
+	$: activeImageGenerationStatus = getActiveImageGenerationStatus(displayStatusHistory);
+	$: pendingImageGenerationSlotCount = normalizeImageGenerationSlotCount(
+		activeImageGenerationStatus?.total ?? activeImageGenerationStatus?.count,
+		1
+	);
+	$: pendingImageGenerationSlots = Array.from(
+		{ length: pendingImageGenerationSlotCount },
+		(_, index) => index
 	);
 	$: showImageGenerationPlaceholder =
 		hasActiveImageGenerationStatus &&
@@ -1075,6 +1122,7 @@
 															{$i18n.t(status?.description, {
 																count: status?.count ?? status?.urls?.length ?? 0,
 																failed: status?.failed ?? 0,
+																total: status?.total,
 																searchQuery: status?.query
 															})}
 														{:else if status?.description === 'No search query generated'}
@@ -1085,6 +1133,7 @@
 															{$i18n.t(status?.description, {
 																count: status?.count,
 																failed: status?.failed ?? 0,
+																total: status?.total,
 																searchQuery: status?.query
 															})}
 														{/if}
@@ -1143,6 +1192,7 @@
 														{$i18n.t(status?.description, {
 															count: status?.count,
 															failed: status?.failed ?? 0,
+															total: status?.total,
 															searchQuery: status?.query
 														})}
 													{/if}
@@ -1156,7 +1206,8 @@
 
 						{#if showImageGenerationResultGrid}
 							<div
-								class="my-2 grid w-full max-w-[560px] grid-cols-2 gap-2"
+								class="my-2 grid w-full gap-2"
+								style={imageGenerationGridStyle(imageGenerationResultSlotCount)}
 								aria-label={tr('图片生成结果', 'Image generation results')}
 							>
 								{#each imageGenerationResultFiles as file, index}
@@ -1317,32 +1368,37 @@
 										id="response-content-container"
 									>
 										{#if showImageGenerationPlaceholder}
-											<div class="my-2 w-full max-w-[420px] select-none" aria-live="polite">
-												<div
-													class="image-generation-placeholder relative aspect-[4/3] overflow-hidden rounded-lg border border-gray-200/80 bg-gray-50 dark:border-gray-700/70 dark:bg-gray-900"
-												>
-													<div class="absolute inset-0 image-generation-sweep" />
+											<div
+												class="my-2 grid w-full select-none gap-2"
+												style={imageGenerationGridStyle(pendingImageGenerationSlotCount)}
+												aria-live="polite"
+											>
+												{#each pendingImageGenerationSlots as slotIndex}
 													<div
-														class="absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center"
+														class="image-generation-placeholder relative aspect-[4/5] overflow-hidden rounded-lg border border-gray-200/80 bg-gray-50 dark:border-gray-700/70 dark:bg-gray-900"
 													>
+														<div class="absolute inset-0 image-generation-sweep" />
 														<div
-															class="flex size-12 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 shadow-sm dark:border-gray-700 dark:bg-gray-850 dark:text-gray-300"
+															class="absolute inset-0 flex flex-col items-center justify-center gap-3 px-3 text-center"
 														>
-															<Sparkles className="size-5" strokeWidth="1.8" />
-														</div>
-														<div class="space-y-1">
-															<div class="text-sm font-medium text-gray-700 dark:text-gray-200">
-																{tr('图片正在生成', 'Generating image')}
+															<div
+																class="flex size-10 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 shadow-sm dark:border-gray-700 dark:bg-gray-850 dark:text-gray-300"
+															>
+																<Sparkles className="size-5" strokeWidth="1.8" />
 															</div>
-															<div class="text-xs text-gray-500 dark:text-gray-400">
-																{tr(
-																	'请稍候，完成后会显示最终图片',
-																	'The final image will appear here'
-																)}
+															<div class="space-y-1">
+																<div class="text-sm font-medium text-gray-700 dark:text-gray-200">
+																	{tr('图片正在生成', 'Generating image')}
+																</div>
+																<div class="text-xs text-gray-500 dark:text-gray-400">
+																	{tr('第 {{index}} 张', 'Image {{index}}', {
+																		index: slotIndex + 1
+																	})}
+																</div>
 															</div>
 														</div>
 													</div>
-												</div>
+												{/each}
 											</div>
 										{:else if showInitialThinkingIndicator}
 											<!-- Keep the waiting indicator visible even before backend status steps arrive -->

@@ -221,6 +221,51 @@ def test_chat_image_generation_handler_marks_missing_returned_images(monkeypatch
     assert images[3]["error"] == "Upstream did not return this image."
 
 
+def test_chat_image_generation_handler_marks_single_missing_image_as_failed(monkeypatch):
+    events = []
+
+    async def fake_image_generations(request, form_data, user):
+        return []
+
+    async def fake_event_emitter(event):
+        events.append(event)
+
+    monkeypatch.setattr(middleware, "image_generations", fake_image_generations)
+
+    metadata = {"image_generation_options": {"model": "gpt-image-2", "n": 1}}
+
+    asyncio.run(
+        middleware.chat_image_generation_handler(
+            request=SimpleNamespace(),
+            form_data={"messages": [{"role": "user", "content": "生成一张图"}]},
+            extra_params={
+                "__event_emitter__": fake_event_emitter,
+                "__metadata__": metadata,
+            },
+            user=SimpleNamespace(id="user-1", role="admin"),
+        )
+    )
+
+    assert events[-1]["data"] == {
+        "action": "image_generation",
+        "description": "Image generation failed",
+        "failed": 1,
+        "warning": True,
+        "done": True,
+    }
+    images = metadata["local_response"]["choices"][0]["message"]["images"]
+    assert images == [
+        {
+            "type": "image_generation_error",
+            "source": "image_generation",
+            "status": "failed",
+            "slot_index": 0,
+            "error_code": "missing_image_result",
+            "error": "Upstream did not return this image.",
+        }
+    ]
+
+
 def test_local_image_generation_result_files_preserve_failure_slots():
     content, files = middleware._extract_stream_content_and_files(
         {
@@ -297,15 +342,121 @@ def test_chat_image_generation_handler_emits_readable_error(monkeypatch):
         "data": {
             "action": "image_generation",
             "description": "Image generation failed",
+            "failed": 1,
             "done": True,
             "error": True,
         },
     }
     assert not any(event.get("type") == "chat:completion" for event in events)
-    assert (
-        metadata["local_response"]["error"]["detail"]
-        == "上游图片服务超时：edits 请求已发出"
+    images = metadata["local_response"]["choices"][0]["message"]["images"]
+    assert images == [
+        {
+            "type": "image_generation_error",
+            "source": "image_generation",
+            "status": "failed",
+            "slot_index": 0,
+            "error": "上游图片服务超时：edits 请求已发出",
+        }
+    ]
+
+
+def test_chat_image_generation_handler_expands_total_failure_to_requested_slots(
+    monkeypatch,
+):
+    async def fake_image_generations(request, form_data, user):
+        raise RuntimeError("Server disconnected without sending a response.")
+
+    async def fake_event_emitter(event):
+        pass
+
+    monkeypatch.setattr(middleware, "image_generations", fake_image_generations)
+
+    metadata = {"image_generation_options": {"model": "gpt-image-2", "n": 4}}
+
+    asyncio.run(
+        middleware.chat_image_generation_handler(
+            request=SimpleNamespace(),
+            form_data={"messages": [{"role": "user", "content": "生成四张图"}]},
+            extra_params={
+                "__event_emitter__": fake_event_emitter,
+                "__metadata__": metadata,
+            },
+            user=SimpleNamespace(id="user-1", role="admin"),
+        )
     )
+
+    images = metadata["local_response"]["choices"][0]["message"]["images"]
+    assert len(images) == 4
+    assert [image["slot_index"] for image in images] == [0, 1, 2, 3]
+    assert {image["status"] for image in images} == {"failed"}
+    assert all(
+        image["error"] == "Server disconnected without sending a response."
+        for image in images
+    )
+
+
+def test_chat_image_generation_handler_returns_background_task(monkeypatch):
+    events = []
+    created = {}
+    upserts = []
+
+    async def fake_event_emitter(event):
+        events.append(event)
+
+    def fake_create_task(coroutine, id=None, *, blocks_completion=True):
+        created["coroutine"] = coroutine
+        created["chat_id"] = id
+        created["blocks_completion"] = blocks_completion
+        return "task-1", SimpleNamespace()
+
+    monkeypatch.setattr(middleware, "create_task", fake_create_task)
+    monkeypatch.setattr(
+        middleware.Chats,
+        "upsert_message_to_chat_by_id_and_message_id",
+        lambda chat_id, message_id, payload: upserts.append(
+            (chat_id, message_id, payload)
+        ),
+    )
+
+    metadata = {
+        "chat_id": "chat-1",
+        "message_id": "message-1",
+        "session_id": "session-1",
+        "image_generation_options": {"model": "gpt-image-2", "n": 3},
+    }
+
+    try:
+        asyncio.run(
+            middleware.chat_image_generation_handler(
+                request=SimpleNamespace(),
+                form_data={
+                    "model": "gpt-image-2",
+                    "messages": [{"role": "user", "content": "生成三张图"}],
+                },
+                extra_params={
+                    "__event_emitter__": fake_event_emitter,
+                    "__metadata__": metadata,
+                },
+                user=SimpleNamespace(id="user-1", role="admin"),
+                run_as_task=True,
+                model={},
+                events=[],
+                tasks={},
+            )
+        )
+    finally:
+        if created.get("coroutine"):
+            created["coroutine"].close()
+
+    assert metadata["local_response"] == {"status": True, "task_id": "task-1"}
+    assert created["chat_id"] == "chat-1"
+    assert events[1]["data"] == {
+        "action": "image_generation",
+        "description": "Waiting for upstream image service",
+        "total": 3,
+        "done": False,
+    }
+    assert upserts == [("chat-1", "message-1", {"model": "gpt-image-2"})]
 
 
 def test_openai_image_524_error_is_user_readable():
