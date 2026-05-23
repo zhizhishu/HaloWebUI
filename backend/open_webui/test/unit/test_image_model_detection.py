@@ -493,3 +493,21 @@ def test_openai_response_extracts_file_image_event():
     )
 
     assert images == [(b"abc", "image/jpeg")]
+
+
+def test_openai_response_extracts_response_completed_image_generation_call():
+    images = _extract_generated_images_from_openai_response(
+        {
+            "type": "response.completed",
+            "response": {
+                "output": [
+                    {
+                        "type": "image_generation_call",
+                        "result": "YWJj",
+                    }
+                ],
+            },
+        }
+    )
+
+    assert images == [(b"abc", "image/png")]

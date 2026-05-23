@@ -108,6 +108,73 @@ def test_send_openai_image_request_parses_official_stream(monkeypatch):
     assert json.loads(result["response_body"])["data"] == [{"b64_json": b64_image}]
 
 
+def test_send_openai_image_request_parses_responses_completed_stream(monkeypatch):
+    b64_image = base64.b64encode(b"generated" * 32).decode("utf-8")
+
+    class FakeStreamResponse:
+        status_code = 200
+        headers = {"content-type": "text/event-stream"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def aiter_lines(self):
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "output": [
+                                {
+                                    "type": "image_generation_call",
+                                    "result": b64_image,
+                                }
+                            ],
+                            "usage": {"output_tokens": 1},
+                        },
+                    }
+                )
+            )
+            yield "data: [DONE]"
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        def stream(self, method, url, **kwargs):
+            return FakeStreamResponse()
+
+    monkeypatch.setattr(images_router.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = asyncio.run(
+        images_router._send_openai_image_request(
+            url="https://api.openai.com/v1/responses",
+            headers={"Authorization": "Bearer test"},
+            request_kind="json",
+            json_body={
+                "model": "gpt-image-2",
+                "input": [{"role": "user", "content": "cat"}],
+                "stream": True,
+            },
+        )
+    )
+
+    body = json.loads(result["response_body"])
+    assert result["status"] == 200
+    assert body["data"] == [{"b64_json": b64_image}]
+    assert body["usage"] == {"output_tokens": 1}
+
+
 def test_build_openai_image_usage_includes_elapsed_without_upstream_tokens():
     usage = images_router._build_openai_image_usage({"data": []}, 1234)
 
@@ -233,8 +300,8 @@ def test_generate_via_openai_images_endpoint_uses_native_request(monkeypatch):
 
     assert captured["request_kind"] == "json"
     assert captured["json_body"]["model"] == "gpt-image-2"
-    assert "stream" not in captured["json_body"]
-    assert "partial_images" not in captured["json_body"]
+    assert captured["json_body"]["stream"] is True
+    assert captured["json_body"]["partial_images"] == 1
     assert "response_format" not in captured["json_body"]
     assert "size" not in captured["json_body"]
     assert result == [{"url": "/images/generated.png"}]
@@ -402,10 +469,11 @@ def test_generate_via_openai_images_endpoint_splits_batch_into_single_requests(m
     assert len(calls) == 3
     assert [call["json_body"]["n"] for call in calls] == [1, 1, 1]
     assert all(call["json_body"]["size"] == "1024x1024" for call in calls)
+    assert all(call["json_body"]["stream"] is True for call in calls)
     assert result == [
-        {"url": "/images/generated-1.png"},
-        {"url": "/images/generated-2.png"},
-        {"url": "/images/generated-3.png"},
+        {"url": "/images/generated-1.png", "slot_index": 0},
+        {"url": "/images/generated-2.png", "slot_index": 1},
+        {"url": "/images/generated-3.png", "slot_index": 2},
     ]
 
 
@@ -500,8 +568,8 @@ def test_generate_via_openai_images_endpoint_strips_connection_prefix(monkeypatc
     )
 
     assert captured["json_body"]["model"] == "gpt-image-2"
-    assert "stream" not in captured["json_body"]
-    assert "partial_images" not in captured["json_body"]
+    assert captured["json_body"]["stream"] is True
+    assert captured["json_body"]["partial_images"] == 1
     assert "response_format" not in captured["json_body"]
 
 
@@ -666,10 +734,11 @@ def test_generate_via_openai_image_edits_endpoint_splits_batch_into_single_reque
     assert len(calls) == 2
     assert [call["form_fields"]["n"] for call in calls] == [1, 1]
     assert all(call["form_fields"]["size"] == "1536x1024" for call in calls)
+    assert all(call["form_fields"]["stream"] is True for call in calls)
     assert all(call["files"][0]["field_name"] == "image" for call in calls)
     assert result == [
-        {"url": "/images/edited-1.png"},
-        {"url": "/images/edited-2.png"},
+        {"url": "/images/edited-1.png", "slot_index": 0},
+        {"url": "/images/edited-2.png", "slot_index": 1},
     ]
 
 

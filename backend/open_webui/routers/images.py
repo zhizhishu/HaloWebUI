@@ -4280,6 +4280,9 @@ def _extract_generated_image_payload(
     if not isinstance(item, dict):
         return None
 
+    if str(item.get("type") or "").strip().lower() in {"input_image"}:
+        return None
+
     mime_type_hint = (
         item.get("mime_type")
         or item.get("mimeType")
@@ -4413,6 +4416,18 @@ def _extract_generated_images_from_openai_response(
     allowed_base_urls: Optional[list[str]] = None,
 ) -> list[tuple[bytes, str]]:
     items: list[Any] = []
+    visited_containers: set[int] = set()
+    image_payload_keys = {
+        "b64_json",
+        "bytesBase64Encoded",
+        "image_base64",
+        "base64",
+        "image",
+        "result",
+        "image_url",
+        "url",
+        "file",
+    }
 
     def add_message_like(value: Any) -> None:
         if not isinstance(value, dict):
@@ -4430,13 +4445,88 @@ def _extract_generated_images_from_openai_response(
         elif isinstance(content, str):
             items.append({"text": content})
 
+    def add_container(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                add_container(item)
+            return
+        if not isinstance(value, dict):
+            return
+
+        object_id = id(value)
+        if object_id in visited_containers:
+            return
+        visited_containers.add(object_id)
+
+        if str(value.get("type") or "").strip().lower() == "input_image":
+            return
+
+        if any(key in value for key in image_payload_keys):
+            items.append(value)
+
+        for key in ("data", "images", "output", "items"):
+            child = value.get(key)
+            if isinstance(child, (dict, list)):
+                add_container(child)
+
+        content = value.get("content")
+        if isinstance(content, (dict, list)):
+            add_container(content)
+        elif isinstance(content, str):
+            items.append({"text": content})
+
+        for key in ("item", "response", "message", "delta"):
+            child = value.get(key)
+            if isinstance(child, (dict, list)):
+                add_container(child)
+
+        for key in ("output_text", "text"):
+            text_value = value.get(key)
+            if isinstance(text_value, str):
+                items.append({"text": text_value})
+
+        choices = value.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                add_message_like(choice.get("message"))
+                add_message_like(choice.get("delta"))
+                add_container(choice.get("message"))
+                add_container(choice.get("delta"))
+
     if isinstance(body, dict):
+        add_container(body)
+
+        if any(
+            key in body
+            for key in (
+                "b64_json",
+                "bytesBase64Encoded",
+                "image_base64",
+                "base64",
+                "image",
+                "result",
+                "image_url",
+                "url",
+                "file",
+            )
+        ):
+            items.append(body)
+
         for key in ("data", "images", "output"):
             value = body.get(key)
             if isinstance(value, list):
                 items.extend(value)
             elif isinstance(value, dict):
                 items.append(value)
+
+        for key in ("item", "response"):
+            value = body.get(key)
+            if isinstance(value, dict):
+                items.append(value)
+            elif isinstance(value, list):
+                items.extend(value)
 
         for key in ("image", "image_url", "file"):
             value = body.get(key)
@@ -4462,11 +4552,17 @@ def _extract_generated_images_from_openai_response(
                 add_message_like(choice.get("delta"))
 
     images: list[tuple[bytes, str]] = []
+    seen_images: set[tuple[str, str]] = set()
     for item in items:
         loaded = _extract_generated_image_payload(
             item, headers=headers, allowed_base_urls=allowed_base_urls
         )
         if loaded:
+            image_bytes, mime_type = loaded
+            key = (hashlib.sha256(image_bytes).hexdigest(), str(mime_type or ""))
+            if key in seen_images:
+                continue
+            seen_images.add(key)
             images.append(loaded)
 
     return images
@@ -4605,6 +4701,15 @@ def _parse_openai_image_stream_response(stream_text: str) -> dict[str, Any]:
             continue
 
         event_type = str(event.get("type") or "")
+        if "partial" in event_type:
+            continue
+        if isinstance(event.get("usage"), dict):
+            usage = event["usage"]
+        response_obj = event.get("response")
+        if isinstance(response_obj, dict) and isinstance(
+            response_obj.get("usage"), dict
+        ):
+            usage = response_obj["usage"]
         if event_type in {"image_generation.completed", "image_edit.completed"}:
             b64_json = event.get("b64_json")
             if b64_json:
@@ -4618,8 +4723,6 @@ def _parse_openai_image_stream_response(stream_text: str) -> dict[str, Any]:
                         )
                     )
                 images.append({"b64_json": b64_json})
-            if isinstance(event.get("usage"), dict):
-                usage = event["usage"]
 
         for image_bytes, mime_type in _extract_generated_images_from_openai_response(
             event
@@ -5191,7 +5294,10 @@ async def _generate_via_openai_image_edits_endpoint(
         payload["size"] = size
     if background:
         payload["background"] = background
-    if not _openai_image_model_has_default_response_format(base_name):
+    if _openai_image_model_has_default_response_format(base_name):
+        payload["stream"] = True
+        payload["partial_images"] = 1
+    else:
         payload["response_format"] = "b64_json"
 
     image_extension = mimetypes.guess_extension(image_mime or "image/png") or ".png"
@@ -5363,7 +5469,10 @@ async def _generate_via_openai_images_endpoint(
     }
     if size:
         payload["size"] = size
-    if not _openai_image_model_has_default_response_format(base_name):
+    if _openai_image_model_has_default_response_format(base_name):
+        payload["stream"] = True
+        payload["partial_images"] = 1
+    else:
         payload["response_format"] = "b64_json"
 
     if background:
@@ -5555,6 +5664,7 @@ async def _generate_via_openai_chat_image(
     source: dict[str, Any],
     image_url: Optional[str] = None,
     prefer_responses: bool = False,
+    n: int = 1,
 ) -> list[dict[str, str]]:
     base_url = source.get("base_url") or ""
     api_key = source.get("key") or ""
@@ -5569,6 +5679,27 @@ async def _generate_via_openai_chat_image(
         upstream_model_id,
         native_web_search=False,
     )
+    requested_n = max(1, int(n or 1))
+    if requested_n > 1:
+
+        async def run_single(_index: int) -> list[dict[str, str]]:
+            return await _generate_via_openai_chat_image(
+                request,
+                user,
+                model_id=model_id,
+                prompt=prompt,
+                source=source,
+                image_url=image_url,
+                prefer_responses=prefer_responses,
+                n=1,
+            )
+
+        return await _run_openai_image_split_batch(
+            route_label="responses" if use_responses_api else "chat",
+            model_id=model_id,
+            n=requested_n,
+            run_single=run_single,
+        )
 
     image_input: Optional[tuple[str, bytes, str]] = None
     if image_url:
@@ -5600,8 +5731,8 @@ async def _generate_via_openai_chat_image(
         payload: dict[str, Any] = {
             "model": upstream_model_id,
             "input": [{"role": "user", "content": responses_content}],
-            "tools": [{"type": "image_generation"}],
-            "stream": False,
+            "tools": [{"type": "image_generation", "partial_images": 1}],
+            "stream": True,
         }
     else:
         request_url = chat_url
@@ -5657,77 +5788,97 @@ async def _generate_via_openai_chat_image(
                     base_url, attempt.key, api_config, user
                 )
                 if use_responses_api:
-                    response = await client.post(
+                    async with client.stream(
+                        "POST",
                         request_url,
                         headers=headers,
                         json=payload,
-                    )
-                    if response.status_code >= 400:
-                        error_body = response.text
-                        if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
-                            api_config,
-                            status_code=response.status_code,
-                            body=error_body,
-                        ):
-                            _log_image_key_retry(
-                                "openai",
-                                "responses",
-                                attempt,
-                                next_attempt=attempt_idx + 2,
-                                total=len(key_attempts),
-                                status_code=response.status_code,
+                    ) as response:
+                        if response.status_code >= 400:
+                            error_body = (await response.aread()).decode(
+                                "utf-8", errors="replace"
                             )
-                            continue
-                        raise HTTPException(
-                            status_code=response.status_code,
-                            detail=_build_openai_image_upstream_error_detail(
+                            if attempt_idx + 1 < len(
+                                key_attempts
+                            ) and should_retry_api_key(
+                                api_config,
+                                status_code=response.status_code,
+                                body=error_body,
+                            ):
+                                _log_image_key_retry(
+                                    "openai",
+                                    "responses",
+                                    attempt,
+                                    next_attempt=attempt_idx + 2,
+                                    total=len(key_attempts),
+                                    status_code=response.status_code,
+                                )
+                                continue
+                            raise HTTPException(
+                                status_code=response.status_code,
+                                detail=_build_openai_image_upstream_error_detail(
+                                    response.status_code,
+                                    error_body,
+                                    default="Failed to generate image via upstream /responses",
+                                    route_label="responses",
+                                ),
+                            )
+
+                        async for raw_line in response.aiter_lines():
+                            line = str(raw_line or "").strip()
+                            if (
+                                not line
+                                or line.startswith(":")
+                                or line.startswith("event:")
+                            ):
+                                continue
+                            data = (
+                                line[len("data:") :].strip()
+                                if line.startswith("data:")
+                                else line
+                            )
+                            if not data or data == "[DONE]":
+                                continue
+                            try:
+                                event = json.loads(data)
+                            except Exception:
+                                continue
+                            if isinstance(event, dict):
+                                if isinstance(event.get("usage"), dict):
+                                    usage = event["usage"]
+                                response_obj = event.get("response")
+                                if isinstance(response_obj, dict) and isinstance(
+                                    response_obj.get("usage"), dict
+                                ):
+                                    usage = response_obj["usage"]
+                                if "partial" in str(event.get("type") or ""):
+                                    continue
+                            _append_unique_generated_images(
+                                images,
+                                _extract_generated_images_from_openai_response(
+                                    event,
+                                    headers=headers,
+                                    allowed_base_urls=[base_url],
+                                ),
+                                seen_images,
+                            )
+
+                        try:
+                            log.info(
+                                "openai_chat_image_result status=%s elapsed_ms=%s image_count=%s responses=%s response_headers=%s",
                                 response.status_code,
-                                error_body,
-                                default="Failed to generate image via upstream /responses",
-                                route_label="responses",
-                            ),
-                        )
-
-                    try:
-                        response_body = response.json()
-                    except Exception as error:
-                        raise HTTPException(
-                            status_code=502,
-                            detail=build_error_detail(
-                                response.text,
-                                error,
-                                default="Invalid JSON response from upstream /responses",
-                            ),
-                        )
-
-                    elapsed_ms = int((time.monotonic() - started_at) * 1000)
-                    usage = _build_openai_image_usage(response_body, elapsed_ms)
-                    _append_unique_generated_images(
-                        images,
-                        _extract_generated_images_from_openai_response(
-                            response_body,
-                            headers=headers,
-                            allowed_base_urls=[base_url],
-                        ),
-                        seen_images,
-                    )
-
-                    try:
-                        log.info(
-                            "openai_chat_image_result status=%s elapsed_ms=%s image_count=%s responses=%s response_headers=%s",
-                            response.status_code,
-                            elapsed_ms,
-                            len(images),
-                            "yes",
-                            json.dumps(
-                                _redact_upstream_headers(dict(response.headers)),
-                                ensure_ascii=False,
-                                sort_keys=True,
-                            ),
-                        )
-                    except Exception:
-                        pass
-                    break
+                                int((time.monotonic() - started_at) * 1000),
+                                len(images),
+                                "yes",
+                                json.dumps(
+                                    _redact_upstream_headers(dict(response.headers)),
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                ),
+                            )
+                        except Exception:
+                            pass
+                        break
                 else:
                     async with client.stream(
                         "POST",
@@ -5788,6 +5939,10 @@ async def _generate_via_openai_chat_image(
                                 event.get("usage"), dict
                             ):
                                 usage = event["usage"]
+                            if isinstance(event, dict) and "partial" in str(
+                                event.get("type") or ""
+                            ):
+                                continue
                             _append_unique_generated_images(
                                 images,
                                 _extract_generated_images_from_openai_response(
@@ -6332,6 +6487,7 @@ async def image_generations(
                     source=source,
                     image_url=form_data.image_url,
                     prefer_responses=openai_image_route == OPENAI_IMAGE_ROUTE_RESPONSES,
+                    n=requested_n,
                 )
 
             if openai_image_route == OPENAI_IMAGE_ROUTE_EDITS:
