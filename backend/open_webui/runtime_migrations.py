@@ -6,6 +6,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -42,6 +43,7 @@ HALO_TARGET_HEAD = "4c8d9e0f1a2b"
 HALO_CONNECTION_METADATA_BACKFILL_KEY = "connection_metadata_backfill_v2"
 HALO_IMAGE_GENERATION_OPTIONS_CLEANUP_KEY = "image_generation_options_cleanup_v2"
 HALO_LEGACY_WEB_SEARCH_SETTINGS_CLEANUP_KEY = "legacy_web_search_settings_cleanup_v1"
+HALO_LEGACY_SKILL_PROMPT_MIGRATION_KEY = "legacy_skill_prompt_migration_v1"
 OPENWEBUI_090_095_REVISIONS = (
     "a3dd5bedd151",
     "d4e5f6a7b8c9",
@@ -1077,6 +1079,167 @@ def _cleanup_legacy_image_generation_options(conn: Connection) -> dict[str, int]
     }
 
 
+def _normalize_prompt_command_for_migration(value: str) -> str:
+    normalized = re.sub(r"[^0-9a-zA-Z_-]+", "-", str(value or "").lower()).strip("-")
+    return normalized or "legacy-skill"
+
+
+def _next_prompt_command_for_migration(conn: Connection, base_command: str) -> str:
+    command = base_command
+    suffix = 2
+    while conn.execute(
+        text('SELECT 1 FROM "prompt" WHERE command = :command LIMIT 1'),
+        {"command": command},
+    ).first():
+        command = f"{base_command}-{suffix}"
+        suffix += 1
+    return command
+
+
+def _next_prompt_id_for_migration(conn: Connection) -> Any:
+    try:
+        column = next(
+            column for column in inspect(conn).get_columns("prompt") if column["name"] == "id"
+        )
+        try:
+            uses_integer = column["type"].python_type is int
+        except Exception:
+            uses_integer = "INT" in str(column["type"]).upper()
+        if uses_integer:
+            return int(
+                conn.execute(text('SELECT COALESCE(MAX(id), 0) + 1 FROM "prompt"')).scalar()
+                or 1
+            )
+    except Exception:
+        pass
+    return str(uuid.uuid4())
+
+
+def _create_prompt_from_legacy_skill(
+    conn: Connection,
+    backend: str,
+    row: dict[str, Any],
+    *,
+    now: int,
+) -> Optional[str]:
+    skill_id = str(row.get("id") or "")
+    if not skill_id:
+        return None
+
+    meta = _json_object(row.get("meta"))
+    migrated_prompt_id = meta.get("migrated_prompt_id")
+    if migrated_prompt_id and conn.execute(
+        text('SELECT 1 FROM "prompt" WHERE id = :id LIMIT 1'),
+        {"id": str(migrated_prompt_id)},
+    ).first():
+        return str(migrated_prompt_id)
+
+    base_command = _normalize_prompt_command_for_migration(
+        f"skill-{row.get('identifier') or row.get('name') or skill_id}"
+    )
+    command = _next_prompt_command_for_migration(conn, base_command)
+    prompt_id = _next_prompt_id_for_migration(conn)
+    prompt_meta = {
+        "source": "legacy_skill_migration",
+        "legacy_skill_id": skill_id,
+        "legacy_skill_identifier": row.get("identifier"),
+    }
+    tags = meta.get("tags") if isinstance(meta.get("tags"), list) else None
+    access_control = _json_value(row.get("access_control"))
+
+    conn.execute(
+        text(
+            f"""
+            INSERT INTO "prompt"
+            (id, command, user_id, name, content, data, meta, tags, is_active, version_id, access_control, created_at, updated_at, title, timestamp)
+            VALUES
+            (:id, :command, :user_id, :name, :content, NULL, { _json_bind_expr('meta_json', backend) }, { _json_bind_expr('tags_json', backend) }, :is_active, NULL, { _json_bind_expr('access_control_json', backend) }, :created_at, :updated_at, :title, :timestamp)
+            """
+        ),
+        {
+            "id": prompt_id,
+            "command": command,
+            "user_id": str(row.get("user_id") or ""),
+            "name": str(row.get("name") or ""),
+            "content": str(row.get("content") or ""),
+            "meta_json": _json_dump(prompt_meta),
+            "tags_json": _json_dump(tags) if tags is not None else None,
+            "is_active": bool(row.get("is_active") if row.get("is_active") is not None else True),
+            "access_control_json": _json_dump(access_control) if access_control is not None else None,
+            "created_at": int(row.get("created_at") or now),
+            "updated_at": now,
+            "title": str(row.get("name") or ""),
+            "timestamp": now,
+        },
+    )
+    return str(prompt_id)
+
+
+def _classify_skill_meta_for_migration(meta: dict[str, Any], source: str) -> str:
+    explicit_kind = str(meta.get("kind") or "").strip()
+    if explicit_kind:
+        return explicit_kind
+    if source in {"url", "github", "zip"} or meta.get("manifest") or meta.get("package"):
+        return "skill_package"
+    return "prompt_legacy"
+
+
+def _migrate_legacy_prompt_skills(conn: Connection) -> dict[str, int]:
+    if not _table_exists(conn, "skill") or not _table_exists(conn, "prompt"):
+        return {"scanned": 0, "prompt_skills": 0, "packages": 0, "created_prompts": 0}
+
+    backend = "sqlite" if conn.engine.url.drivername.startswith("sqlite") else "postgresql"
+    _ensure_prompt_legacy_and_v2_columns(conn, backend, source_has_access_grants=False)
+    _ensure_skill_table(conn, backend, source_has_access_grants=False)
+
+    scanned = 0
+    prompt_skills = 0
+    packages = 0
+    created_prompts = 0
+    now = _now()
+    rows = conn.execute(text('SELECT * FROM "skill"')).mappings().all()
+    for row in rows:
+        scanned += 1
+        source = str(row.get("source") or "manual").strip().lower()
+        meta = _json_object(row.get("meta"))
+        kind = _classify_skill_meta_for_migration(meta, source)
+
+        if kind == "skill_package":
+            packages += 1
+            changed = meta.get("kind") != "skill_package"
+            meta["kind"] = "skill_package"
+            if "auto_enabled" not in meta:
+                meta["auto_enabled"] = False
+                changed = True
+            if "activation" not in meta or not isinstance(meta.get("activation"), dict):
+                meta["activation"] = {}
+                changed = True
+            if changed:
+                _update_json_column_by_id(conn, backend, "skill", "meta", str(row["id"]), meta)
+            continue
+
+        prompt_skills += 1
+        prompt_id = _create_prompt_from_legacy_skill(conn, backend, row, now=now)
+        if prompt_id:
+            created_prompts += 1
+            prompt = conn.execute(
+                text('SELECT command FROM "prompt" WHERE id = :id'),
+                {"id": prompt_id},
+            ).mappings().first()
+            meta["kind"] = "prompt_legacy"
+            meta["migrated_prompt_id"] = prompt_id
+            if prompt and prompt.get("command"):
+                meta["migrated_prompt_command"] = prompt["command"]
+            _update_json_column_by_id(conn, backend, "skill", "meta", str(row["id"]), meta)
+
+    return {
+        "scanned": scanned,
+        "prompt_skills": prompt_skills,
+        "packages": packages,
+        "created_prompts": created_prompts,
+    }
+
+
 def _run_post_halo_data_migrations(conn: Connection) -> None:
     if not _has_completed_data_migration(conn, HALO_CONNECTION_METADATA_BACKFILL_KEY):
         details = _backfill_user_connection_metadata(conn)
@@ -1099,6 +1262,15 @@ def _run_post_halo_data_migrations(conn: Connection) -> None:
         _mark_data_migration_completed(
             conn,
             HALO_LEGACY_WEB_SEARCH_SETTINGS_CLEANUP_KEY,
+            details,
+        )
+    if not _has_completed_data_migration(
+        conn, HALO_LEGACY_SKILL_PROMPT_MIGRATION_KEY
+    ):
+        details = _migrate_legacy_prompt_skills(conn)
+        _mark_data_migration_completed(
+            conn,
+            HALO_LEGACY_SKILL_PROMPT_MIGRATION_KEY,
             details,
         )
 

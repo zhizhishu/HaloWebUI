@@ -145,14 +145,27 @@ def parse_skill_markdown(
         source=source,
         has_package_assets=bool(normalized_files),
     )
+    tags = manifest.get("tags")
 
     meta = {
+        "kind": "skill_package",
+        "auto_enabled": False,
+        "activation": {
+            "description": str(
+                manifest.get("when_to_use")
+                or manifest.get("usage")
+                or manifest.get("description")
+                or ""
+            ),
+            "keywords": [str(tag).strip() for tag in tags if str(tag).strip()]
+            if isinstance(tags, list)
+            else [],
+        },
         "import_hash": import_hash,
         "manifest": manifest,
         "package_files": normalized_files,
         "runtime": runtime_meta,
     }
-    tags = manifest.get("tags")
     if isinstance(tags, list):
         meta["tags"] = [str(tag).strip() for tag in tags if str(tag).strip()]
 

@@ -1675,6 +1675,26 @@ def test_openai_gpt_image_edit_payload_uses_single_image_without_streaming(monke
     assert "response_format" not in captured["form_fields"]
 
 
+def test_openai_image_split_batch_does_not_return_partial_successes():
+    async def run_single(index: int):
+        if index in {2, 3}:
+            raise RuntimeError(f"upstream failed for image {index}")
+        return [{"url": f"/api/v1/files/generated-{index}"}]
+
+    try:
+        asyncio.run(
+            images_router._run_openai_image_split_batch(
+                route_label="generations",
+                model_id="gpt-image-2",
+                n=4,
+                run_single=run_single,
+            )
+        )
+        assert False, "split image batch must fail when any child request fails"
+    except RuntimeError as exc:
+        assert "upstream failed for image" in str(exc)
+
+
 def test_openai_compatible_dedicated_image_edit_payload_uses_single_image(monkeypatch):
     request = SimpleNamespace()
     user = SimpleNamespace(id="user-1", role="admin")

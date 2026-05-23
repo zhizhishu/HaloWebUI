@@ -191,6 +191,90 @@ def test_image_generation_title_falls_back_to_user_prompt_when_title_task_fails(
     }
 
 
+def test_image_generation_title_skips_model_call_and_uses_fallback(monkeypatch):
+    message_map = {
+        "user-1": {
+            "id": "user-1",
+            "role": "user",
+            "content": "生成一张橘猫在吃粮的照片，真实手机高清拍照视角",
+            "parentId": None,
+        },
+        "assistant-1": {
+            "id": "assistant-1",
+            "role": "assistant",
+            "content": "",
+            "parentId": "user-1",
+            "model": "gpt-image-2",
+        },
+    }
+    updated_titles = []
+
+    async def fake_event_emitter(_event):
+        pass
+
+    async def fake_generate_title(*_args, **_kwargs):
+        raise AssertionError("image sessions should not call the image model for title text")
+
+    monkeypatch.setattr(middleware, "generate_title", fake_generate_title)
+    monkeypatch.setattr(
+        middleware, "get_event_emitter", lambda _metadata: fake_event_emitter
+    )
+    monkeypatch.setattr(middleware, "get_event_call", lambda _metadata: None)
+    monkeypatch.setattr(
+        middleware, "get_active_status_by_user_id", lambda _user_id: True
+    )
+    monkeypatch.setattr(
+        middleware.Chats, "get_messages_by_chat_id", lambda _chat_id: message_map
+    )
+    monkeypatch.setattr(
+        middleware.Chats, "get_chat_title_by_id", lambda _chat_id: "New Chat"
+    )
+    monkeypatch.setattr(
+        middleware.Chats,
+        "upsert_message_to_chat_by_id_and_message_id",
+        lambda _chat_id, message_id, message: message_map[message_id].update(message),
+    )
+    monkeypatch.setattr(
+        middleware.Chats,
+        "update_chat_title_by_id",
+        lambda _chat_id, title: updated_titles.append(title),
+    )
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                WEBUI_NAME="Halo WebUI",
+                config=SimpleNamespace(
+                    ENABLE_CHAT_RESPONSE_BASE64_IMAGE_URL_CONVERSION=False,
+                    WEBUI_URL="http://localhost",
+                ),
+            )
+        )
+    )
+    user = SimpleNamespace(id="user-1", email="u@example.com", name="User", role="user")
+    metadata = {
+        "session_id": "session-1",
+        "chat_id": "chat-1",
+        "message_id": "assistant-1",
+        "skip_text_enhancements": True,
+    }
+
+    asyncio.run(
+        middleware.process_chat_response(
+            request,
+            {"choices": [{"message": {"content": "已生成图片"}}]},
+            {},
+            user,
+            metadata,
+            {},
+            [],
+            {TASKS.TITLE_GENERATION: True},
+        )
+    )
+
+    assert updated_titles == ["橘猫在吃粮的照片"]
+
+
 def test_dedicated_image_model_uses_current_chat_model_before_admin_default():
     captured = {}
 

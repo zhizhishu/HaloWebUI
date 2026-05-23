@@ -112,6 +112,7 @@ from open_webui.utils.skill_runtime import (
     build_skill_system_prompt,
     build_skill_tool_context,
     get_selected_skill_context,
+    select_auto_skill_ids,
 )
 from open_webui.utils.task import (
     build_fallback_chat_title,
@@ -4072,9 +4073,23 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     model_skill_ids = (
         (model.get("info", {}) or {}).get("meta", {}) or {}
     ).get("skillIds", [])
+    base_skill_ids = []
+    raw_base_skill_ids = [
+        *([] if skill_selection_touched else (model_skill_ids or [])),
+        *(skill_ids or []),
+    ]
+    for raw_skill_id in raw_base_skill_ids:
+        skill_id = str(raw_skill_id or "").strip()
+        if skill_id and skill_id not in base_skill_ids:
+            base_skill_ids.append(skill_id)
+    auto_skill_ids = select_auto_skill_ids(
+        user,
+        form_data.get("messages", []),
+        existing_skill_ids=base_skill_ids,
+    )
     skill_context = get_selected_skill_context(
         user,
-        skill_ids,
+        [*(skill_ids or []), *auto_skill_ids],
         [] if skill_selection_touched else model_skill_ids,
     )
     skill_system_prompt = build_skill_system_prompt(
@@ -4104,6 +4119,7 @@ async def process_chat_payload(request, form_data, user, metadata, model):
         "selected_runnable_skills": build_skill_tool_context(
             skill_context["runnable_skills"]
         ),
+        "auto_selected_skill_ids": auto_skill_ids,
         "skill_selection_touched": skill_selection_touched,
         "skill_ids": skill_context["resolved_ids"],
         "tool_ids": tool_ids,
@@ -4510,6 +4526,9 @@ async def process_chat_response(
                 return title_string.strip(" \"'")
 
             async def generate_or_fallback_chat_title() -> str:
+                if metadata.get("skip_text_enhancements"):
+                    return build_fallback_chat_title(messages)
+
                 try:
                     res = await generate_title(
                         request,

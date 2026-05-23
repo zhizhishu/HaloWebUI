@@ -188,7 +188,7 @@
 		}, {});
 
 		skills = ($_skills ?? []).reduce((a, skill) => {
-			// 检查是否已存在同名技能
+			// 检查是否已存在同名 Skill
 			const existingEntry = Object.entries(a).find(
 				([_, s]: [string, any]) => s.name === skill.name
 			);
@@ -206,16 +206,18 @@
 						name: skill.name,
 						description: skill.description,
 						source: skill.source,
+						meta: skill.meta,
 						enabled: selectedSkillIds.includes(skill.id)
 					};
 				}
 				// 如果当前是共享版本，已存在非共享版本，则跳过
 			} else {
-				// 不存在同名技能，直接添加
+				// 不存在同名 Skill，直接添加
 				a[skill.id] = {
 					name: skill.name,
 					description: skill.description,
 					source: skill.source,
+					meta: skill.meta,
 					enabled: selectedSkillIds.includes(skill.id)
 				};
 			}
@@ -365,7 +367,21 @@
 									placement="top-start"
 									className="truncate"
 								>
-									<div class="truncate">{skills[skillId].name}</div>
+									<div class="min-w-0">
+										<div class="truncate">{skills[skillId].name}</div>
+										{#if skills[skillId]?.meta?.runtime?.mode === 'runnable' || skills[skillId]?.meta?.auto_enabled}
+											<div
+												class="mt-0.5 flex gap-1 text-[10px] font-medium text-gray-500 dark:text-gray-400"
+											>
+												{#if skills[skillId]?.meta?.runtime?.mode === 'runnable'}
+													<span>{$i18n.t('Runnable')}</span>
+												{/if}
+												{#if skills[skillId]?.meta?.auto_enabled}
+													<span>{$i18n.t('Auto')}</span>
+												{/if}
+											</div>
+										{/if}
+									</div>
 								</Tooltip>
 							</div>
 

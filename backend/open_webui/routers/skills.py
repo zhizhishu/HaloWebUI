@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import SRC_LOG_LEVELS
 from open_webui.models.skills import SkillForm, SkillModel, Skills
+from open_webui.models.prompts import PromptForm, Prompts
 from open_webui.models.tools import Tools
 from open_webui.utils.access_control import (
     can_read_resource,
@@ -33,6 +34,8 @@ from open_webui.utils.skill_runtime import (
     SkillRuntimeError,
     cleanup_skill_assets,
     get_skill_runtime_capabilities,
+    is_legacy_prompt_skill,
+    is_skill_package,
     install_skill_runtime,
     save_imported_skill_assets,
     uninstall_skill_runtime,
@@ -169,6 +172,11 @@ class SkillRuntimeCapabilitiesResponse(BaseModel):
     node: dict[str, Any]
 
 
+class SkillAutoActivationForm(BaseModel):
+    auto_enabled: bool = False
+    activation: Optional[dict[str, Any]] = None
+
+
 class SkillImportForm(BaseModel):
     name: str
     description: str = ""
@@ -193,6 +201,84 @@ def _filter_visible_skills(skills: list[SkillModel], user) -> list[SkillModel]:
         return skills
 
     return [skill for skill in skills if can_read_resource(user, skill)]
+
+
+def _filter_skill_packages(skills: list[SkillModel]) -> list[SkillModel]:
+    return [skill for skill in skills if is_skill_package(skill)]
+
+
+def _filter_legacy_prompt_skills(skills: list[SkillModel]) -> list[SkillModel]:
+    return [skill for skill in skills if is_legacy_prompt_skill(skill)]
+
+
+def _skill_prompt_command(skill: SkillModel) -> str:
+    source = str(skill.identifier or skill.name or skill.id or "skill").lower()
+    command = "".join(ch if ch.isalnum() else "-" for ch in source).strip("-")
+    return f"skill-{command or skill.id}"
+
+
+def _next_skill_prompt_command(skill: SkillModel) -> str:
+    base_command = _skill_prompt_command(skill)
+    command = base_command
+    suffix = 2
+    while Prompts.get_prompt_by_command(command):
+        command = f"{base_command}-{suffix}"
+        suffix += 1
+    return command
+
+
+def _migrate_legacy_skill_to_prompt(skill: SkillModel):
+    existing_prompt_id = (skill.meta or {}).get("migrated_prompt_id")
+    if existing_prompt_id:
+        existing = Prompts.get_prompt_by_id(str(existing_prompt_id))
+        if existing:
+            return existing
+
+    command = _next_skill_prompt_command(skill)
+
+    meta = {
+        "source": "legacy_skill_migration",
+        "legacy_skill_id": skill.id,
+        "legacy_skill_identifier": skill.identifier,
+    }
+    prompt = Prompts.insert_new_prompt(
+        skill.user_id,
+        PromptForm(
+            command=command,
+            name=skill.name,
+            content=skill.content or "",
+            meta=meta,
+            tags=(skill.meta or {}).get("tags")
+            if isinstance((skill.meta or {}).get("tags"), list)
+            else None,
+            is_active=skill.is_active,
+            access_control=skill.access_control,
+        ),
+    )
+    if not prompt:
+        return None
+
+    next_meta = {
+        **(skill.meta or {}),
+        "kind": "prompt_legacy",
+        "migrated_prompt_id": prompt.id,
+        "migrated_prompt_command": prompt.command,
+    }
+    Skills.update_skill_by_id(
+        skill.id,
+        SkillForm(
+            name=skill.name,
+            description=skill.description,
+            content=skill.content,
+            source=skill.source,
+            identifier=skill.identifier,
+            source_url=skill.source_url,
+            meta=next_meta,
+            access_control=skill.access_control,
+            is_active=skill.is_active,
+        ),
+    )
+    return prompt
 
 
 def _is_enabled_connection(connection: dict) -> bool:
@@ -555,19 +641,29 @@ async def _upsert_imported_skill(user, payload: ImportedSkillPayload) -> SkillIm
 
 
 @router.get("/", response_model=list[SkillModel])
-async def get_skills(request: Request, user=Depends(get_verified_user)):
-    return _filter_visible_skills(Skills.get_skills(), user)
+async def get_skills(
+    request: Request,
+    include_legacy: bool = False,
+    user=Depends(get_verified_user),
+):
+    visible = _filter_visible_skills(Skills.get_skills(), user)
+    if include_legacy:
+        return visible
+    return _filter_skill_packages(visible)
 
 
 @router.get("/list", response_model=SkillListResponse)
 async def get_skill_list(
     query: Optional[str] = None,
     view_option: Optional[str] = None,
+    include_legacy: bool = False,
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=30, ge=1, le=100),
     user=Depends(get_verified_user),
 ):
     items = _filter_visible_skills(Skills.get_skills(), user)
+    if not include_legacy:
+        items = _filter_skill_packages(items)
 
     if view_option == "created":
         items = [item for item in items if item.user_id == user.id]
@@ -603,7 +699,7 @@ async def get_skill_catalog(request: Request, user=Depends(get_verified_user)):
         _build_mcp_server_items(request, user),
     )
     workspace_tool_items = _build_workspace_tool_items(user)
-    prompt_skill_items = _build_prompt_skill_items(visible_skills)
+    prompt_skill_items = _build_prompt_skill_items(_filter_skill_packages(visible_skills))
 
     return (
         sorted(builtin_items, key=lambda item: (item.status != "enabled", item.title.lower()))
@@ -637,12 +733,16 @@ async def create_skill(
         form_data.access_control,
         public_permission_key=None,
     )
+    meta = dict(form_data.meta or {})
+    meta.setdefault("kind", "prompt_legacy")
+    form_data.meta = meta
     skill = Skills.insert_new_skill(user.id, form_data)
     if not skill:
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ERROR_MESSAGES.DEFAULT("Error creating skill"),
         )
+    _migrate_legacy_skill_to_prompt(skill)
     return skill
 
 
@@ -657,11 +757,45 @@ async def import_skill(
     form_data: SkillImportForm,
     user=Depends(get_verified_user),
 ):
+    transient_skill = SkillModel(
+        id="imported",
+        user_id=user.id,
+        name=form_data.name,
+        description=form_data.description,
+        content=form_data.content,
+        source="manual",
+        meta={},
+        is_active=True,
+        updated_at=0,
+        created_at=0,
+    )
+    prompt = Prompts.insert_new_prompt(
+        user.id,
+        PromptForm(
+            command=_next_skill_prompt_command(transient_skill),
+            name=form_data.name,
+            content=form_data.content,
+            meta={"source": "legacy_skill_import"},
+            is_active=True,
+            access_control={},
+        ),
+    )
+    if not prompt:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ERROR_MESSAGES.DEFAULT("Error importing prompt"),
+        )
+
     skill_form = SkillForm(
         name=form_data.name,
         description=form_data.description,
         content=form_data.content,
         source="manual",
+        meta={
+            "kind": "prompt_legacy",
+            "migrated_prompt_id": prompt.id,
+            "migrated_prompt_command": prompt.command,
+        },
         access_control={},
     )
     skill = Skills.insert_new_skill(user.id, skill_form)
@@ -743,6 +877,11 @@ async def install_skill_runtime_route(
     skill_id: str,
     user=Depends(get_verified_user),
 ):
+    if user.role != "admin":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.ACCESS_PROHIBITED
+        )
+
     skill = Skills.get_skill_by_id(skill_id)
     if not skill:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)
@@ -816,6 +955,11 @@ async def uninstall_skill_runtime_route(
     skill_id: str,
     user=Depends(get_verified_user),
 ):
+    if user.role != "admin":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.ACCESS_PROHIBITED
+        )
+
     skill = Skills.get_skill_by_id(skill_id)
     if not skill:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)
@@ -848,6 +992,76 @@ async def uninstall_skill_runtime_route(
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ERROR_MESSAGES.DEFAULT("Error updating skill runtime"),
+        )
+    return updated
+
+
+@router.get("/legacy-prompts", response_model=list[SkillModel])
+async def get_legacy_prompt_skills(user=Depends(get_verified_user)):
+    return _filter_legacy_prompt_skills(
+        _filter_visible_skills(Skills.get_skills(), user)
+    )
+
+
+@router.post("/legacy-prompts/migrate")
+async def migrate_legacy_prompt_skills(user=Depends(get_verified_user)):
+    migrated = 0
+    skipped = 0
+    for skill in _filter_legacy_prompt_skills(
+        _filter_visible_skills(Skills.get_skills(), user)
+    ):
+        prompt = _migrate_legacy_skill_to_prompt(skill)
+        if prompt:
+            migrated += 1
+        else:
+            skipped += 1
+    return {"migrated": migrated, "skipped": skipped}
+
+
+@router.post("/{skill_id}/auto", response_model=SkillModel)
+async def update_skill_auto_activation_route(
+    skill_id: str,
+    form_data: SkillAutoActivationForm,
+    user=Depends(get_verified_user),
+):
+    if user.role != "admin":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.ACCESS_PROHIBITED
+        )
+
+    skill = Skills.get_skill_by_id(skill_id)
+    if not skill:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=ERROR_MESSAGES.NOT_FOUND)
+    if not is_skill_package(skill):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Only SKILL.md packages can be auto-activated.",
+        )
+
+    next_meta = {
+        **(skill.meta or {}),
+        "kind": "skill_package",
+        "auto_enabled": bool(form_data.auto_enabled),
+        "activation": form_data.activation if isinstance(form_data.activation, dict) else {},
+    }
+    updated = Skills.update_skill_by_id(
+        skill.id,
+        SkillForm(
+            name=skill.name,
+            description=skill.description,
+            content=skill.content,
+            source=skill.source,
+            identifier=skill.identifier,
+            source_url=skill.source_url,
+            meta=next_meta,
+            access_control=skill.access_control,
+            is_active=skill.is_active,
+        ),
+    )
+    if not updated:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ERROR_MESSAGES.DEFAULT("Error updating skill auto activation"),
         )
     return updated
 
@@ -898,6 +1112,16 @@ async def update_skill_by_id(
 
     if "access_control" not in getattr(form_data, "model_fields_set", set()):
         form_data.access_control = skill.access_control
+
+    if user.role != "admin":
+        incoming_meta = dict(form_data.meta or {})
+        current_meta = dict(skill.meta or {})
+        for key in ("auto_enabled", "activation"):
+            if key in current_meta:
+                incoming_meta[key] = current_meta[key]
+            else:
+                incoming_meta.pop(key, None)
+        form_data.meta = incoming_meta or None
 
     ensure_resource_acl_change_allowed(
         request,

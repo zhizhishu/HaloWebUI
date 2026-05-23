@@ -107,7 +107,7 @@
 			key: 'integrations',
 			titleKey: '集成配置',
 			titleDefault: 'Integrations',
-			descKey: '知识库、工具、技能、过滤器、动作、内置工具',
+			descKey: '知识库、工具、Skill、过滤器、动作、内置工具',
 			descDefault: 'Knowledge bases, tools, skills, filters, actions, and built-in tools',
 			badgeColor: 'bg-cyan-50 dark:bg-cyan-950/30',
 			iconColor: 'text-cyan-500 dark:text-cyan-400',
