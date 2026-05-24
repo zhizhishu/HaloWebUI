@@ -392,11 +392,21 @@ from open_webui.config import (
     DEFAULT_MODELS,
     MODEL_ORDER_LIST,
     # WebUI (OAuth)
+    ENABLE_OAUTH_LOGIN,
+    ENABLE_OAUTH_SIGNUP,
+    OAUTH_MERGE_ACCOUNTS_BY_EMAIL,
+    OAUTH_CLIENT_ID,
+    OAUTH_CLIENT_SECRET,
+    OPENID_PROVIDER_URL,
+    OPENID_REDIRECT_URI,
+    OAUTH_SCOPES,
+    OAUTH_PROVIDER_NAME,
     ENABLE_OAUTH_ROLE_MANAGEMENT,
     OAUTH_ROLES_CLAIM,
     OAUTH_EMAIL_CLAIM,
     OAUTH_PICTURE_CLAIM,
     OAUTH_USERNAME_CLAIM,
+    OAUTH_ALLOWED_DOMAINS,
     OAUTH_ALLOWED_ROLES,
     OAUTH_ADMIN_ROLES,
     # WebUI (LDAP)
@@ -658,6 +668,7 @@ async def log_request_validation_error(request: Request, exc: RequestValidationE
     return await request_validation_exception_handler(request, exc)
 
 oauth_manager = OAuthManager(app)
+app.state.oauth_manager = oauth_manager
 
 app.state.config = AppConfig(
     redis_url=REDIS_URL,
@@ -860,6 +871,16 @@ app.state.config.ENABLE_USER_WEBHOOKS = ENABLE_USER_WEBHOOKS
 app.state.config.OAUTH_USERNAME_CLAIM = OAUTH_USERNAME_CLAIM
 app.state.config.OAUTH_PICTURE_CLAIM = OAUTH_PICTURE_CLAIM
 app.state.config.OAUTH_EMAIL_CLAIM = OAUTH_EMAIL_CLAIM
+app.state.config.ENABLE_OAUTH_LOGIN = ENABLE_OAUTH_LOGIN
+app.state.config.ENABLE_OAUTH_SIGNUP = ENABLE_OAUTH_SIGNUP
+app.state.config.OAUTH_MERGE_ACCOUNTS_BY_EMAIL = OAUTH_MERGE_ACCOUNTS_BY_EMAIL
+app.state.config.OAUTH_CLIENT_ID = OAUTH_CLIENT_ID
+app.state.config.OAUTH_CLIENT_SECRET = OAUTH_CLIENT_SECRET
+app.state.config.OPENID_PROVIDER_URL = OPENID_PROVIDER_URL
+app.state.config.OPENID_REDIRECT_URI = OPENID_REDIRECT_URI
+app.state.config.OAUTH_SCOPES = OAUTH_SCOPES
+app.state.config.OAUTH_PROVIDER_NAME = OAUTH_PROVIDER_NAME
+app.state.config.OAUTH_ALLOWED_DOMAINS = OAUTH_ALLOWED_DOMAINS
 
 app.state.config.ENABLE_OAUTH_ROLE_MANAGEMENT = ENABLE_OAUTH_ROLE_MANAGEMENT
 app.state.config.OAUTH_ROLES_CLAIM = OAUTH_ROLES_CLAIM
@@ -2177,23 +2198,22 @@ async def get_app_changelog():
 # OAuth Login & Callback
 ############################
 
-# SessionMiddleware is used by authlib for oauth
-if len(OAUTH_PROVIDERS) > 0:
-    try:
-        from starlette.middleware.sessions import SessionMiddleware
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "OAuth is configured but the required dependency 'itsdangerous' is not installed. "
-            "Install it and rebuild the image."
-        ) from exc
+# SessionMiddleware is used by authlib for oauth and must exist before an
+# administrator enables OAuth from the settings page.
+try:
+    from starlette.middleware.sessions import SessionMiddleware
+except ModuleNotFoundError as exc:
+    raise RuntimeError(
+        "OAuth requires the dependency 'itsdangerous'. Install it and rebuild the image."
+    ) from exc
 
-    app.add_middleware(
-        SessionMiddleware,
-        secret_key=WEBUI_SECRET_KEY,
-        session_cookie="oui-session",
-        same_site=WEBUI_SESSION_COOKIE_SAME_SITE,
-        https_only=WEBUI_SESSION_COOKIE_SECURE,
-    )
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=WEBUI_SECRET_KEY,
+    session_cookie="oui-session",
+    same_site=WEBUI_SESSION_COOKIE_SAME_SITE,
+    https_only=WEBUI_SESSION_COOKIE_SECURE,
+)
 
 
 @app.get("/oauth/{provider}/login")

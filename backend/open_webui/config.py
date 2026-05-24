@@ -588,6 +588,17 @@ OAUTH_TOKEN_EXCHANGE_AUDIENCE = os.environ.get("OAUTH_TOKEN_EXCHANGE_AUDIENCE", 
 
 OAUTH_PROVIDERS = {}
 
+_ENABLE_OAUTH_LOGIN_ENV = os.environ.get("ENABLE_OAUTH_LOGIN")
+ENABLE_OAUTH_LOGIN = PersistentConfig(
+    "ENABLE_OAUTH_LOGIN",
+    "oauth.oidc.enable",
+    (
+        None
+        if _ENABLE_OAUTH_LOGIN_ENV is None
+        else _ENABLE_OAUTH_LOGIN_ENV.lower() == "true"
+    ),
+)
+
 GOOGLE_CLIENT_ID = PersistentConfig(
     "GOOGLE_CLIENT_ID",
     "oauth.google.client_id",
@@ -888,7 +899,8 @@ def load_oauth_providers():
         }
 
     if (
-        OAUTH_CLIENT_ID.value
+        ENABLE_OAUTH_LOGIN.value is not False
+        and OAUTH_CLIENT_ID.value
         and OAUTH_CLIENT_SECRET.value
         and OPENID_PROVIDER_URL.value
     ):
