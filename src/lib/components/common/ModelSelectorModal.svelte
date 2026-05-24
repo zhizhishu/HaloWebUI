@@ -23,6 +23,7 @@
 		describeNativeWebSearchSupport,
 		getNativeWebSearchSupport
 	} from '$lib/utils/native-web-search';
+	import { getApiKeyForRequest, getApiKeyPoolRequestConfig } from '$lib/utils/api-key-pool';
 
 	import Modal from '$lib/components/common/Modal.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
@@ -65,6 +66,16 @@
 	};
 	let availableModels: AvailableModel[] = [];
 	let serverModelListRequiresManualEntry = false;
+	let requestApiKeyPool: any = undefined;
+	let requestKey = '';
+
+	$: requestApiKeyPool = getApiKeyPoolRequestConfig(api_key_pool);
+	$: requestKey = getApiKeyForRequest(key, requestApiKeyPool);
+
+	const withRequestApiKeyPool = (config: Record<string, any>) => ({
+		...config,
+		...(requestApiKeyPool ? { api_key_pool: requestApiKeyPool } : {})
+	});
 
 	const describeConnectionError = (error: unknown) => {
 		const { title, description } = formatConnectionErrorToast(error, (key, options) =>
@@ -134,7 +145,7 @@
 
 			if (ollama) {
 				// Use backend proxy to avoid CORS issues
-				data = await verifyOllamaConnection(localStorage.token, { url, key });
+				data = await verifyOllamaConnection(localStorage.token, { url, key: requestKey });
 				availableModels = (data?.models || []).map((m: any) => ({
 					id: m.name || m.model,
 					name: m.name || m.model
@@ -143,12 +154,11 @@
 				// Use backend proxy to avoid CORS issues
 				data = await verifyGeminiConnection(localStorage.token, {
 					url,
-					key,
-					config: {
+					key: requestKey,
+					config: withRequestApiKeyPool({
 						...(auth_type ? { auth_type } : {}),
-						...(api_key_pool ? { api_key_pool } : {}),
 						...(headers ? { headers } : {})
-					}
+					})
 				});
 
 				// Gemini native: { models: [{ name: "models/...", displayName: "..." }, ...] }
@@ -165,12 +175,11 @@
 			} else if (grok) {
 				data = await verifyGrokConnection(localStorage.token, {
 					url,
-					key,
-					config: {
+					key: requestKey,
+					config: withRequestApiKeyPool({
 						...(auth_type ? { auth_type } : {}),
-						...(api_key_pool ? { api_key_pool } : {}),
 						...(headers ? { headers } : {})
-					}
+					})
 				});
 
 				if (!Array.isArray(data?.models)) {
@@ -184,14 +193,13 @@
 			} else if (anthropic) {
 				data = await verifyAnthropicConnection(localStorage.token, {
 					url,
-					key,
-					config: {
+					key: requestKey,
+					config: withRequestApiKeyPool({
 						...(auth_type ? { auth_type } : {}),
 						...(anthropic_version ? { anthropic_version } : {}),
 						...(anthropic_beta && anthropic_beta.length ? { anthropic_beta } : {}),
-						...(api_key_pool ? { api_key_pool } : {}),
 						...(headers ? { headers } : {})
-					}
+					})
 				});
 
 				if (!Array.isArray(data?.data)) {
@@ -204,25 +212,24 @@
 				}));
 			} else {
 				// Use backend proxy to avoid CORS issues
-					data = await verifyOpenAIConnection(localStorage.token, {
-						url,
-						key,
-						purpose: 'models',
-						config: {
-							force_mode,
-							...(azure ? { azure: true } : {}),
-							...(api_version ? { api_version } : {}),
-							...(auth_type ? { auth_type } : {}),
-							...(api_key_pool ? { api_key_pool } : {}),
-							...(headers ? { headers } : {})
-						}
-					});
-					availableModels = (data?.data || []).map((m: any) => ({
-						id: m.id,
-						name: m.name || m.id,
-						native_web_search_supported: m.native_web_search_supported,
-						native_web_search_support: m.native_web_search_support
-					}));
+				data = await verifyOpenAIConnection(localStorage.token, {
+					url,
+					key: requestKey,
+					purpose: 'models',
+					config: withRequestApiKeyPool({
+						force_mode,
+						...(azure ? { azure: true } : {}),
+						...(api_version ? { api_version } : {}),
+						...(auth_type ? { auth_type } : {}),
+						...(headers ? { headers } : {})
+					})
+				});
+				availableModels = (data?.data || []).map((m: any) => ({
+					id: m.id,
+					name: m.name || m.id,
+					native_web_search_supported: m.native_web_search_supported,
+					native_web_search_support: m.native_web_search_support
+				}));
 
 				serverModelListRequiresManualEntry =
 					data?._openwebui?.manual_model_ids_required === true;
