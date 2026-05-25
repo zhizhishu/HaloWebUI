@@ -751,7 +751,15 @@ export const generateMoACompletion = async (
 	return [res, controller];
 };
 
-export const getBackendConfig = async (token: string = '') => {
+const getStoredToken = () => {
+	try {
+		return globalThis.localStorage?.token ?? '';
+	} catch {
+		return '';
+	}
+};
+
+export const getBackendConfig = async (token: string = getStoredToken()) => {
 	let error = null;
 
 	const res = await fetch(`${WEBUI_BASE_URL}/api/config`, {
