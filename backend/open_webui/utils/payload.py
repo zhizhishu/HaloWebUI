@@ -106,15 +106,22 @@ def apply_model_params_to_body_openai(params: dict, form_data: dict) -> dict:
         params,
         form_data,
         mappings,
-        preserve_existing_keys={"reasoning_effort"},
+        preserve_existing_keys=set(mappings.keys()),
     )
 
 
 def apply_model_params_to_body_ollama(params: dict, form_data: dict) -> dict:
+    params = dict(params or {})
+
     # Convert OpenAI parameter names to Ollama parameter names if needed.
     name_differences = {
         "max_tokens": "num_predict",
     }
+
+    for key, value in name_differences.items():
+        if form_data.get(value) is None and form_data.get(key) is not None:
+            form_data[value] = form_data[key]
+        form_data.pop(key, None)
 
     for key, value in name_differences.items():
         if (param := params.get(key, None)) is not None:
@@ -162,7 +169,12 @@ def apply_model_params_to_body_ollama(params: dict, form_data: dict) -> dict:
         form_data["format"] = form_data["options"]["format"]
         del form_data["options"]["format"]
 
-    return apply_model_params_to_body(params, form_data, mappings)
+    return apply_model_params_to_body(
+        params,
+        form_data,
+        mappings,
+        preserve_existing_keys=set(mappings.keys()),
+    )
 
 
 def convert_messages_openai_to_ollama(messages: list[dict]) -> list[dict]:
