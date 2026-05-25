@@ -66,4 +66,56 @@ describe('chat response state', () => {
 			)
 		).toBe(false);
 	});
+
+	it('ignores terminal assistant responses even when old history did not persist done=true', () => {
+		const terminalMarkers = [
+			{ stopped: true },
+			{ stoppedByUser: true },
+			{ error: { content: 'failed' } },
+			{ completedAt: 123 }
+		];
+
+		for (const marker of terminalMarkers) {
+			expect(
+				hasActiveChatResponse(
+					{
+						currentId: 'assistant-1',
+						messages: {
+							'assistant-1': {
+								id: 'assistant-1',
+								role: 'assistant',
+								done: false,
+								...marker
+							}
+						}
+					},
+					null
+				)
+			).toBe(false);
+		}
+	});
+
+	it('ignores terminal assistant child responses when deciding whether the input is busy', () => {
+		expect(
+			hasActiveChatResponse(
+				{
+					currentId: 'user-1',
+					messages: {
+						'user-1': {
+							id: 'user-1',
+							role: 'user',
+							childrenIds: ['assistant-1']
+						},
+						'assistant-1': {
+							id: 'assistant-1',
+							role: 'assistant',
+							done: false,
+							error: { content: 'failed' }
+						}
+					}
+				},
+				null
+			)
+		).toBe(false);
+	});
 });
