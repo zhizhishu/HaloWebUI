@@ -16,6 +16,10 @@
 	import { getConnectionsConfig, setConnectionsConfig } from '$lib/apis/configs';
 	import { refreshModels as refreshModelsStore } from '$lib/services/models';
 	import { revealExpandedSection } from '$lib/utils/expanded-section-scroll';
+	import {
+		cloneIndexedProviderConnections,
+		removeIndexedProviderConnection
+	} from '$lib/utils/provider-connections';
 
 	import {
 		config,
@@ -92,6 +96,10 @@
 				)
 			: message;
 	};
+
+	const getSaveConnectionsError = () => new Error($i18n.t('Failed to save connections'));
+	const canRollbackProviderDelete = (currentVersion: number, versionBeforeDelete: number) =>
+		currentVersion === versionBeforeDelete + 1;
 
 	const initExpandedSections = () => {
 		if (expandedSectionsInitialized) return;
@@ -318,6 +326,31 @@
 		}
 	};
 
+	const deleteOpenAIConnectionHandler = async (idx: number, url: string) => {
+		const versionBeforeDelete = openaiUpdateVersion;
+		const previous = cloneIndexedProviderConnections({
+			urls: OPENAI_API_BASE_URLS,
+			keys: OPENAI_API_KEYS,
+			configs: OPENAI_API_CONFIGS
+		});
+		const next = removeIndexedProviderConnection(previous, idx, url);
+		if (!next.removed) return;
+
+		OPENAI_API_BASE_URLS = next.urls;
+		OPENAI_API_KEYS = next.keys ?? [];
+		OPENAI_API_CONFIGS = next.configs ?? {};
+
+		const ok = await updateOpenAIHandler(!!ENABLE_OPENAI_API);
+		if (!ok) {
+			if (canRollbackProviderDelete(openaiUpdateVersion, versionBeforeDelete)) {
+				OPENAI_API_BASE_URLS = previous.urls;
+				OPENAI_API_KEYS = previous.keys ?? [];
+				OPENAI_API_CONFIGS = previous.configs ?? {};
+			}
+			throw getSaveConnectionsError();
+		}
+	};
+
 	const addOllamaConnectionHandler = async (connection: any) => {
 		expandedSections.ollama = true;
 		OLLAMA_BASE_URLS = [...OLLAMA_BASE_URLS, connection.url];
@@ -329,6 +362,28 @@
 		const ok = await updateOllamaHandler(!!ENABLE_OLLAMA_API);
 		if (!ok) {
 			throw new Error($i18n.t('Failed to save connections'));
+		}
+	};
+
+	const deleteOllamaConnectionHandler = async (idx: number, url: string) => {
+		const versionBeforeDelete = ollamaUpdateVersion;
+		const previous = cloneIndexedProviderConnections({
+			urls: OLLAMA_BASE_URLS,
+			configs: OLLAMA_API_CONFIGS
+		});
+		const next = removeIndexedProviderConnection(previous, idx, url);
+		if (!next.removed) return;
+
+		OLLAMA_BASE_URLS = next.urls;
+		OLLAMA_API_CONFIGS = next.configs ?? {};
+
+		const ok = await updateOllamaHandler(!!ENABLE_OLLAMA_API);
+		if (!ok) {
+			if (canRollbackProviderDelete(ollamaUpdateVersion, versionBeforeDelete)) {
+				OLLAMA_BASE_URLS = previous.urls;
+				OLLAMA_API_CONFIGS = previous.configs ?? {};
+			}
+			throw getSaveConnectionsError();
 		}
 	};
 
@@ -406,6 +461,31 @@
 		}
 	};
 
+	const deleteGeminiConnectionHandler = async (idx: number, url: string) => {
+		const versionBeforeDelete = geminiUpdateVersion;
+		const previous = cloneIndexedProviderConnections({
+			urls: GEMINI_API_BASE_URLS,
+			keys: GEMINI_API_KEYS,
+			configs: GEMINI_API_CONFIGS
+		});
+		const next = removeIndexedProviderConnection(previous, idx, url);
+		if (!next.removed) return;
+
+		GEMINI_API_BASE_URLS = next.urls;
+		GEMINI_API_KEYS = next.keys ?? [];
+		GEMINI_API_CONFIGS = next.configs ?? {};
+
+		const ok = await updateGeminiHandler(!!ENABLE_GEMINI_API);
+		if (!ok) {
+			if (canRollbackProviderDelete(geminiUpdateVersion, versionBeforeDelete)) {
+				GEMINI_API_BASE_URLS = previous.urls;
+				GEMINI_API_KEYS = previous.keys ?? [];
+				GEMINI_API_CONFIGS = previous.configs ?? {};
+			}
+			throw getSaveConnectionsError();
+		}
+	};
+
 	const updateGrokHandler = async (refreshModels = true) => {
 		if (ENABLE_GROK_API === null) return false;
 
@@ -472,6 +552,31 @@
 		const ok = await updateGrokHandler(!!ENABLE_GROK_API);
 		if (!ok) {
 			throw new Error($i18n.t('Failed to save connections'));
+		}
+	};
+
+	const deleteGrokConnectionHandler = async (idx: number, url: string) => {
+		const versionBeforeDelete = grokUpdateVersion;
+		const previous = cloneIndexedProviderConnections({
+			urls: GROK_API_BASE_URLS,
+			keys: GROK_API_KEYS,
+			configs: GROK_API_CONFIGS
+		});
+		const next = removeIndexedProviderConnection(previous, idx, url);
+		if (!next.removed) return;
+
+		GROK_API_BASE_URLS = next.urls;
+		GROK_API_KEYS = next.keys ?? [];
+		GROK_API_CONFIGS = next.configs ?? {};
+
+		const ok = await updateGrokHandler(!!ENABLE_GROK_API);
+		if (!ok) {
+			if (canRollbackProviderDelete(grokUpdateVersion, versionBeforeDelete)) {
+				GROK_API_BASE_URLS = previous.urls;
+				GROK_API_KEYS = previous.keys ?? [];
+				GROK_API_CONFIGS = previous.configs ?? {};
+			}
+			throw getSaveConnectionsError();
 		}
 	};
 
@@ -546,6 +651,31 @@
 		const ok = await updateAnthropicHandler(!!ENABLE_ANTHROPIC_API);
 		if (!ok) {
 			throw new Error($i18n.t('Failed to save connections'));
+		}
+	};
+
+	const deleteAnthropicConnectionHandler = async (idx: number, url: string) => {
+		const versionBeforeDelete = anthropicUpdateVersion;
+		const previous = cloneIndexedProviderConnections({
+			urls: ANTHROPIC_API_BASE_URLS,
+			keys: ANTHROPIC_API_KEYS,
+			configs: ANTHROPIC_API_CONFIGS
+		});
+		const next = removeIndexedProviderConnection(previous, idx, url);
+		if (!next.removed) return;
+
+		ANTHROPIC_API_BASE_URLS = next.urls;
+		ANTHROPIC_API_KEYS = next.keys ?? [];
+		ANTHROPIC_API_CONFIGS = next.configs ?? {};
+
+		const ok = await updateAnthropicHandler(!!ENABLE_ANTHROPIC_API);
+		if (!ok) {
+			if (canRollbackProviderDelete(anthropicUpdateVersion, versionBeforeDelete)) {
+				ANTHROPIC_API_BASE_URLS = previous.urls;
+				ANTHROPIC_API_KEYS = previous.keys ?? [];
+				ANTHROPIC_API_CONFIGS = previous.configs ?? {};
+			}
+			throw getSaveConnectionsError();
 		}
 	};
 
@@ -875,19 +1005,8 @@
 													throw new Error($i18n.t('Failed to save connections'));
 												}
 											}}
-											onDelete={() => {
-												OPENAI_API_BASE_URLS = OPENAI_API_BASE_URLS.filter(
-													(u, urlIdx) => !(urlIdx === idx && u === url)
-												);
-												OPENAI_API_KEYS = OPENAI_API_KEYS.filter((key, keyIdx) => idx !== keyIdx);
-
-												let newConfig = {};
-												OPENAI_API_BASE_URLS.forEach((u, newIdx) => {
-													newConfig[newIdx] =
-														OPENAI_API_CONFIGS[newIdx < idx ? newIdx : newIdx + 1];
-												});
-												OPENAI_API_CONFIGS = newConfig;
-												updateOpenAIHandler(!!ENABLE_OPENAI_API);
+											onDelete={async () => {
+												await deleteOpenAIConnectionHandler(idx, url);
 											}}
 										/>
 									{/each}
@@ -1012,19 +1131,8 @@
 													throw new Error($i18n.t('Failed to save connections'));
 												}
 											}}
-											onDelete={() => {
-												GEMINI_API_BASE_URLS = GEMINI_API_BASE_URLS.filter(
-													(u, urlIdx) => !(urlIdx === idx && u === url)
-												);
-												GEMINI_API_KEYS = GEMINI_API_KEYS.filter((key, keyIdx) => idx !== keyIdx);
-
-												let newConfig = {};
-												GEMINI_API_BASE_URLS.forEach((u, newIdx) => {
-													newConfig[newIdx] =
-														GEMINI_API_CONFIGS[newIdx < idx ? newIdx : newIdx + 1];
-												});
-												GEMINI_API_CONFIGS = newConfig;
-												updateGeminiHandler(!!ENABLE_GEMINI_API);
+											onDelete={async () => {
+												await deleteGeminiConnectionHandler(idx, url);
 											}}
 										/>
 									{/each}
@@ -1134,19 +1242,8 @@
 													throw new Error($i18n.t('Failed to save connections'));
 												}
 											}}
-											onDelete={() => {
-												GROK_API_BASE_URLS = GROK_API_BASE_URLS.filter(
-													(u, urlIdx) => !(urlIdx === idx && u === url)
-												);
-												GROK_API_KEYS = GROK_API_KEYS.filter((key, keyIdx) => idx !== keyIdx);
-
-												let newConfig = {};
-												GROK_API_BASE_URLS.forEach((u, newIdx) => {
-													newConfig[newIdx] =
-														GROK_API_CONFIGS[newIdx < idx ? newIdx : newIdx + 1];
-												});
-												GROK_API_CONFIGS = newConfig;
-												updateGrokHandler(!!ENABLE_GROK_API);
+											onDelete={async () => {
+												await deleteGrokConnectionHandler(idx, url);
 											}}
 										/>
 									{/each}
@@ -1262,21 +1359,8 @@
 													throw new Error($i18n.t('Failed to save connections'));
 												}
 											}}
-											onDelete={() => {
-												ANTHROPIC_API_BASE_URLS = ANTHROPIC_API_BASE_URLS.filter(
-													(u, urlIdx) => !(urlIdx === idx && u === url)
-												);
-												ANTHROPIC_API_KEYS = ANTHROPIC_API_KEYS.filter(
-													(key, keyIdx) => idx !== keyIdx
-												);
-
-												let newConfig = {};
-												ANTHROPIC_API_BASE_URLS.forEach((u, newIdx) => {
-													newConfig[newIdx] =
-														ANTHROPIC_API_CONFIGS[newIdx < idx ? newIdx : newIdx + 1];
-												});
-												ANTHROPIC_API_CONFIGS = newConfig;
-												updateAnthropicHandler(!!ENABLE_ANTHROPIC_API);
+											onDelete={async () => {
+												await deleteAnthropicConnectionHandler(idx, url);
 											}}
 										/>
 									{/each}
@@ -1395,18 +1479,8 @@
 													throw new Error($i18n.t('Failed to save connections'));
 												}
 											}}
-											onDelete={() => {
-												OLLAMA_BASE_URLS = OLLAMA_BASE_URLS.filter(
-													(u, urlIdx) => !(urlIdx === idx && u === url)
-												);
-
-												let newConfig = {};
-												OLLAMA_BASE_URLS.forEach((u, newIdx) => {
-													newConfig[newIdx] =
-														OLLAMA_API_CONFIGS[newIdx < idx ? newIdx : newIdx + 1];
-												});
-												OLLAMA_API_CONFIGS = newConfig;
-												updateOllamaHandler(!!ENABLE_OLLAMA_API);
+											onDelete={async () => {
+												await deleteOllamaConnectionHandler(idx, url);
 											}}
 										/>
 									{/each}

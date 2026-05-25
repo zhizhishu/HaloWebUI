@@ -50,8 +50,10 @@
 
 <ConfirmDialog
 	bind:show={showDeleteConfirmDialog}
-	on:confirm={() => {
-		onDelete();
+	closeOnConfirm={false}
+	onConfirm={async () => {
+		await onDelete();
+		showConfigModal = false;
 	}}
 />
 
