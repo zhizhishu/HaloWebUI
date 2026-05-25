@@ -64,6 +64,24 @@ def test_selection_id_without_connection_id_does_not_use_connection_index():
     assert "::none::" in model["selection_id"]
 
 
+def test_selection_id_without_connection_selector_uses_single_available_connection():
+    model = _provider_model("openai", "gpt-4o", 0)
+
+    idx, url, key, api_config = resolve_provider_connection_by_model_id(
+        provider="openai",
+        model_id=model["selection_id"],
+        base_urls=["https://api.openai.com/v1"],
+        keys=["official-key"],
+        cfgs={"0": {"enable": True}},
+        request_models=[model],
+    )
+
+    assert idx == 0
+    assert url == "https://api.openai.com/v1"
+    assert key == "official-key"
+    assert api_config["_resolved_model_id"] == "gpt-4o"
+
+
 def test_legacy_index_selection_uses_unique_current_model_ref_instead_of_index():
     relay = _provider_model("openai", "gpt-image-2", 1, "7ad57b3e")
 

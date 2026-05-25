@@ -334,6 +334,18 @@ def _connection_prefix(cfg: dict[str, Any]) -> str:
     return _clean_str(cfg.get("prefix_id") or cfg.get("_resolved_prefix_id"))
 
 
+def _model_ref_has_connection_selector(model_ref: dict[str, Any]) -> bool:
+    if not isinstance(model_ref, dict):
+        return False
+
+    connection_id = _clean_str(model_ref.get("connection_id") or model_ref.get("prefix_id"))
+    if connection_id:
+        return True
+
+    connection_index = model_ref.get("connection_index")
+    return connection_index is not None and _clean_str(connection_index) != ""
+
+
 def _connection_matches_ref(
     *,
     provider: str,
@@ -452,10 +464,20 @@ def resolve_provider_connection_by_model_id(
                     detail=STALE_MODEL_REF_DETAIL,
                     requested_model_id=requested_model_id,
                 ),
-            )
+        )
         upstream_model_id = parsed_selection["model_id"]
-        effective_model_ref = parsed_selection["model_ref"]
+        parsed_model_ref = parsed_selection["model_ref"]
+        effective_model_ref = (
+            parsed_model_ref
+            if _model_ref_has_connection_selector(parsed_model_ref)
+            else {}
+        )
     elif effective_model_ref:
+        ref_provider = _clean_str(effective_model_ref.get("provider")).lower()
+        if not _model_ref_has_connection_selector(effective_model_ref) and (
+            not ref_provider or ref_provider == _clean_str(provider).lower()
+        ):
+            effective_model_ref = {}
         upstream_model_id = requested_model_id
 
     if effective_model_ref:
@@ -547,8 +569,8 @@ def resolve_provider_connection_by_model_id(
             ),
         )
 
-    if isinstance(cfgs, dict) and "." in requested_model_id:
-        maybe_prefix, rest = requested_model_id.split(".", 1)
+    if isinstance(cfgs, dict) and "." in upstream_model_id:
+        maybe_prefix, rest = upstream_model_id.split(".", 1)
         for idx, _url in enumerate(base_urls):
             cfg = _get_connection_cfg(cfgs, base_urls, idx)
             prefix_id = _connection_prefix(cfg)
@@ -561,7 +583,7 @@ def resolve_provider_connection_by_model_id(
 
     request_candidates = _find_request_model_candidates(
         provider=_clean_str(provider).lower(),
-        upstream_model_id=requested_model_id,
+        upstream_model_id=upstream_model_id,
         request_models=request_models,
     )
     if len(request_candidates) > 1:
@@ -580,10 +602,13 @@ def resolve_provider_connection_by_model_id(
         )
     if len(request_candidates) == 1:
         candidate_ref = get_model_ref_from_model(request_candidates[0])
-        if candidate_ref:
+        candidate_connection_id = _clean_str(
+            candidate_ref.get("connection_id") or candidate_ref.get("prefix_id")
+        )
+        if candidate_connection_id:
             return resolve_provider_connection_by_model_id(
                 provider=provider,
-                model_id=requested_model_id,
+                model_id=upstream_model_id,
                 base_urls=base_urls,
                 keys=keys,
                 cfgs=cfgs,
@@ -616,5 +641,5 @@ def resolve_provider_connection_by_model_id(
     url = (base_urls[chosen_idx] if chosen_idx < len(base_urls) else "").rstrip("/")
     key = keys[chosen_idx] if chosen_idx < len(keys) else ""
     api_config = {**cfg, "_resolved_prefix_id": _connection_prefix(cfg)}
-    api_config["_resolved_model_id"] = requested_model_id
+    api_config["_resolved_model_id"] = upstream_model_id
     return chosen_idx, url, key, api_config
