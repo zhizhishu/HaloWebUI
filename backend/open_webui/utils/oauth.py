@@ -82,6 +82,10 @@ class OAuthManager:
     def __init__(self, app):
         self.oauth = OAuth()
         self.app = app
+        self.refresh()
+
+    def refresh(self):
+        self.oauth = OAuth()
         for _, provider_config in OAUTH_PROVIDERS.items():
             provider_config["register"](self.oauth)
 

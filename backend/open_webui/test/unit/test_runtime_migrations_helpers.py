@@ -15,6 +15,7 @@ from open_webui.runtime_migrations import (
     _extract_text_content,
     _extract_usage_tokens,
     _merge_meta,
+    _migrate_legacy_prompt_skills,
     _migrate_090_095_family,
     _parse_postgres_major_version,
 )
@@ -50,6 +51,80 @@ def test_merge_meta_keeps_existing_and_adds_source_payload():
     merged = _merge_meta({"foo": "bar"}, {"raw_content": {"text": "hello"}})
     assert merged["foo"] == "bar"
     assert merged["halo_migrated_from_openwebui"]["raw_content"] == {"text": "hello"}
+
+
+def test_migrate_legacy_prompt_skills_copies_manual_skills_to_prompts():
+    engine = sa.create_engine("sqlite:///:memory:")
+    metadata = sa.MetaData()
+    sa.Table(
+        "prompt",
+        metadata,
+        sa.Column("id", sa.Text, primary_key=True),
+        sa.Column("command", sa.String, unique=True),
+        sa.Column("user_id", sa.String),
+        sa.Column("name", sa.Text),
+        sa.Column("content", sa.Text),
+        sa.Column("data", sa.JSON),
+        sa.Column("meta", sa.JSON),
+        sa.Column("tags", sa.JSON),
+        sa.Column("is_active", sa.Boolean, default=True),
+        sa.Column("version_id", sa.Text),
+        sa.Column("access_control", sa.JSON),
+        sa.Column("created_at", sa.BigInteger),
+        sa.Column("updated_at", sa.BigInteger),
+        sa.Column("title", sa.Text),
+        sa.Column("timestamp", sa.BigInteger),
+    )
+    sa.Table(
+        "skill",
+        metadata,
+        sa.Column("id", sa.Text, primary_key=True),
+        sa.Column("user_id", sa.Text, nullable=False),
+        sa.Column("name", sa.Text, nullable=False),
+        sa.Column("description", sa.Text),
+        sa.Column("content", sa.Text),
+        sa.Column("source", sa.Text),
+        sa.Column("identifier", sa.Text),
+        sa.Column("source_url", sa.Text),
+        sa.Column("meta", sa.JSON),
+        sa.Column("access_control", sa.JSON),
+        sa.Column("is_active", sa.Boolean),
+        sa.Column("created_at", sa.BigInteger),
+        sa.Column("updated_at", sa.BigInteger),
+    )
+    metadata.create_all(engine)
+
+    with engine.begin() as conn:
+        conn.execute(
+            sa.text(
+                'INSERT INTO "skill" (id, user_id, name, description, content, source, identifier, meta, is_active, created_at, updated_at) '
+                'VALUES ("legacy-1", "u1", "Release Writer", "", "write releases", "manual", NULL, "{}", 1, 1, 1)'
+            )
+        )
+        conn.execute(
+            sa.text(
+                'INSERT INTO "skill" (id, user_id, name, description, content, source, identifier, meta, is_active, created_at, updated_at) '
+                'VALUES ("pkg-1", "u1", "PDF Toolkit", "", "pdf", "zip", "pdf-toolkit", "{}", 1, 1, 1)'
+            )
+        )
+
+        details = _migrate_legacy_prompt_skills(conn)
+        prompt = conn.execute(sa.text('SELECT * FROM "prompt"')).mappings().one()
+        legacy = conn.execute(
+            sa.text('SELECT meta FROM "skill" WHERE id = "legacy-1"')
+        ).scalar_one()
+        package = conn.execute(
+            sa.text('SELECT meta FROM "skill" WHERE id = "pkg-1"')
+        ).scalar_one()
+
+    legacy_meta = json.loads(legacy) if isinstance(legacy, str) else legacy
+    package_meta = json.loads(package) if isinstance(package, str) else package
+    assert details["created_prompts"] == 1
+    assert prompt["command"].startswith("skill-release-writer")
+    assert prompt["content"] == "write releases"
+    assert legacy_meta["kind"] == "prompt_legacy"
+    assert legacy_meta["migrated_prompt_id"] == prompt["id"]
+    assert package_meta["kind"] == "skill_package"
 
 
 def test_parse_postgres_major_version_handles_release_and_beta_strings():

@@ -36,6 +36,9 @@ SKILL_RUNTIME_STATUS_INSTALLING = "installing"
 SKILL_RUNTIME_STATUS_READY = "ready"
 SKILL_RUNTIME_STATUS_ERROR = "error"
 SKILL_RUNTIME_STATUS_UNSUPPORTED = "unsupported"
+SKILL_KIND_PACKAGE = "skill_package"
+SKILL_KIND_PROMPT_LEGACY = "prompt_legacy"
+SKILL_AUTO_MATCH_LIMIT = 3
 
 SUPPORTED_ENTRYPOINT_RUNTIMES = {"python", "node"}
 BLOCKED_PYTHON_PACKAGES = {
@@ -290,6 +293,158 @@ def _skill_package_meta(skill: SkillModel) -> dict[str, Any]:
     meta = _skill_meta_dict(skill)
     package = meta.get("package")
     return package if isinstance(package, dict) else {}
+
+
+def _skill_activation_meta(skill: SkillModel) -> dict[str, Any]:
+    meta = _skill_meta_dict(skill)
+    activation = meta.get("activation")
+    return activation if isinstance(activation, dict) else {}
+
+
+def _skill_manifest_meta(skill: SkillModel) -> dict[str, Any]:
+    meta = _skill_meta_dict(skill)
+    manifest = meta.get("manifest")
+    return manifest if isinstance(manifest, dict) else {}
+
+
+def get_skill_kind(skill: SkillModel) -> str:
+    meta = _skill_meta_dict(skill)
+    explicit_kind = str(meta.get("kind") or "").strip()
+    if explicit_kind:
+        return explicit_kind
+
+    source = str(skill.source or "manual").strip().lower()
+    if source in {"url", "github", "zip"} or meta.get("manifest") or meta.get("package"):
+        return SKILL_KIND_PACKAGE
+
+    return SKILL_KIND_PROMPT_LEGACY
+
+
+def is_skill_package(skill: SkillModel) -> bool:
+    return get_skill_kind(skill) == SKILL_KIND_PACKAGE
+
+
+def is_legacy_prompt_skill(skill: SkillModel) -> bool:
+    return get_skill_kind(skill) == SKILL_KIND_PROMPT_LEGACY
+
+
+def skill_supports_auto_activation(skill: SkillModel) -> bool:
+    return is_skill_package(skill) and bool(_skill_meta_dict(skill).get("auto_enabled"))
+
+
+def get_skill_activation_text(skill: SkillModel) -> str:
+    activation = _skill_activation_meta(skill)
+    manifest = _skill_manifest_meta(skill)
+    values: list[Any] = [
+        skill.name,
+        skill.description,
+        skill.identifier,
+        activation.get("description"),
+        activation.get("when"),
+        manifest.get("description"),
+        manifest.get("summary"),
+        manifest.get("category"),
+    ]
+    for key in ("keywords", "tags"):
+        raw_values = activation.get(key) or manifest.get(key)
+        if isinstance(raw_values, list):
+            values.extend(raw_values)
+        elif raw_values:
+            values.append(raw_values)
+
+    return " ".join(str(value) for value in values if str(value or "").strip()).strip()
+
+
+def _extract_recent_user_text(messages: list[dict[str, Any]], limit: int = 4) -> str:
+    parts: list[str] = []
+    for message in reversed(messages or []):
+        if message.get("role") != "user":
+            continue
+
+        content = message.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+        elif isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") in {"text", "input_text"}:
+                    parts.append(str(item.get("text") or ""))
+
+        if len(parts) >= limit:
+            break
+
+    return "\n".join(reversed([part for part in parts if part.strip()]))
+
+
+def _tokenize_for_skill_match(text: str) -> set[str]:
+    normalized = str(text or "").lower()
+    ascii_tokens = re.findall(r"[a-z0-9][a-z0-9._:/+-]{1,}", normalized)
+    cjk_tokens = re.findall(r"[\u3400-\u9fff]{2,}", normalized)
+    return {token.strip("._:/+-") for token in [*ascii_tokens, *cjk_tokens] if token.strip("._:/+-")}
+
+
+def _score_skill_match(skill: SkillModel, request_text: str) -> int:
+    request_tokens = _tokenize_for_skill_match(request_text)
+    if not request_tokens:
+        return 0
+
+    activation = _skill_activation_meta(skill)
+    manifest = _skill_manifest_meta(skill)
+    high_weight_values = [
+        skill.name,
+        skill.identifier,
+        *(
+            activation.get("keywords")
+            if isinstance(activation.get("keywords"), list)
+            else []
+        ),
+        *(activation.get("tags") if isinstance(activation.get("tags"), list) else []),
+        *(manifest.get("tags") if isinstance(manifest.get("tags"), list) else []),
+    ]
+    medium_weight_values = [
+        skill.description,
+        activation.get("description"),
+        activation.get("when"),
+        manifest.get("description"),
+        manifest.get("summary"),
+        manifest.get("category"),
+    ]
+
+    high_tokens = _tokenize_for_skill_match(" ".join(str(value) for value in high_weight_values if value))
+    medium_tokens = _tokenize_for_skill_match(
+        " ".join(str(value) for value in medium_weight_values if value)
+    )
+
+    return len(request_tokens & high_tokens) * 3 + len(request_tokens & medium_tokens)
+
+
+def select_auto_skill_ids(
+    user: Any,
+    messages: list[dict[str, Any]],
+    *,
+    existing_skill_ids: Optional[list[str]] = None,
+    limit: int = SKILL_AUTO_MATCH_LIMIT,
+) -> list[str]:
+    request_text = _extract_recent_user_text(messages)
+    if not request_text.strip() or limit <= 0:
+        return []
+
+    existing = {str(skill_id or "").strip() for skill_id in (existing_skill_ids or [])}
+    scored: list[tuple[int, int, SkillModel]] = []
+    for skill in Skills.get_skills():
+        if skill.id in existing:
+            continue
+        if not skill_supports_auto_activation(skill):
+            continue
+        if not can_read_resource(user, skill):
+            continue
+
+        score = _score_skill_match(skill, request_text)
+        if score <= 0:
+            continue
+        scored.append((score, int(skill.updated_at or 0), skill))
+
+    scored.sort(key=lambda item: (-item[0], -item[1], item[2].name.lower()))
+    return [skill.id for _, _, skill in scored[:limit]]
 
 
 def _save_private_archive_file(

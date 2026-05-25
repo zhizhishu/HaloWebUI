@@ -81,6 +81,7 @@
 		getSmartWebSearchRouteLabel
 	} from '$lib/utils/native-web-search';
 	import { translateWithDefault } from '$lib/i18n';
+	import { hasActiveChatResponse } from '$lib/utils/chat-response-state';
 
 	import XMark from '../icons/XMark.svelte';
 	import Headphone from '../icons/Headphone.svelte';
@@ -119,6 +120,8 @@
 
 	export let history;
 	export let taskIds = null;
+	let responseInProgress = false;
+	$: responseInProgress = hasActiveChatResponse(history, taskIds);
 
 	export let prompt = '';
 	export let files = [];
@@ -1911,7 +1914,7 @@
 									</div>
 
 									<div class="self-end flex space-x-1 mr-1 shrink-0">
-										{#if (!history?.currentId || history.messages[history.currentId]?.done == true) && ($_user?.role === 'admin' || ($_user?.permissions?.chat?.stt ?? true))}
+										{#if !responseInProgress && ($_user?.role === 'admin' || ($_user?.permissions?.chat?.stt ?? true))}
 											<Tooltip content={$i18n.t('Record voice')}>
 												<button
 													id="voice-input-button"
@@ -1964,7 +1967,7 @@
 											</Tooltip>
 										{/if}
 
-										{#if (taskIds && taskIds.length > 0) || (history.currentId && history.messages[history.currentId]?.done != true)}
+										{#if responseInProgress}
 											<div class=" flex items-center">
 												<Tooltip content={$i18n.t('Stop')}>
 													<button

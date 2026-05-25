@@ -40,7 +40,8 @@ export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
 		key: 'models',
 		href: '/workspace/models',
 		labelKey: 'Assistants',
-		descKey: 'Manage assistant presets, visibility, and tool-ready model profiles for your workspace.',
+		descKey:
+			'Manage assistant presets, visibility, and tool-ready model profiles for your workspace.',
 		badgeColor: 'bg-amber-50 dark:bg-amber-950/30',
 		iconColor: 'text-amber-500 dark:text-amber-400',
 		iconPaths: [
@@ -72,7 +73,8 @@ export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
 		key: 'prompts',
 		href: '/workspace/prompts',
 		labelKey: 'Prompts',
-		descKey: 'Maintain reusable slash prompts, tags, and prompt sharing settings for your workspace.',
+		descKey:
+			'Maintain reusable slash prompts, tags, and prompt sharing settings for your workspace.',
 		badgeColor: 'bg-blue-50 dark:bg-blue-950/30',
 		iconColor: 'text-blue-500 dark:text-blue-400',
 		iconPaths: [
@@ -86,7 +88,8 @@ export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
 		key: 'notes',
 		href: '/workspace/notes',
 		labelKey: 'Notes',
-		descKey: 'Capture collaborative notes, drafts, and reference material without leaving the workspace.',
+		descKey:
+			'Capture collaborative notes, drafts, and reference material without leaving the workspace.',
 		badgeColor: 'bg-rose-50 dark:bg-rose-950/30',
 		iconColor: 'text-rose-500 dark:text-rose-400',
 		iconPaths: [
@@ -114,7 +117,8 @@ export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
 		key: 'functions',
 		href: '/workspace/functions',
 		labelKey: 'Functions',
-		descKey: 'Build and maintain filters, pipelines, and automation functions for admin-controlled workflows.',
+		descKey:
+			'Build and maintain filters, pipelines, and automation functions for admin-controlled workflows.',
 		badgeColor: 'bg-cyan-50 dark:bg-cyan-950/30',
 		iconColor: 'text-cyan-500 dark:text-cyan-400',
 		iconPaths: [
@@ -127,9 +131,10 @@ export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
 		key: 'skills',
 		href: '/workspace/skills',
 		labelKey: 'Skills',
-		descKey: 'Install, import, and manage real SKILL.md packages and custom workspace skills.',
-		badgeColor: 'bg-fuchsia-50 dark:bg-fuchsia-950/30',
-		iconColor: 'text-fuchsia-500 dark:text-fuchsia-400',
+		descKey:
+			'Add skills to give chats task-specific instructions, resources, and automation.',
+		badgeColor: 'bg-gray-100 dark:bg-gray-900',
+		iconColor: 'text-gray-600 dark:text-gray-300',
 		iconPaths: [
 			'M9 4.5C9.33486 4.5 9.62915 4.72198 9.72114 5.04396L10.5343 7.89015C10.8903 9.13593 11.8641 10.1097 13.1099 10.4657L15.956 11.2789C16.278 11.3709 16.5 11.6651 16.5 12C16.5 12.3349 16.278 12.6291 15.956 12.7211L13.1098 13.5343C11.8641 13.8903 10.8903 14.8641 10.5343 16.1099L9.72114 18.956C9.62915 19.278 9.33486 19.5 9 19.5C8.66514 19.5 8.37085 19.278 8.27886 18.956L7.46566 16.1099C7.10972 14.8641 6.13593 13.8903 4.89015 13.5343L2.04396 12.7211C1.72198 12.6291 1.5 12.3349 1.5 12C1.5 11.6651 1.72198 11.3709 2.04396 11.2789L4.89015 10.4657C6.13593 10.1097 7.10972 9.13593 7.46566 7.89015L8.27886 5.04396C8.37085 4.72198 8.66514 4.5 9 4.5Z',
 			'M18 1.5C18.3442 1.5 18.6441 1.73422 18.7276 2.0681L18.9865 3.10356C19.2216 4.04406 19.9559 4.7784 20.8964 5.01353L21.9319 5.27239C22.2658 5.35586 22.5 5.65585 22.5 6C22.5 6.34415 22.2658 6.64414 21.9319 6.72761L20.8964 6.98647C19.9559 7.2216 19.2216 7.95594 18.9865 8.89644L18.7276 9.9319C18.6441 10.2658 18.3442 10.5 18 10.5C17.6558 10.5 17.3559 10.2658 17.2724 9.9319L17.0135 8.89644C16.7784 7.95594 16.0441 7.2216 15.1036 6.98647L14.0681 6.72761C13.7342 6.64414 13.5 6.34415 13.5 6C13.5 5.65585 13.7342 5.35586 14.0681 5.27239L15.1036 5.01353C16.0441 4.7784 16.7784 4.04406 17.0135 3.10356L17.2724 2.0681C17.3559 1.73422 17.6558 1.5 18 1.5Z',
@@ -142,14 +147,16 @@ export const WORKSPACE_TABS: WorkspaceTabMeta[] = [
 		key: 'images',
 		href: '/workspace/images',
 		labelKey: 'Images',
-		descKey: 'Generate images from an independent image workbench that remembers your recent selections in this browser.',
+		descKey:
+			'Generate images from an independent image workbench that remembers your recent selections in this browser.',
 		badgeColor: 'bg-sky-50 dark:bg-sky-950/30',
 		iconColor: 'text-sky-500 dark:text-sky-400',
 		iconPaths: [
 			'M1.5 6C1.5 4.75736 2.50736 3.75 3.75 3.75H20.25C21.4926 3.75 22.5 4.75736 22.5 6V18C22.5 19.2426 21.4926 20.25 20.25 20.25H3.75C2.50736 20.25 1.5 19.2426 1.5 18V6ZM3 16.0607V18C3 18.4142 3.33579 18.75 3.75 18.75H20.25C20.6642 18.75 21 18.4142 21 18V16.0607L18.3107 13.3713C17.7249 12.7855 16.7751 12.7855 16.1893 13.3713L15.3107 14.25L16.2803 15.2197C16.5732 15.5126 16.5732 15.9874 16.2803 16.2803C15.9874 16.5732 15.5126 16.5732 15.2197 16.2803L10.0607 11.1213C9.47487 10.5355 8.52513 10.5355 7.93934 11.1213L3 16.0607ZM13.125 8.25C13.125 7.62868 13.6287 7.125 14.25 7.125C14.8713 7.125 15.375 7.62868 15.375 8.25C15.375 8.87132 14.8713 9.375 14.25 9.375C13.6287 9.375 13.125 8.87132 13.125 8.25Z'
 		],
 		activeMatch: ['/workspace/images'],
-		visibleWhen: ({ user }) => user?.role === 'admin' || user?.permissions?.features?.image_generation
+		visibleWhen: ({ user }) =>
+			user?.role === 'admin' || user?.permissions?.features?.image_generation
 	},
 	{
 		key: 'assistants',
@@ -189,4 +196,6 @@ export const getActiveWorkspaceTab = (
 	pathname: string,
 	tabs: WorkspaceTabMeta[] = WORKSPACE_TABS
 ) =>
-	tabs.find((tab) => tab.activeMatch.some((prefix) => pathname.startsWith(prefix))) ?? tabs[0] ?? null;
+	tabs.find((tab) => tab.activeMatch.some((prefix) => pathname.startsWith(prefix))) ??
+	tabs[0] ??
+	null;

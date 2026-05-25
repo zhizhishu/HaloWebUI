@@ -33,7 +33,21 @@ from open_webui.env import (
 )
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse, Response
-from open_webui.config import OPENID_PROVIDER_URL, OPENID_END_SESSION_ENDPOINT, ENABLE_OAUTH_SIGNUP, ENABLE_LDAP
+from open_webui.config import (
+    ENABLE_LDAP,
+    ENABLE_OAUTH_LOGIN,
+    ENABLE_OAUTH_SIGNUP,
+    OAUTH_ALLOWED_DOMAINS,
+    OAUTH_CLIENT_ID,
+    OAUTH_CLIENT_SECRET,
+    OAUTH_MERGE_ACCOUNTS_BY_EMAIL,
+    OAUTH_PROVIDER_NAME,
+    OAUTH_SCOPES,
+    OPENID_END_SESSION_ENDPOINT,
+    OPENID_PROVIDER_URL,
+    OPENID_REDIRECT_URI,
+    load_oauth_providers,
+)
 from open_webui.config import (
     ENABLE_OAUTH_TOKEN_EXCHANGE,
     OAUTH_TOKEN_EXCHANGE_ISSUER,
@@ -737,9 +751,168 @@ async def get_admin_details(request: Request, user=Depends(get_current_user)):
 ############################
 
 
+def _strip_string(value: Optional[str]) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _build_oauth_redirect_uri(webui_url: Optional[str]) -> str:
+    base_url = _strip_string(webui_url)
+    if not base_url:
+        return ""
+    return f"{base_url.rstrip('/')}/oauth/oidc/callback"
+
+
+def _join_oauth_allowed_domains(value) -> str:
+    if isinstance(value, list):
+        return ", ".join([str(item).strip() for item in value if str(item).strip()])
+    value = _strip_string(value)
+    return value or "*"
+
+
+def _parse_oauth_allowed_domains(value: Optional[str]) -> list[str]:
+    domains = [
+        domain.strip()
+        for domain in _strip_string(value or "*").split(",")
+        if domain.strip()
+    ]
+    return domains or ["*"]
+
+
+def _is_oidc_config_complete() -> bool:
+    return bool(
+        _strip_string(OAUTH_CLIENT_ID.value)
+        and _strip_string(OAUTH_CLIENT_SECRET.value)
+        and _strip_string(OPENID_PROVIDER_URL.value)
+    )
+
+
+def _is_oauth_login_enabled() -> bool:
+    if ENABLE_OAUTH_LOGIN.value is not None:
+        return bool(ENABLE_OAUTH_LOGIN.value)
+    return _is_oidc_config_complete()
+
+
+def _get_oauth_provider_name_for_admin() -> str:
+    provider_name = _strip_string(OAUTH_PROVIDER_NAME.value)
+    if provider_name and (provider_name != "SSO" or _is_oidc_config_complete()):
+        return provider_name
+    return "Authentik"
+
+
+def _get_oauth_admin_config(request: Request) -> dict:
+    redirect_uri = _strip_string(OPENID_REDIRECT_URI.value) or _build_oauth_redirect_uri(
+        request.app.state.config.WEBUI_URL
+    )
+    return {
+        "ENABLE_OAUTH_LOGIN": _is_oauth_login_enabled(),
+        "OAUTH_PROVIDER_NAME": _get_oauth_provider_name_for_admin(),
+        "OPENID_PROVIDER_URL": _strip_string(OPENID_PROVIDER_URL.value),
+        "OPENID_REDIRECT_URI": redirect_uri,
+        "OAUTH_CLIENT_ID": _strip_string(OAUTH_CLIENT_ID.value),
+        "OAUTH_CLIENT_SECRET": "",
+        "OAUTH_CLIENT_SECRET_CONFIGURED": bool(
+            _strip_string(OAUTH_CLIENT_SECRET.value)
+        ),
+        "OAUTH_SCOPES": _strip_string(OAUTH_SCOPES.value) or "openid email profile",
+        "ENABLE_OAUTH_SIGNUP": bool(ENABLE_OAUTH_SIGNUP.value),
+        "OAUTH_MERGE_ACCOUNTS_BY_EMAIL": bool(OAUTH_MERGE_ACCOUNTS_BY_EMAIL.value),
+        "OAUTH_ALLOWED_DOMAINS": _join_oauth_allowed_domains(
+            OAUTH_ALLOWED_DOMAINS.value
+        ),
+    }
+
+
+def _prepare_oauth_admin_update(request: Request, form_data) -> Optional[dict]:
+    if form_data.ENABLE_OAUTH_LOGIN is None:
+        return None
+
+    enabled = bool(form_data.ENABLE_OAUTH_LOGIN)
+    webui_url = _strip_string(form_data.WEBUI_URL)
+    provider_name = _strip_string(form_data.OAUTH_PROVIDER_NAME) or "Authentik"
+    provider_url = _strip_string(form_data.OPENID_PROVIDER_URL)
+    client_id = _strip_string(form_data.OAUTH_CLIENT_ID)
+    client_secret = _strip_string(form_data.OAUTH_CLIENT_SECRET)
+    existing_secret = _strip_string(request.app.state.config.OAUTH_CLIENT_SECRET)
+    scopes = _strip_string(form_data.OAUTH_SCOPES) or "openid email profile"
+    allowed_domains = _parse_oauth_allowed_domains(form_data.OAUTH_ALLOWED_DOMAINS)
+    redirect_uri = _build_oauth_redirect_uri(webui_url)
+
+    if enabled:
+        if not webui_url:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="请先填写 WebUI 公开访问地址，再启用第三方登录",
+            )
+        if not provider_url.startswith(("http://", "https://")):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="服务发现地址不完整，请填写以 http:// 或 https:// 开头的地址",
+            )
+        if ".well-known/openid-configuration" not in provider_url:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="服务发现地址需要填写到 .well-known/openid-configuration",
+            )
+        if not client_id:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="客户端 ID 未填写",
+            )
+        if not client_secret and not existing_secret:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail="客户端密钥未填写",
+            )
+
+    return {
+        "enabled": enabled,
+        "provider_name": provider_name,
+        "provider_url": provider_url,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "scopes": scopes,
+        "allowed_domains": allowed_domains,
+        "redirect_uri": redirect_uri,
+        "enable_signup": (
+            True
+            if form_data.ENABLE_OAUTH_SIGNUP is None
+            else bool(form_data.ENABLE_OAUTH_SIGNUP)
+        ),
+        "merge_accounts_by_email": (
+            False
+            if form_data.OAUTH_MERGE_ACCOUNTS_BY_EMAIL is None
+            else bool(form_data.OAUTH_MERGE_ACCOUNTS_BY_EMAIL)
+        ),
+    }
+
+
+def _apply_oauth_admin_update(request: Request, oauth_update: Optional[dict]) -> None:
+    if oauth_update is None:
+        return
+
+    request.app.state.config.ENABLE_OAUTH_LOGIN = oauth_update["enabled"]
+    request.app.state.config.OAUTH_PROVIDER_NAME = oauth_update["provider_name"]
+    request.app.state.config.OPENID_PROVIDER_URL = oauth_update["provider_url"]
+    request.app.state.config.OAUTH_CLIENT_ID = oauth_update["client_id"]
+    if oauth_update["client_secret"]:
+        request.app.state.config.OAUTH_CLIENT_SECRET = oauth_update["client_secret"]
+    request.app.state.config.OPENID_REDIRECT_URI = oauth_update["redirect_uri"]
+    request.app.state.config.OAUTH_SCOPES = oauth_update["scopes"]
+    request.app.state.config.ENABLE_OAUTH_SIGNUP = oauth_update["enable_signup"]
+    request.app.state.config.OAUTH_MERGE_ACCOUNTS_BY_EMAIL = oauth_update[
+        "merge_accounts_by_email"
+    ]
+    request.app.state.config.OAUTH_ALLOWED_DOMAINS = oauth_update["allowed_domains"]
+
+    load_oauth_providers()
+    oauth_manager = getattr(request.app.state, "oauth_manager", None)
+    if oauth_manager is not None:
+        oauth_manager.refresh()
+
+
 @router.get("/admin/config")
 async def get_admin_config(request: Request, user=Depends(get_admin_user)):
-    return {
+    config = {
         "SHOW_ADMIN_DETAILS": request.app.state.config.SHOW_ADMIN_DETAILS,
         "WEBUI_URL": request.app.state.config.WEBUI_URL,
         "ENABLE_SIGNUP": request.app.state.config.ENABLE_SIGNUP,
@@ -752,12 +925,23 @@ async def get_admin_config(request: Request, user=Depends(get_admin_user)):
         "ENABLE_CHANNELS": request.app.state.config.ENABLE_CHANNELS,
         "ENABLE_USER_WEBHOOKS": request.app.state.config.ENABLE_USER_WEBHOOKS,
     }
+    config.update(_get_oauth_admin_config(request))
+    return config
 
 
 class AdminConfig(BaseModel):
     SHOW_ADMIN_DETAILS: bool
     WEBUI_URL: str
     ENABLE_SIGNUP: bool
+    ENABLE_OAUTH_LOGIN: Optional[bool] = None
+    OAUTH_PROVIDER_NAME: Optional[str] = None
+    OPENID_PROVIDER_URL: Optional[str] = None
+    OAUTH_CLIENT_ID: Optional[str] = None
+    OAUTH_CLIENT_SECRET: Optional[str] = None
+    OAUTH_SCOPES: Optional[str] = None
+    ENABLE_OAUTH_SIGNUP: Optional[bool] = True
+    OAUTH_MERGE_ACCOUNTS_BY_EMAIL: Optional[bool] = False
+    OAUTH_ALLOWED_DOMAINS: Optional[str] = "*"
     ENABLE_API_KEY: bool
     ENABLE_API_KEY_ENDPOINT_RESTRICTIONS: bool
     API_KEY_ALLOWED_ENDPOINTS: str
@@ -772,6 +956,8 @@ class AdminConfig(BaseModel):
 async def update_admin_config(
     request: Request, form_data: AdminConfig, user=Depends(get_admin_user)
 ):
+    oauth_update = _prepare_oauth_admin_update(request, form_data)
+
     request.app.state.config.SHOW_ADMIN_DETAILS = form_data.SHOW_ADMIN_DETAILS
     request.app.state.config.WEBUI_URL = form_data.WEBUI_URL
     request.app.state.config.ENABLE_SIGNUP = form_data.ENABLE_SIGNUP
@@ -801,7 +987,9 @@ async def update_admin_config(
 
     request.app.state.config.ENABLE_USER_WEBHOOKS = form_data.ENABLE_USER_WEBHOOKS
 
-    return {
+    _apply_oauth_admin_update(request, oauth_update)
+
+    config = {
         "SHOW_ADMIN_DETAILS": request.app.state.config.SHOW_ADMIN_DETAILS,
         "WEBUI_URL": request.app.state.config.WEBUI_URL,
         "ENABLE_SIGNUP": request.app.state.config.ENABLE_SIGNUP,
@@ -814,6 +1002,8 @@ async def update_admin_config(
         "ENABLE_COMMUNITY_SHARING": request.app.state.config.ENABLE_COMMUNITY_SHARING,
         "ENABLE_USER_WEBHOOKS": request.app.state.config.ENABLE_USER_WEBHOOKS,
     }
+    config.update(_get_oauth_admin_config(request))
+    return config
 
 
 class LdapServerConfig(BaseModel):

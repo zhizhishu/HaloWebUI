@@ -67,11 +67,12 @@ export interface SkillRuntimeCapabilities {
 	};
 }
 
-const requestJson = async <T>(
-	path: string,
-	token: string,
-	init: RequestInit = {}
-): Promise<T> => {
+export interface LegacySkillMigrationResult {
+	migrated: number;
+	skipped: number;
+}
+
+const requestJson = async <T>(path: string, token: string, init: RequestInit = {}): Promise<T> => {
 	let error = null;
 	const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData;
 
@@ -99,20 +100,25 @@ const requestJson = async <T>(
 	return res as T;
 };
 
-export const getSkills = async (token: string = '') => {
-	return requestJson<SkillModel[]>('/', token);
+export const getSkills = async (token: string = '', options: { includeLegacy?: boolean } = {}) => {
+	const searchParams = new URLSearchParams();
+	if (options.includeLegacy) searchParams.append('include_legacy', 'true');
+	const suffix = searchParams.toString() ? `/?${searchParams.toString()}` : '/';
+	return requestJson<SkillModel[]>(suffix, token);
 };
 
 export const getSkillItems = async (
 	token: string = '',
 	query: string | null = null,
 	viewOption: string | null = null,
-	page: number | null = null
+	page: number | null = null,
+	options: { includeLegacy?: boolean } = {}
 ) => {
 	const searchParams = new URLSearchParams();
 	if (query) searchParams.append('query', query);
 	if (viewOption) searchParams.append('view_option', viewOption);
 	if (page) searchParams.append('page', page.toString());
+	if (options.includeLegacy) searchParams.append('include_legacy', 'true');
 
 	const suffix = searchParams.toString() ? `/list?${searchParams.toString()}` : '/list';
 	return requestJson<{ items: SkillModel[]; total: number }>(suffix, token);
@@ -124,6 +130,16 @@ export const getSkillCatalog = async (token: string = '') => {
 
 export const getSkillRuntimeCapabilities = async (token: string = '') => {
 	return requestJson<SkillRuntimeCapabilities>('/runtime/capabilities', token);
+};
+
+export const getLegacyPromptSkills = async (token: string = '') => {
+	return requestJson<SkillModel[]>('/legacy-prompts', token);
+};
+
+export const migrateLegacyPromptSkills = async (token: string = '') => {
+	return requestJson<LegacySkillMigrationResult>('/legacy-prompts/migrate', token, {
+		method: 'POST'
+	});
 };
 
 export const getSkillById = async (token: string, skillId: string) => {
@@ -159,6 +175,17 @@ export const installSkillRuntime = async (token: string, skillId: string) => {
 export const uninstallSkillRuntime = async (token: string, skillId: string) => {
 	return requestJson<SkillModel>(`/${skillId}/runtime/install`, token, {
 		method: 'DELETE'
+	});
+};
+
+export const updateSkillAutoActivation = async (
+	token: string,
+	skillId: string,
+	payload: { auto_enabled: boolean; activation?: Record<string, any> | null }
+) => {
+	return requestJson<SkillModel>(`/${skillId}/auto`, token, {
+		method: 'POST',
+		body: JSON.stringify(payload)
 	});
 };
 

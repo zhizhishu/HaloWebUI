@@ -1,11 +1,10 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
-	import { DropdownMenu } from 'bits-ui';
 	import { getContext, onMount } from 'svelte';
 	import {
-		createNewSkill,
 		deleteSkillById,
 		getSkillById,
+		getLegacyPromptSkills,
 		getSkills,
 		getSkillRuntimeCapabilities,
 		importSkillFromGithub,
@@ -13,7 +12,9 @@
 		importSkillFromUrl,
 		importSkillFromZip,
 		installSkillRuntime,
+		migrateLegacyPromptSkills,
 		updateSkillById,
+		updateSkillAutoActivation,
 		uninstallSkillRuntime,
 		type SkillImportStatus,
 		type SkillModel,
@@ -27,10 +28,8 @@
 		type CuratedLobeHubSkillIcon
 	} from '$lib/config/skill-catalog';
 	import { WEBUI_NAME, skills as skillsStore, user } from '$lib/stores';
-	import { flyAndScale } from '$lib/utils/transitions';
 
 	import Modal from '../common/Modal.svelte';
-	import Dropdown from '../common/Dropdown.svelte';
 	import ConfirmDialog from '../common/ConfirmDialog.svelte';
 	import Spinner from '../common/Spinner.svelte';
 	import AccessControlModal from './common/AccessControlModal.svelte';
@@ -74,7 +73,6 @@
 	let loaded = false;
 	let refreshing = false;
 	let showStore = false;
-	let showAddMenu = false;
 	let showEditor = false;
 	let showDeleteConfirm = false;
 	let showAccessControlModal = false;
@@ -89,6 +87,7 @@
 	let zipInputElement: HTMLInputElement | null = null;
 
 	let promptSkills: SkillModel[] = [];
+	let legacyPromptSkills: SkillModel[] = [];
 	let runtimeCapabilities: SkillRuntimeCapabilities | null = null;
 	let runtimeActionSkillId: string | null = null;
 
@@ -100,10 +99,13 @@
 		name: '',
 		description: '',
 		content: '',
-		tags: ''
+		tags: '',
+		autoEnabled: false,
+		activationDescription: '',
+		activationKeywords: ''
 	};
 
-	const cloneJson = <T>(value: T): T => {
+	const cloneJson = <T,>(value: T): T => {
 		if (value === null || value === undefined) {
 			return value;
 		}
@@ -112,20 +114,6 @@
 	};
 
 	const normalizeQuery = (value: string) => value.trim().toLowerCase();
-
-	const createPrivateAccessControl = () => ({
-		read: {
-			group_ids: [],
-			user_ids: []
-		},
-		write: {
-			group_ids: [],
-			user_ids: []
-		}
-	});
-
-	const getDefaultAccessControl = () =>
-		$user?.role === 'admin' ? null : createPrivateAccessControl();
 
 	const formatError = (error: unknown) => {
 		let message = '';
@@ -224,19 +212,6 @@
 		return $i18n.t('Custom');
 	};
 
-	const getSkillSourceBadgeClass = (skill: SkillModel) => {
-		const source = getSkillSource(skill);
-		if (source === 'lobehub') {
-			return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300';
-		}
-
-		if (source === 'community') {
-			return 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300';
-		}
-
-		return 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300';
-	};
-
 	const getSkillTags = (skill: SkillModel) =>
 		Array.isArray(skill.meta?.tags) ? skill.meta.tags.filter(Boolean) : [];
 
@@ -244,12 +219,22 @@
 		Array.isArray(skill.meta?.package_files) ? skill.meta.package_files.length : 0;
 
 	const getSkillRuntimeMeta = (skill: SkillModel) =>
-		typeof skill.meta?.runtime === 'object' && skill.meta?.runtime !== null ? skill.meta.runtime : {};
+		typeof skill.meta?.runtime === 'object' && skill.meta?.runtime !== null
+			? skill.meta.runtime
+			: {};
+	const getSkillActivationMeta = (skill: SkillModel) =>
+		typeof skill.meta?.activation === 'object' && skill.meta?.activation !== null
+			? skill.meta.activation
+			: {};
 
 	const isRunnableSkill = (skill: SkillModel) => getSkillRuntimeMeta(skill)?.mode === 'runnable';
+	const isAutoEnabledSkill = (skill: SkillModel) => Boolean(skill.meta?.auto_enabled);
 
 	const getSkillInstallStatus = (skill: SkillModel) =>
-		String(getSkillRuntimeMeta(skill)?.install_status || (isRunnableSkill(skill) ? 'not_installed' : 'prompt_only'));
+		String(
+			getSkillRuntimeMeta(skill)?.install_status ||
+				(isRunnableSkill(skill) ? 'not_installed' : 'prompt_only')
+		);
 
 	const getSkillInstallStatusLabel = (skill: SkillModel) => {
 		const status = getSkillInstallStatus(skill);
@@ -269,26 +254,11 @@
 		return '未安装';
 	};
 
-	const getSkillInstallStatusClass = (skill: SkillModel) => {
-		const status = getSkillInstallStatus(skill);
-		if (
-			runtimeCapabilities &&
-			status === 'not_installed' &&
-			isRunnableSkill(skill) &&
-			!canInstallRunnableSkill(skill)
-		) {
-			return 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300';
-		}
-		if (status === 'ready') {
-			return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300';
-		}
-		if (status === 'error' || status === 'unsupported') {
-			return 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300';
-		}
-		if (status === 'installing') {
-			return 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300';
-		}
-		return 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300';
+	const getRuntimeProfileLabel = (profile?: string) => {
+		if (profile === 'main') return '完整环境';
+		if (profile === 'slim') return '轻量环境';
+		if (profile === 'custom') return '自定义环境';
+		return profile || '未知环境';
 	};
 
 	const canInstallRunnableSkill = (skill: SkillModel) => {
@@ -301,7 +271,10 @@
 			: [];
 		const needsPython = entrypoints.some((item) => item?.runtime === 'python');
 		const needsNode = entrypoints.some((item) => item?.runtime === 'node');
-		return (!needsPython || runtimeCapabilities?.python?.available) && (!needsNode || runtimeCapabilities?.node?.available);
+		return (
+			(!needsPython || runtimeCapabilities?.python?.available) &&
+			(!needsNode || runtimeCapabilities?.node?.available)
+		);
 	};
 
 	const getSkillSourceUrl = (skill: SkillModel) => {
@@ -357,17 +330,6 @@
 		}
 
 		return getSkillSource(skill) === 'community' ? IMPORTED_SKILL_ICON : DEFAULT_SKILL_ICON;
-	};
-
-	const getSkillIconAccent = (skill: SkillModel) => {
-		const catalogEntry = getCatalogEntryByIdentifier(skill.identifier);
-		if (catalogEntry) {
-			return catalogEntry.accent;
-		}
-
-		return getSkillSource(skill) === 'community'
-			? 'from-amber-300 via-orange-300 to-rose-300'
-			: 'from-slate-400 via-slate-500 to-slate-600';
 	};
 
 	const matchesSkillQuery = (skill: SkillModel, query: string) => {
@@ -428,11 +390,13 @@
 		refreshing = true;
 
 		try {
-			const [skillsResult, capabilitiesResult] = await Promise.all([
+			const [skillsResult, legacySkillsResult, capabilitiesResult] = await Promise.all([
 				getSkills(localStorage.token),
+				getLegacyPromptSkills(localStorage.token).catch(() => []),
 				getSkillRuntimeCapabilities(localStorage.token).catch(() => null)
 			]);
 			promptSkills = skillsResult ?? [];
+			legacyPromptSkills = legacySkillsResult ?? [];
 			skillsStore.set(promptSkills);
 			runtimeCapabilities = capabilitiesResult;
 		} catch (error) {
@@ -445,14 +409,6 @@
 		}
 	};
 
-	const openCreateSkillModal = () => {
-		editingSkill = null;
-		skillForm = { name: '', description: '', content: '', tags: '' };
-		accessControl = getDefaultAccessControl();
-		showAddMenu = false;
-		showEditor = true;
-	};
-
 	const openEditSkillModal = async (skillId: string) => {
 		try {
 			const skill = await getPromptSkillById(skillId);
@@ -462,7 +418,12 @@
 				name: skill.name ?? '',
 				description: skill.description ?? '',
 				content: skill.content ?? '',
-				tags: Array.isArray(skill.meta?.tags) ? skill.meta.tags.join(', ') : ''
+				tags: Array.isArray(skill.meta?.tags) ? skill.meta.tags.join(', ') : '',
+				autoEnabled: Boolean(skill.meta?.auto_enabled),
+				activationDescription: getSkillActivationMeta(skill)?.description ?? '',
+				activationKeywords: Array.isArray(getSkillActivationMeta(skill)?.keywords)
+					? getSkillActivationMeta(skill).keywords.join(', ')
+					: ''
 			};
 			accessControl = cloneJson(skill.access_control ?? null);
 			showEditor = true;
@@ -482,8 +443,26 @@
 			.split(',')
 			.map((tag) => tag.trim())
 			.filter(Boolean);
+		const activationKeywords = skillForm.activationKeywords
+			.split(',')
+			.map((keyword) => keyword.trim())
+			.filter(Boolean);
 
 		const nextMeta = cloneJson(editingSkill?.meta ?? {}) ?? {};
+		nextMeta.kind = 'skill_package';
+		nextMeta.auto_enabled =
+			$user?.role === 'admin' ? skillForm.autoEnabled : Boolean(editingSkill?.meta?.auto_enabled);
+		nextMeta.activation = {
+			...(typeof nextMeta.activation === 'object' && nextMeta.activation !== null
+				? nextMeta.activation
+				: {}),
+			...($user?.role === 'admin'
+				? {
+						description: skillForm.activationDescription.trim(),
+						keywords: activationKeywords
+					}
+				: {})
+		};
 		if (tagsList.length > 0) {
 			nextMeta.tags = tagsList;
 		} else {
@@ -502,10 +481,13 @@
 		try {
 			if (editingSkill) {
 				await updateSkillById(localStorage.token, editingSkill.id, payload);
+				if ($user?.role === 'admin') {
+					await updateSkillAutoActivation(localStorage.token, editingSkill.id, {
+						auto_enabled: skillForm.autoEnabled,
+						activation: nextMeta.activation
+					});
+				}
 				toast.success($i18n.t('Skill updated'));
-			} else {
-				await createNewSkill(localStorage.token, payload);
-				toast.success($i18n.t('Skill created'));
 			}
 
 			showEditor = false;
@@ -566,11 +548,24 @@
 		}
 	};
 
+	const handleMigrateLegacySkills = async () => {
+		try {
+			const result = await migrateLegacyPromptSkills(localStorage.token);
+			toast.success(
+				$i18n.t('Migrated {{count}} legacy prompt skills to Prompts.', {
+					count: result?.migrated ?? 0
+				})
+			);
+			await refreshData({ silent: true });
+		} catch (error) {
+			toast.error(formatError(error));
+		}
+	};
+
 	const openImportModal = (type: ImportType) => {
 		importType = type;
 		importValue = '';
 		showImportModal = true;
-		showAddMenu = false;
 	};
 
 	const formatImportMessage = (status: SkillImportStatus) => {
@@ -647,16 +642,16 @@
 	};
 
 	const triggerZipImport = () => {
-		showAddMenu = false;
 		zipInputElement?.click();
 	};
 
 	$: installedSkills = [...promptSkills];
-	$: filteredInstalledSkills = installedSkills.filter((skill) => matchesSkillQuery(skill, mainQuery));
-	$: lobehubInstalledCount = installedSkills.filter((skill) => getSkillSource(skill) === 'lobehub').length;
-	$: communityInstalledCount = installedSkills.filter((skill) => getSkillSource(skill) === 'community').length;
-	$: customInstalledCount = installedSkills.filter((skill) => getSkillSource(skill) === 'custom').length;
-	$: communityStoreSkills = installedSkills.filter((skill) => getSkillSource(skill) === 'community');
+	$: filteredInstalledSkills = installedSkills.filter((skill) =>
+		matchesSkillQuery(skill, mainQuery)
+	);
+	$: communityStoreSkills = installedSkills.filter(
+		(skill) => getSkillSource(skill) === 'community'
+	);
 	$: customStoreSkills = installedSkills.filter((skill) => getSkillSource(skill) === 'custom');
 	$: filteredLobeHubSkills = VERIFIED_LOBEHUB_SKILLS.filter((entry) =>
 		matchesCatalogQuery(entry, storeQuery)
@@ -664,7 +659,9 @@
 	$: filteredCommunitySkills = communityStoreSkills.filter((skill) =>
 		matchesSkillQuery(skill, storeQuery)
 	);
-	$: filteredCustomSkills = customStoreSkills.filter((skill) => matchesSkillQuery(skill, storeQuery));
+	$: filteredCustomSkills = customStoreSkills.filter((skill) =>
+		matchesSkillQuery(skill, storeQuery)
+	);
 
 	onMount(async () => {
 		await refreshData();
@@ -689,11 +686,9 @@
 	bind:show={showDeleteConfirm}
 	on:confirm={handleDelete}
 	title={$i18n.t('Delete Skill')}
-	message={
-		deletingSkill
-			? $i18n.t('This will permanently delete {{name}}.', { name: deletingSkill.name })
-			: $i18n.t('Are you sure you want to delete this skill?')
-	}
+	message={deletingSkill
+		? $i18n.t('This will permanently delete {{name}}.', { name: deletingSkill.name })
+		: $i18n.t('Are you sure you want to delete this skill?')}
 />
 
 <AccessControlModal
@@ -706,238 +701,215 @@
 />
 
 {#if !loaded}
-	<div class="flex min-h-[18rem] items-center justify-center">
+	<section class="workspace-section flex min-h-[18rem] items-center justify-center">
 		<Spinner className="size-8 text-gray-500" />
-	</div>
+	</section>
 {:else}
-	<div class="flex flex-col gap-4">
-		<div class="workspace-section">
-			<div class="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-				<div class="max-w-3xl space-y-3">
-					<div class="flex flex-wrap items-center gap-3">
-						<div class="text-base font-semibold tracking-tight text-gray-900 dark:text-gray-100">
-							{$i18n.t('Skills')}
-						</div>
-						<div class="workspace-count-pill">
-							{installedSkills.length} {$i18n.t('Installed')}
-						</div>
+	<div class="space-y-4">
+		<section class="workspace-section space-y-4">
+			<div class="flex flex-col gap-3 lg:flex-row lg:items-center">
+				<div class="workspace-toolbar-summary">
+					<div class="workspace-count-pill">
+						{installedSkills.length}
+						{$i18n.t('Installed')}
 					</div>
-
-					<p class="max-w-2xl text-sm leading-6 text-gray-600 dark:text-gray-300">
+					<div class="text-xs text-gray-500 dark:text-gray-400">
 						{$i18n.t(
-							'Install, import, and manage real SKILL.md packages from LobeHub, community sources, or your own custom skills.'
+							'Add skills to give chats task-specific instructions, resources, and automation.'
 						)}
-					</p>
-					<p class="max-w-2xl text-sm leading-6 text-gray-500 dark:text-gray-400">
-						{$i18n.t(
-							'This page manages skills only. It is no longer a dump of workspace tools or generic assistant presets.'
-						)}
-					</p>
+					</div>
 
 					{#if runtimeCapabilities}
-						<div class="flex flex-wrap gap-2">
-							<div class="workspace-count-pill">
-								运行档位：{runtimeCapabilities.profile}
-							</div>
-							<div class="workspace-count-pill">
-								{runtimeCapabilities.install_allowed ? '可执行 Skill 已启用' : '当前仅支持提示词 Skill'}
-							</div>
-							<div class="workspace-count-pill">
-								Python：{runtimeCapabilities.python?.available ? '可用' : '不可用'}
-							</div>
-							<div class="workspace-count-pill">
-								Node：{runtimeCapabilities.node?.available ? '可用' : '不可用'}
-							</div>
+						<div class="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+							<span>运行环境：{getRuntimeProfileLabel(runtimeCapabilities.profile)}</span>
+							<span>
+								{runtimeCapabilities.install_allowed
+									? '支持可执行 Skill'
+									: '当前仅支持说明型 Skill'}
+							</span>
+							<span>Python：{runtimeCapabilities.python?.available ? '可用' : '不可用'}</span>
+							<span>Node：{runtimeCapabilities.node?.available ? '可用' : '不可用'}</span>
+							<span
+								>自动启用：{installedSkills.filter((skill) => isAutoEnabledSkill(skill))
+									.length}</span
+							>
 						</div>
 					{/if}
+				</div>
 
-					<div class="flex flex-wrap gap-2">
-						<div
-							class="glass-item px-3 py-2 text-sm"
-						>
-							<div class="text-[11px] uppercase tracking-[0.2em] text-gray-400">LobeHub</div>
-							<div class="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-								{lobehubInstalledCount}
-							</div>
-						</div>
-						<div
-							class="glass-item px-3 py-2 text-sm"
-						>
-							<div class="text-[11px] uppercase tracking-[0.2em] text-gray-400">
-								{$i18n.t('Community')}
-							</div>
-							<div class="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-								{communityInstalledCount}
-							</div>
-						</div>
-						<div
-							class="glass-item px-3 py-2 text-sm"
-						>
-							<div class="text-[11px] uppercase tracking-[0.2em] text-gray-400">
-								{$i18n.t('Custom')}
-							</div>
-							<div class="mt-1 font-semibold text-gray-900 dark:text-gray-100">
-								{customInstalledCount}
-							</div>
-						</div>
+				<div class="workspace-toolbar">
+					<div class="workspace-search workspace-toolbar-search">
+						<Search className="size-4 text-gray-400" />
+						<input
+							class="w-full bg-transparent text-sm outline-hidden"
+							bind:value={mainQuery}
+							placeholder={$i18n.t('Search installed skills')}
+						/>
+					</div>
+
+					<div class="workspace-toolbar-actions">
+						<button class="workspace-icon-button" on:click={() => refreshData()}>
+							<ArrowPath className={`size-4 ${refreshing ? 'animate-spin' : ''}`} />
+							<span>{$i18n.t('Refresh')}</span>
+						</button>
+
+						<button class="workspace-primary-button" on:click={() => (showStore = true)}>
+							<Plus className="size-4" />
+							<span>{$i18n.t('Install Skill')}</span>
+						</button>
 					</div>
 				</div>
+			</div>
+		</section>
 
-				<div class="flex items-center gap-2">
-					<button
-						class="workspace-secondary-button"
-						on:click={() => refreshData()}
-					>
-						<ArrowPath className={`size-4 ${refreshing ? 'animate-spin' : ''}`} />
-						{$i18n.t('Refresh')}
-					</button>
+		{#if legacyPromptSkills.length > 0}
+			<section
+				class="workspace-section flex flex-col gap-3 md:flex-row md:items-center md:justify-between"
+			>
+				<div>
+					<div class="text-sm font-medium text-amber-900 dark:text-amber-200">
+						{legacyPromptSkills.length}
+						{$i18n.t('legacy prompt skills moved to Prompts')}
+					</div>
+					<div class="mt-1 text-xs text-amber-700/80 dark:text-amber-300/80">
+						{$i18n.t(
+							'Reusable prompt templates are available in Prompts and can still be used in chat.'
+						)}
+					</div>
+				</div>
+				<button
+					class="inline-flex w-fit items-center gap-2 rounded-lg border border-amber-300/70 px-3 py-1.5 text-xs font-medium text-amber-900 transition hover:bg-amber-100 dark:border-amber-800 dark:text-amber-200 dark:hover:bg-amber-950/40"
+					on:click={handleMigrateLegacySkills}
+				>
+					<ArrowPath className="size-3.5" />
+					{$i18n.t('Sync to Prompts')}
+				</button>
+			</section>
+		{/if}
 
-					<button
-						class="workspace-primary-button"
-						on:click={() => (showStore = true)}
-					>
-						<Sparkles className="size-4" />
-						{$i18n.t('Skill Store')}
-					</button>
+		<section class="workspace-section space-y-3">
+			<div class="flex flex-col gap-1">
+				<div>
+					<div class="text-sm font-medium text-gray-900 dark:text-gray-100">
+						{$i18n.t('Installed Skill Packages')}
+					</div>
+					<div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+						{$i18n.t('Review installed skills, availability, and access settings.')}
+					</div>
 				</div>
 			</div>
-		</div>
 
-		<div class="workspace-section flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-			<div class="text-sm text-gray-500 dark:text-gray-400">
-				{$i18n.t('Showing installed skill packages only.')}
-			</div>
-
-			<div class="workspace-search w-full md:max-w-md">
-				<Search className="size-4 text-gray-400" />
-				<input
-					class="w-full bg-transparent text-sm outline-none"
-					bind:value={mainQuery}
-					placeholder={$i18n.t('Search installed skills')}
-				/>
-			</div>
-		</div>
-
-		{#if filteredInstalledSkills.length > 0}
-			<div class="space-y-3">
-				{#each filteredInstalledSkills as skill (skill.id)}
-					{@const Icon = getSkillIcon(skill)}
-					{@const tags = getSkillTags(skill)}
-					{@const sourceUrl = getSkillSourceUrl(skill)}
-					{@const categoryLabel = getSkillCategoryLabel(skill)}
-					<div class="glass-item rounded-[1.5rem] p-4 transition">
-						<div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-							<div class="flex min-w-0 gap-4">
+			{#if filteredInstalledSkills.length > 0}
+				<div class="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
+					{#each filteredInstalledSkills as skill (skill.id)}
+						{@const Icon = getSkillIcon(skill)}
+						{@const tags = getSkillTags(skill)}
+						{@const sourceUrl = getSkillSourceUrl(skill)}
+						{@const categoryLabel = getSkillCategoryLabel(skill)}
+						<div class="glass-item flex h-full flex-col gap-3 px-4 py-3 transition">
+							<div class="flex min-w-0 gap-3">
 								<div
-									class={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br ${getSkillIconAccent(skill)} text-white shadow-sm`}
+									class="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gray-100 text-gray-600 dark:bg-gray-900 dark:text-gray-300"
 								>
-									<svelte:component this={Icon} className="size-6" />
+									<svelte:component this={Icon} className="size-4" />
 								</div>
 
 								<div class="min-w-0 flex-1">
-									<div class="mb-2 flex flex-wrap items-center gap-2">
-										<span
-											class={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${getSkillSourceBadgeClass(skill)}`}
-										>
-											{getSkillSourceBadge(skill)}
-										</span>
-										<span
-											class="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
-										>
-											{$i18n.t('Installed')}
-										</span>
-										{#if categoryLabel}
-											<span
-												class="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300"
-											>
-												{categoryLabel}
-											</span>
-										{/if}
-										{#if getSkillPackageFileCount(skill) > 0}
-											<span
-												class="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300"
-											>
-												{getSkillPackageFileCount(skill)} {$i18n.t('files')}
-											</span>
-										{/if}
-										{#if isRunnableSkill(skill)}
-											<span
-												class={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${getSkillInstallStatusClass(skill)}`}
-											>
-												可执行 · {getSkillInstallStatusLabel(skill)}
-											</span>
-										{/if}
-									</div>
-
-									<div class="text-base font-semibold text-gray-900 dark:text-gray-100">
+									<div class="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
 										{skill.name}
 									</div>
-
-									{#if skill.description}
-										<div class="mt-1 text-sm leading-6 text-gray-600 dark:text-gray-300">
-											{skill.description}
-										</div>
-									{/if}
-
-									{#if tags.length > 0}
-										<div class="mt-3 flex flex-wrap gap-2">
-											{#each tags as tag}
-												<span
-													class="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300"
-												>
-													{tag}
-												</span>
-											{/each}
-										</div>
-									{/if}
-
-									{#if isRunnableSkill(skill) && getSkillRuntimeMeta(skill)?.last_error}
-										<div class="mt-3 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
-											{getSkillRuntimeMeta(skill).last_error}
-										</div>
-									{/if}
-
 									<div
-										class="mt-4 flex min-w-0 flex-col gap-2 border-t border-gray-100 pt-4 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400"
+										class="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500 dark:text-gray-400"
 									>
-										{#if sourceUrl}
-											<a
-												class="inline-flex max-w-full items-center gap-1 truncate text-sky-600 hover:text-sky-700 dark:text-sky-300 dark:hover:text-sky-200"
-												href={sourceUrl}
-												target="_blank"
-												rel="noreferrer"
-											>
-												<Link className="size-3.5 shrink-0" />
-												<span class="truncate">{sourceUrl}</span>
-											</a>
-										{:else}
-											<span class="truncate">{getSkillMetaLine(skill)}</span>
+										<span>{getSkillSourceBadge(skill)}</span>
+										{#if categoryLabel}
+											<span class="text-gray-400 dark:text-gray-500">·</span>
+											<span>{categoryLabel}</span>
+										{/if}
+										{#if getSkillPackageFileCount(skill) > 0}
+											<span class="text-gray-400 dark:text-gray-500">·</span>
+											<span>
+												{getSkillPackageFileCount(skill)}
+												{$i18n.t('files')}
+											</span>
 										{/if}
 									</div>
 								</div>
 							</div>
 
-							<div class="flex shrink-0 flex-wrap items-center gap-2">
+							{#if skill.description}
+								<div class="line-clamp-3 text-xs leading-5 text-gray-500 dark:text-gray-400">
+									{skill.description}
+								</div>
+							{:else}
+								<div class="text-xs leading-5 text-gray-400 dark:text-gray-500">
+									{getSkillMetaLine(skill)}
+								</div>
+							{/if}
+
+							<div
+								class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 dark:text-gray-400"
+							>
 								{#if isRunnableSkill(skill)}
+									<span
+										class={getSkillInstallStatus(skill) === 'ready'
+											? 'text-emerald-600 dark:text-emerald-300'
+											: 'text-gray-500 dark:text-gray-400'}
+									>
+										可执行：{getSkillInstallStatusLabel(skill)}
+									</span>
+								{/if}
+								{#if isAutoEnabledSkill(skill)}
+									<span class="text-sky-600 dark:text-sky-300">自动启用</span>
+								{/if}
+								{#if tags.length > 0}
+									<span class="min-w-0 max-w-full truncate">标签：{tags.join(', ')}</span>
+								{/if}
+								{#if sourceUrl}
+									<a
+										class="inline-flex min-w-0 max-w-full items-center gap-1 truncate text-gray-500 underline-offset-2 hover:text-gray-900 hover:underline dark:text-gray-400 dark:hover:text-gray-100"
+										href={sourceUrl}
+										target="_blank"
+										rel="noreferrer"
+									>
+										<Link className="size-3 shrink-0" />
+										<span class="truncate">{sourceUrl}</span>
+									</a>
+								{/if}
+							</div>
+
+							{#if isRunnableSkill(skill) && getSkillRuntimeMeta(skill)?.last_error}
+								<div
+									class="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300"
+								>
+									{getSkillRuntimeMeta(skill).last_error}
+								</div>
+							{/if}
+
+							<div
+								class="mt-auto flex flex-wrap items-center justify-end gap-1.5 border-t border-gray-100 pt-3 dark:border-gray-800"
+							>
+								{#if isRunnableSkill(skill) && $user?.role === 'admin'}
 									{#if getSkillInstallStatus(skill) === 'ready'}
 										<button
-											class="inline-flex items-center gap-2 rounded-xl border border-amber-200 px-3 py-2 text-sm font-medium text-amber-700 transition hover:bg-amber-50 dark:border-amber-900/60 dark:text-amber-300 dark:hover:bg-amber-950/30 disabled:cursor-not-allowed disabled:opacity-60"
+											class="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 px-2.5 py-1.5 text-xs font-medium text-amber-700 transition hover:bg-amber-50 dark:border-amber-900/60 dark:text-amber-300 dark:hover:bg-amber-950/30 disabled:cursor-not-allowed disabled:opacity-60"
 											on:click={() => handleUninstallRuntime(skill)}
 											disabled={runtimeActionSkillId === skill.id}
 										>
 											{#if runtimeActionSkillId === skill.id}
-												<Spinner className="size-4" />
+												<Spinner className="size-3.5" />
 											{/if}
 											移除运行环境
 										</button>
 									{:else}
 										<button
-											class="inline-flex items-center gap-2 rounded-xl bg-gray-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+											class="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900"
 											on:click={() => handleInstallRuntime(skill)}
-											disabled={runtimeActionSkillId === skill.id || !canInstallRunnableSkill(skill)}
+											disabled={runtimeActionSkillId === skill.id ||
+												!canInstallRunnableSkill(skill)}
 										>
 											{#if runtimeActionSkillId === skill.id}
-												<Spinner className="size-4" />
+												<Spinner className="size-3.5" />
 											{/if}
 											安装运行环境
 										</button>
@@ -945,108 +917,110 @@
 								{/if}
 
 								<button
-									class="inline-flex items-center gap-1 rounded-xl border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-850"
+									class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-900 dark:hover:text-gray-100"
 									on:click={() => openEditSkillModal(skill.id)}
+									aria-label={$i18n.t('Edit')}
+									title={$i18n.t('Edit')}
 								>
-									<Pencil className="size-3.5" />
-									{$i18n.t('Edit')}
+									<Pencil className="size-4" />
 								</button>
 
 								<button
-									class="inline-flex items-center gap-1 rounded-xl border border-red-200 px-3 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50 dark:border-red-900/60 dark:text-red-300 dark:hover:bg-red-950/30"
+									class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 transition hover:bg-red-50 hover:text-red-600 dark:text-gray-400 dark:hover:bg-red-950/30 dark:hover:text-red-300"
 									on:click={() => confirmDeleteSkill(skill.id)}
+									aria-label={$i18n.t('Delete')}
+									title={$i18n.t('Delete')}
 								>
-									<GarbageBin className="size-3.5" />
-									{$i18n.t('Delete')}
+									<GarbageBin className="size-4" />
 								</button>
 							</div>
 						</div>
+					{/each}
+				</div>
+			{:else}
+				<div class="workspace-empty-state">
+					<div class="text-sm font-medium text-gray-900 dark:text-gray-100">
+						{$i18n.t('No installed skill packages')}
 					</div>
-				{/each}
-			</div>
-		{:else}
-			<div
-				class="rounded-[1.5rem] border border-dashed border-gray-300 bg-white px-6 py-12 text-center shadow-sm dark:border-gray-700 dark:bg-gray-900"
-			>
-				<div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-gray-100 dark:bg-gray-800">
-					<Sparkles className="size-6 text-gray-500 dark:text-gray-300" />
+					<div class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+						{mainQuery
+							? $i18n.t('No installed skills match your search.')
+							: $i18n.t(
+									'Install a skill from the Skill Store, import from a link, or upload a ZIP package.'
+								)}
+					</div>
+					<div class="mt-4 flex flex-wrap items-center justify-center gap-2">
+						<button class="workspace-primary-button" on:click={() => (showStore = true)}>
+							<Plus className="size-4" />
+							<span>{$i18n.t('Install Skill')}</span>
+						</button>
+						<a class="workspace-secondary-button" href="/workspace/prompts">
+							{$i18n.t('Open Prompts')}
+						</a>
+					</div>
 				</div>
-				<div class="mt-4 text-lg font-semibold text-gray-900 dark:text-gray-100">
-					{$i18n.t('No installed skills yet')}
-				</div>
-				<div class="mt-2 text-sm text-gray-500 dark:text-gray-400">
-					{mainQuery
-						? $i18n.t('No installed skills match your search.')
-						: $i18n.t('Open the Skill Store to install a real skill package or create your own custom skill.')}
-				</div>
-				<div class="mt-5 flex flex-wrap items-center justify-center gap-2">
-					<button
-						class="inline-flex items-center gap-2 rounded-2xl bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
-						on:click={() => (showStore = true)}
-					>
-						<Sparkles className="size-4" />
-						{$i18n.t('Open Skill Store')}
-					</button>
-					<button
-						class="inline-flex items-center gap-2 rounded-2xl border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-850"
-						on:click={openCreateSkillModal}
-					>
-						<Plus className="size-4" />
-						{$i18n.t('New Skill')}
-					</button>
-				</div>
-			</div>
-		{/if}
+			{/if}
+		</section>
 	</div>
 {/if}
 
 <Modal
 	size="2xl"
 	bind:show={showStore}
-	className="bg-white/95 dark:bg-gray-950/95 backdrop-blur-xl rounded-[1.75rem]"
+	className="bg-white dark:bg-gray-950 rounded-lg"
 	containerClassName="p-4"
 >
 	<div class="flex max-h-[85vh] flex-col">
 		<div
-			class="sticky top-0 z-10 border-b border-gray-100 bg-white/90 px-6 py-5 backdrop-blur dark:border-gray-800 dark:bg-gray-950/90"
+			class="sticky top-0 z-10 border-b border-gray-100 bg-white px-5 py-4 dark:border-gray-800 dark:bg-gray-950"
 		>
 			<div class="flex items-start justify-between gap-4">
 				<div>
-					<div class="text-xl font-semibold text-gray-900 dark:text-gray-100">
+					<div class="text-base font-semibold text-gray-900 dark:text-gray-100">
 						{$i18n.t('Skill Store')}
 					</div>
-					<div class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+					<div class="mt-1 text-xs leading-5 text-gray-500 dark:text-gray-400">
 						{$i18n.t(
-							'Browse verified LobeHub skills, community imports, and your own custom skill packages.'
+							'Browse verified LobeHub skills, community imports, and uploaded SKILL.md packages.'
 						)}
 					</div>
 				</div>
 
 				<button
-					class="rounded-xl p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-850 dark:hover:text-gray-200"
+					class="rounded-lg p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-850 dark:hover:text-gray-200"
 					on:click={() => (showStore = false)}
+					aria-label={$i18n.t('Close')}
 				>
 					<XMark className="size-5" />
 				</button>
 			</div>
 
-			<div class="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center">
-				<div class="inline-flex rounded-2xl bg-gray-100 p-1 dark:bg-gray-900">
+			<div class="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+				<div
+					class="flex w-full items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 lg:max-w-sm dark:border-gray-800 dark:bg-gray-900"
+				>
+					<Search className="size-3.5 text-gray-400" />
+					<input
+						class="w-full bg-transparent text-sm outline-none"
+						bind:value={storeQuery}
+						placeholder={$i18n.t('Search in this tab')}
+					/>
+				</div>
+
+				<div class="flex flex-wrap items-center gap-1">
 					{#each STORE_TABS as tab}
 						<button
-							class={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium transition ${
+							class={`inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
 								storeTab === tab
-									? 'bg-white text-gray-900 shadow-sm dark:bg-gray-800 dark:text-gray-100'
-									: 'text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
+									? 'bg-gray-900 text-white dark:bg-white dark:text-gray-900'
+									: 'border border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-300 dark:hover:bg-gray-900'
 							}`}
 							on:click={() => {
 								storeTab = tab;
 							}}
 						>
 							<span>{getTabLabel(tab)}</span>
-							<span
-								class="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-500 dark:bg-gray-900 dark:text-gray-300"
-							>
+							<span class="text-[11px] opacity-70">
 								{tab === 'lobehub'
 									? VERIFIED_LOBEHUB_SKILLS.length
 									: tab === 'community'
@@ -1056,183 +1030,138 @@
 						</button>
 					{/each}
 				</div>
+			</div>
 
-				<div class="flex flex-col gap-2 sm:flex-row sm:items-center">
-					<div
-						class="flex w-full items-center gap-2 rounded-2xl border border-gray-200 bg-white px-3 py-2 shadow-sm sm:w-80 dark:border-gray-800 dark:bg-gray-900"
-					>
-						<Search className="size-4 text-gray-400" />
-						<input
-							class="w-full bg-transparent text-sm outline-none"
-							bind:value={storeQuery}
-							placeholder={$i18n.t('Search in this tab')}
-						/>
-					</div>
-
-					<Dropdown bind:show={showAddMenu} align="end">
-						<button
-							class="inline-flex items-center justify-center gap-2 rounded-2xl bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
-						>
-							<Plus className="size-4" />
-							{$i18n.t('Add')}
-						</button>
-
-						<div slot="content">
-							<DropdownMenu.Content
-								class="z-50 w-56 rounded-2xl border border-gray-200 bg-white p-1.5 shadow-xl dark:border-gray-800 dark:bg-gray-900 dark:text-white"
-								sideOffset={8}
-								side="bottom"
-								align="end"
-								transition={flyAndScale}
-							>
-								<DropdownMenu.Item
-									class="flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-850"
-									on:click={openCreateSkillModal}
-								>
-									<Sparkles className="size-4" />
-									{$i18n.t('New Skill')}
-								</DropdownMenu.Item>
-
-								<DropdownMenu.Item
-									class="flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-850"
-									on:click={() => openImportModal('url')}
-								>
-									<Link className="size-4" />
-									{$i18n.t('Import from URL')}
-								</DropdownMenu.Item>
-
-								<DropdownMenu.Item
-									class="flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-850"
-									on:click={() => openImportModal('github')}
-								>
-									<CloudArrowUp className="size-4" />
-									{$i18n.t('Import from GitHub')}
-								</DropdownMenu.Item>
-
-								<DropdownMenu.Item
-									class="flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium hover:bg-gray-50 dark:hover:bg-gray-850"
-									on:click={triggerZipImport}
-								>
-									<DocumentArrowUpSolid className="size-4" />
-									{$i18n.t('Upload ZIP')}
-								</DropdownMenu.Item>
-							</DropdownMenu.Content>
-						</div>
-					</Dropdown>
-				</div>
+			<div class="mt-3 flex flex-wrap items-center gap-2">
+				<button
+					class="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900"
+					on:click={() => openImportModal('url')}
+				>
+					<Link className="size-3.5" />
+					{$i18n.t('Import from URL')}
+				</button>
+				<button
+					class="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900"
+					on:click={() => openImportModal('github')}
+				>
+					<CloudArrowUp className="size-3.5" />
+					{$i18n.t('Import from GitHub')}
+				</button>
+				<button
+					class="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900"
+					on:click={triggerZipImport}
+				>
+					<DocumentArrowUpSolid className="size-3.5" />
+					{$i18n.t('Upload ZIP')}
+				</button>
 			</div>
 		</div>
 
-		<div class="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+		<div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
 			{#if storeTab === 'lobehub'}
 				{#if filteredLobeHubSkills.length > 0}
-					<div class="space-y-3">
-						{#each filteredLobeHubSkills as entry (entry.id)}
-							{@const installedSkill = getInstalledCatalogSkill(entry)}
-							{@const Icon = CATALOG_ICON_MAP[entry.icon]}
-							<div
-								class="rounded-[1.5rem] border border-gray-200 bg-white p-4 shadow-sm transition hover:border-gray-300 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-gray-700"
-							>
-								<div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-									<div class="flex min-w-0 gap-4">
-										<div
-											class={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br ${entry.accent} text-white shadow-sm`}
-										>
-											<svelte:component this={Icon} className="size-6" />
-										</div>
-
-										<div class="min-w-0 flex-1">
-											<div class="mb-2 flex flex-wrap items-center gap-2">
-												<span
-													class="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
-												>
-													LobeHub
-												</span>
-												<span
-													class={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-														installedSkill
-															? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300'
-															: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300'
-													}`}
-												>
-													{installedSkill ? $i18n.t('Installed') : $i18n.t('Available')}
-												</span>
-												<span
-													class="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300"
-												>
-													{getCatalogCategoryLabel(entry)}
-												</span>
-											</div>
-
-											<div class="text-base font-semibold text-gray-900 dark:text-gray-100">
-												{$i18n.t(entry.title)}
-											</div>
-
-											<div class="mt-1 text-sm leading-6 text-gray-600 dark:text-gray-300">
-												{$i18n.t(entry.description)}
-											</div>
-
+					<div class="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-800">
+						<div class="divide-y divide-gray-100 dark:divide-gray-800">
+							{#each filteredLobeHubSkills as entry (entry.id)}
+								{@const installedSkill = getInstalledCatalogSkill(entry)}
+								{@const Icon = CATALOG_ICON_MAP[entry.icon]}
+								<div
+									class="bg-white px-4 py-3 transition hover:bg-gray-50 dark:bg-gray-950 dark:hover:bg-gray-900"
+								>
+									<div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+										<div class="flex min-w-0 gap-3">
 											<div
-												class="mt-4 flex min-w-0 flex-col gap-2 border-t border-gray-100 pt-4 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400"
+												class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-600 dark:bg-gray-900 dark:text-gray-300"
 											>
-												<a
-													class="inline-flex max-w-full items-center gap-1 truncate text-sky-600 hover:text-sky-700 dark:text-sky-300 dark:hover:text-sky-200"
-													href={entry.skillUrl}
-													target="_blank"
-													rel="noreferrer"
+												<svelte:component this={Icon} className="size-4" />
+											</div>
+
+											<div class="min-w-0 flex-1">
+												<div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+													<div
+														class="truncate text-sm font-medium text-gray-900 dark:text-gray-100"
+													>
+														{$i18n.t(entry.title)}
+													</div>
+													<span class="text-xs text-gray-400 dark:text-gray-500">·</span>
+													<span class="text-xs text-gray-500 dark:text-gray-400">LobeHub</span>
+													<span class="text-xs text-gray-400 dark:text-gray-500">·</span>
+													<span class="text-xs text-gray-500 dark:text-gray-400">
+														{getCatalogCategoryLabel(entry)}
+													</span>
+													{#if installedSkill}
+														<span class="text-xs text-gray-400 dark:text-gray-500">·</span>
+														<span class="text-xs text-emerald-600 dark:text-emerald-300">
+															{$i18n.t('Installed')}
+														</span>
+													{/if}
+												</div>
+
+												<div
+													class="mt-1 line-clamp-2 text-xs leading-5 text-gray-500 dark:text-gray-400"
 												>
-													<Link className="size-3.5 shrink-0" />
-													<span class="truncate">{entry.skillUrl}</span>
-												</a>
+													{$i18n.t(entry.description)}
+												</div>
+
+												<div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+													<a
+														class="inline-flex max-w-full items-center gap-1 truncate underline-offset-2 hover:text-gray-900 hover:underline dark:hover:text-gray-100"
+														href={entry.skillUrl}
+														target="_blank"
+														rel="noreferrer"
+													>
+														<Link className="size-3.5 shrink-0" />
+														<span class="truncate">{entry.skillUrl}</span>
+													</a>
+												</div>
 											</div>
 										</div>
-									</div>
 
-									<div class="flex shrink-0 flex-wrap items-center gap-2">
-										{#if installedSkill}
-											<button
-												class="inline-flex items-center gap-1 rounded-xl border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-850"
-												on:click={() => openEditSkillModal(installedSkill.id)}
-											>
-												<Pencil className="size-3.5" />
-												{$i18n.t('Edit')}
-											</button>
+										<div class="flex shrink-0 flex-wrap items-center gap-1.5 lg:justify-end">
+											{#if installedSkill}
+												<button
+													class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-900 dark:hover:text-gray-100"
+													on:click={() => openEditSkillModal(installedSkill.id)}
+													aria-label={$i18n.t('Edit')}
+													title={$i18n.t('Edit')}
+												>
+													<Pencil className="size-4" />
+												</button>
 
-											<button
-												class="inline-flex items-center gap-1 rounded-xl border border-red-200 px-3 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50 dark:border-red-900/60 dark:text-red-300 dark:hover:bg-red-950/30"
-												on:click={() => confirmDeleteSkill(installedSkill.id)}
-											>
-												<GarbageBin className="size-3.5" />
-												{$i18n.t('Delete')}
-											</button>
-										{:else}
-											<button
-												class="inline-flex items-center gap-2 rounded-xl bg-gray-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
-												on:click={() => installCatalogSkill(entry)}
-												disabled={installingCatalogSkillId === entry.id}
-											>
-												{#if installingCatalogSkillId === entry.id}
-													<Spinner className="size-4" />
-												{/if}
-												{$i18n.t('Install')}
-											</button>
-										{/if}
+												<button
+													class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 transition hover:bg-red-50 hover:text-red-600 dark:text-gray-400 dark:hover:bg-red-950/30 dark:hover:text-red-300"
+													on:click={() => confirmDeleteSkill(installedSkill.id)}
+													aria-label={$i18n.t('Delete')}
+													title={$i18n.t('Delete')}
+												>
+													<GarbageBin className="size-4" />
+												</button>
+											{:else}
+												<button
+													class="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-black disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
+													on:click={() => installCatalogSkill(entry)}
+													disabled={installingCatalogSkillId === entry.id}
+												>
+													{#if installingCatalogSkillId === entry.id}
+														<Spinner className="size-3.5" />
+													{/if}
+													{$i18n.t('Install')}
+												</button>
+											{/if}
+										</div>
 									</div>
 								</div>
-							</div>
-						{/each}
+							{/each}
+						</div>
 					</div>
 				{:else}
 					<div
-						class="rounded-[1.5rem] border border-dashed border-gray-300 bg-white px-6 py-12 text-center shadow-sm dark:border-gray-700 dark:bg-gray-900"
+						class="rounded-lg border border-gray-200 bg-white px-4 py-8 dark:border-gray-800 dark:bg-gray-950"
 					>
-						<div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-gray-100 dark:bg-gray-800">
-							<Sparkles className="size-6 text-gray-500 dark:text-gray-300" />
-						</div>
-						<div class="mt-4 text-lg font-semibold text-gray-900 dark:text-gray-100">
+						<div class="text-sm font-medium text-gray-900 dark:text-gray-100">
 							{$i18n.t('Nothing here yet')}
 						</div>
-						<div class="mt-2 text-sm text-gray-500 dark:text-gray-400">
+						<div class="mt-1 text-sm text-gray-500 dark:text-gray-400">
 							{storeQuery
 								? $i18n.t('No skills in this tab match your search.')
 								: $i18n.t('No verified LobeHub skills are available right now.')}
@@ -1241,241 +1170,227 @@
 				{/if}
 			{:else if storeTab === 'community'}
 				{#if filteredCommunitySkills.length > 0}
-					<div class="space-y-3">
-						{#each filteredCommunitySkills as skill (skill.id)}
-							{@const Icon = getSkillIcon(skill)}
-							{@const tags = getSkillTags(skill)}
-							<div
-								class="rounded-[1.5rem] border border-gray-200 bg-white p-4 shadow-sm transition hover:border-gray-300 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-gray-700"
-							>
-								<div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-									<div class="flex min-w-0 gap-4">
-										<div
-											class={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br ${getSkillIconAccent(skill)} text-white shadow-sm`}
-										>
-											<svelte:component this={Icon} className="size-6" />
-										</div>
-
-										<div class="min-w-0 flex-1">
-											<div class="mb-2 flex flex-wrap items-center gap-2">
-												<span
-													class={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${getSkillSourceBadgeClass(skill)}`}
-												>
-													{getSkillSourceBadge(skill)}
-												</span>
-												<span
-													class="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
-												>
-													{$i18n.t('Installed')}
-												</span>
-												{#if getSkillPackageFileCount(skill) > 0}
-													<span
-														class="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-600 dark:bg-gray-800 dark:text-gray-300"
-													>
-														{getSkillPackageFileCount(skill)} {$i18n.t('files')}
-													</span>
-												{/if}
-											</div>
-
-											<div class="text-base font-semibold text-gray-900 dark:text-gray-100">
-												{skill.name}
-											</div>
-
-											{#if skill.description}
-												<div class="mt-1 text-sm leading-6 text-gray-600 dark:text-gray-300">
-													{skill.description}
-												</div>
-											{/if}
-
-											{#if tags.length > 0}
-												<div class="mt-3 flex flex-wrap gap-2">
-													{#each tags as tag}
-														<span
-															class="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300"
-														>
-															{tag}
-														</span>
-													{/each}
-												</div>
-											{/if}
-
+					<div class="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-800">
+						<div class="divide-y divide-gray-100 dark:divide-gray-800">
+							{#each filteredCommunitySkills as skill (skill.id)}
+								{@const Icon = getSkillIcon(skill)}
+								{@const tags = getSkillTags(skill)}
+								<div
+									class="bg-white px-4 py-3 transition hover:bg-gray-50 dark:bg-gray-950 dark:hover:bg-gray-900"
+								>
+									<div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+										<div class="flex min-w-0 gap-3">
 											<div
-												class="mt-4 flex min-w-0 flex-col gap-2 border-t border-gray-100 pt-4 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400"
+												class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-600 dark:bg-gray-900 dark:text-gray-300"
 											>
-												{#if getSkillSourceUrl(skill)}
-													<a
-														class="inline-flex max-w-full items-center gap-1 truncate text-sky-600 hover:text-sky-700 dark:text-sky-300 dark:hover:text-sky-200"
-														href={getSkillSourceUrl(skill)}
-														target="_blank"
-														rel="noreferrer"
+												<svelte:component this={Icon} className="size-4" />
+											</div>
+
+											<div class="min-w-0 flex-1">
+												<div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+													<div
+														class="truncate text-sm font-medium text-gray-900 dark:text-gray-100"
 													>
-														<Link className="size-3.5 shrink-0" />
-														<span class="truncate">{getSkillSourceUrl(skill)}</span>
-													</a>
-												{:else}
-													<span>{getSkillMetaLine(skill)}</span>
+														{skill.name}
+													</div>
+													<span class="text-xs text-gray-400 dark:text-gray-500">·</span>
+													<span class="text-xs text-gray-500 dark:text-gray-400">
+														{getSkillSourceBadge(skill)}
+													</span>
+													<span class="text-xs text-gray-400 dark:text-gray-500">·</span>
+													<span class="text-xs text-emerald-600 dark:text-emerald-300">
+														{$i18n.t('Installed')}
+													</span>
+													{#if getSkillPackageFileCount(skill) > 0}
+														<span class="text-xs text-gray-400 dark:text-gray-500">·</span>
+														<span class="text-xs text-gray-500 dark:text-gray-400">
+															{getSkillPackageFileCount(skill)}
+															{$i18n.t('files')}
+														</span>
+													{/if}
+												</div>
+
+												{#if skill.description}
+													<div
+														class="mt-1 line-clamp-2 text-xs leading-5 text-gray-500 dark:text-gray-400"
+													>
+														{skill.description}
+													</div>
 												{/if}
+
+												{#if tags.length > 0}
+													<div class="mt-2 truncate text-xs text-gray-500 dark:text-gray-400">
+														标签：{tags.join(', ')}
+													</div>
+												{/if}
+
+												<div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+													{#if getSkillSourceUrl(skill)}
+														<a
+															class="inline-flex max-w-full items-center gap-1 truncate underline-offset-2 hover:text-gray-900 hover:underline dark:hover:text-gray-100"
+															href={getSkillSourceUrl(skill)}
+															target="_blank"
+															rel="noreferrer"
+														>
+															<Link className="size-3.5 shrink-0" />
+															<span class="truncate">{getSkillSourceUrl(skill)}</span>
+														</a>
+													{:else}
+														<span>{getSkillMetaLine(skill)}</span>
+													{/if}
+												</div>
 											</div>
 										</div>
-									</div>
 
-									<div class="flex shrink-0 flex-wrap items-center gap-2">
-										<button
-											class="inline-flex items-center gap-1 rounded-xl border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-850"
-											on:click={() => openEditSkillModal(skill.id)}
-										>
-											<Pencil className="size-3.5" />
-											{$i18n.t('Edit')}
-										</button>
+										<div class="flex shrink-0 flex-wrap items-center gap-1.5 lg:justify-end">
+											<button
+												class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-900 dark:hover:text-gray-100"
+												on:click={() => openEditSkillModal(skill.id)}
+												aria-label={$i18n.t('Edit')}
+												title={$i18n.t('Edit')}
+											>
+												<Pencil className="size-4" />
+											</button>
 
-										<button
-											class="inline-flex items-center gap-1 rounded-xl border border-red-200 px-3 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50 dark:border-red-900/60 dark:text-red-300 dark:hover:bg-red-950/30"
-											on:click={() => confirmDeleteSkill(skill.id)}
-										>
-											<GarbageBin className="size-3.5" />
-											{$i18n.t('Delete')}
-										</button>
+											<button
+												class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 transition hover:bg-red-50 hover:text-red-600 dark:text-gray-400 dark:hover:bg-red-950/30 dark:hover:text-red-300"
+												on:click={() => confirmDeleteSkill(skill.id)}
+												aria-label={$i18n.t('Delete')}
+												title={$i18n.t('Delete')}
+											>
+												<GarbageBin className="size-4" />
+											</button>
+										</div>
 									</div>
 								</div>
-							</div>
-						{/each}
+							{/each}
+						</div>
 					</div>
 				{:else}
 					<div
-						class="rounded-[1.5rem] border border-dashed border-gray-300 bg-white px-6 py-12 text-center shadow-sm dark:border-gray-700 dark:bg-gray-900"
+						class="rounded-lg border border-gray-200 bg-white px-4 py-8 dark:border-gray-800 dark:bg-gray-950"
 					>
-						<div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-gray-100 dark:bg-gray-800">
-							<Sparkles className="size-6 text-gray-500 dark:text-gray-300" />
-						</div>
-						<div class="mt-4 text-lg font-semibold text-gray-900 dark:text-gray-100">
+						<div class="text-sm font-medium text-gray-900 dark:text-gray-100">
 							{$i18n.t('Nothing here yet')}
 						</div>
-						<div class="mt-2 text-sm text-gray-500 dark:text-gray-400">
+						<div class="mt-1 text-sm text-gray-500 dark:text-gray-400">
 							{storeQuery
 								? $i18n.t('No skills in this tab match your search.')
 								: $i18n.t('Import a SKILL.md package from a URL, GitHub repository, or ZIP file.')}
 						</div>
-						<div class="mt-5 flex flex-wrap items-center justify-center gap-2">
+						<div class="mt-4 flex flex-wrap items-center gap-2">
 							<button
-								class="inline-flex items-center gap-2 rounded-2xl bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
+								class="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-black dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
 								on:click={() => openImportModal('url')}
 							>
-								<Link className="size-4" />
+								<Link className="size-3.5" />
 								{$i18n.t('Import from URL')}
 							</button>
 							<button
-								class="inline-flex items-center gap-2 rounded-2xl border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-850"
+								class="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900"
 								on:click={triggerZipImport}
 							>
-								<DocumentArrowUpSolid className="size-4" />
+								<DocumentArrowUpSolid className="size-3.5" />
 								{$i18n.t('Upload ZIP')}
 							</button>
 						</div>
 					</div>
 				{/if}
 			{:else if filteredCustomSkills.length > 0}
-				<div class="space-y-3">
-					{#each filteredCustomSkills as skill (skill.id)}
-						{@const Icon = getSkillIcon(skill)}
-						{@const tags = getSkillTags(skill)}
-						<div
-							class="rounded-[1.5rem] border border-gray-200 bg-white p-4 shadow-sm transition hover:border-gray-300 dark:border-gray-800 dark:bg-gray-900 dark:hover:border-gray-700"
-						>
-							<div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-								<div class="flex min-w-0 gap-4">
-									<div
-										class={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br ${getSkillIconAccent(skill)} text-white shadow-sm`}
-									>
-										<svelte:component this={Icon} className="size-6" />
-									</div>
-
-									<div class="min-w-0 flex-1">
-										<div class="mb-2 flex flex-wrap items-center gap-2">
-											<span
-												class={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${getSkillSourceBadgeClass(skill)}`}
-											>
-												{getSkillSourceBadge(skill)}
-											</span>
-											<span
-												class="rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
-											>
-												{$i18n.t('Installed')}
-											</span>
-										</div>
-
-										<div class="text-base font-semibold text-gray-900 dark:text-gray-100">
-											{skill.name}
-										</div>
-
-										{#if skill.description}
-											<div class="mt-1 text-sm leading-6 text-gray-600 dark:text-gray-300">
-												{skill.description}
-											</div>
-										{/if}
-
-										{#if tags.length > 0}
-											<div class="mt-3 flex flex-wrap gap-2">
-												{#each tags as tag}
-													<span
-														class="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300"
-													>
-														{tag}
-													</span>
-												{/each}
-											</div>
-										{/if}
-
+				<div class="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-800">
+					<div class="divide-y divide-gray-100 dark:divide-gray-800">
+						{#each filteredCustomSkills as skill (skill.id)}
+							{@const Icon = getSkillIcon(skill)}
+							{@const tags = getSkillTags(skill)}
+							<div
+								class="bg-white px-4 py-3 transition hover:bg-gray-50 dark:bg-gray-950 dark:hover:bg-gray-900"
+							>
+								<div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+									<div class="flex min-w-0 gap-3">
 										<div
-											class="mt-4 flex min-w-0 flex-col gap-2 border-t border-gray-100 pt-4 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400"
+											class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-600 dark:bg-gray-900 dark:text-gray-300"
 										>
-											<span>{getSkillMetaLine(skill)}</span>
+											<svelte:component this={Icon} className="size-4" />
+										</div>
+
+										<div class="min-w-0 flex-1">
+											<div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+												<div class="truncate text-sm font-medium text-gray-900 dark:text-gray-100">
+													{skill.name}
+												</div>
+												<span class="text-xs text-gray-400 dark:text-gray-500">·</span>
+												<span class="text-xs text-gray-500 dark:text-gray-400">
+													{getSkillSourceBadge(skill)}
+												</span>
+												<span class="text-xs text-gray-400 dark:text-gray-500">·</span>
+												<span class="text-xs text-emerald-600 dark:text-emerald-300">
+													{$i18n.t('Installed')}
+												</span>
+											</div>
+
+											{#if skill.description}
+												<div
+													class="mt-1 line-clamp-2 text-xs leading-5 text-gray-500 dark:text-gray-400"
+												>
+													{skill.description}
+												</div>
+											{/if}
+
+											{#if tags.length > 0}
+												<div class="mt-2 truncate text-xs text-gray-500 dark:text-gray-400">
+													标签：{tags.join(', ')}
+												</div>
+											{/if}
+
+											<div class="mt-2 text-xs text-gray-500 dark:text-gray-400">
+												<span>{getSkillMetaLine(skill)}</span>
+											</div>
 										</div>
 									</div>
-								</div>
 
-								<div class="flex shrink-0 flex-wrap items-center gap-2">
-									<button
-										class="inline-flex items-center gap-1 rounded-xl border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-850"
-										on:click={() => openEditSkillModal(skill.id)}
-									>
-										<Pencil className="size-3.5" />
-										{$i18n.t('Edit')}
-									</button>
+									<div class="flex shrink-0 flex-wrap items-center gap-1.5 lg:justify-end">
+										<button
+											class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-900 dark:hover:text-gray-100"
+											on:click={() => openEditSkillModal(skill.id)}
+											aria-label={$i18n.t('Edit')}
+											title={$i18n.t('Edit')}
+										>
+											<Pencil className="size-4" />
+										</button>
 
-									<button
-										class="inline-flex items-center gap-1 rounded-xl border border-red-200 px-3 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50 dark:border-red-900/60 dark:text-red-300 dark:hover:bg-red-950/30"
-										on:click={() => confirmDeleteSkill(skill.id)}
-									>
-										<GarbageBin className="size-3.5" />
-										{$i18n.t('Delete')}
-									</button>
+										<button
+											class="inline-flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 transition hover:bg-red-50 hover:text-red-600 dark:text-gray-400 dark:hover:bg-red-950/30 dark:hover:text-red-300"
+											on:click={() => confirmDeleteSkill(skill.id)}
+											aria-label={$i18n.t('Delete')}
+											title={$i18n.t('Delete')}
+										>
+											<GarbageBin className="size-4" />
+										</button>
+									</div>
 								</div>
 							</div>
-						</div>
-					{/each}
+						{/each}
+					</div>
 				</div>
 			{:else}
 				<div
-					class="rounded-[1.5rem] border border-dashed border-gray-300 bg-white px-6 py-12 text-center shadow-sm dark:border-gray-700 dark:bg-gray-900"
+					class="rounded-lg border border-gray-200 bg-white px-4 py-8 dark:border-gray-800 dark:bg-gray-950"
 				>
-					<div class="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-gray-100 dark:bg-gray-800">
-						<Sparkles className="size-6 text-gray-500 dark:text-gray-300" />
-					</div>
-					<div class="mt-4 text-lg font-semibold text-gray-900 dark:text-gray-100">
+					<div class="text-sm font-medium text-gray-900 dark:text-gray-100">
 						{$i18n.t('Nothing here yet')}
 					</div>
-					<div class="mt-2 text-sm text-gray-500 dark:text-gray-400">
+					<div class="mt-1 text-sm text-gray-500 dark:text-gray-400">
 						{storeQuery
 							? $i18n.t('No skills in this tab match your search.')
-							: $i18n.t('Create a custom skill for your own workflow.')}
+							: $i18n.t('Upload a ZIP package or import a SKILL.md package from a source URL.')}
 					</div>
-					<div class="mt-5 flex flex-wrap items-center justify-center gap-2">
+					<div class="mt-4 flex flex-wrap items-center gap-2">
 						<button
-							class="inline-flex items-center gap-2 rounded-2xl bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
-							on:click={openCreateSkillModal}
+							class="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-black dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
+							on:click={triggerZipImport}
 						>
-							<Plus className="size-4" />
-							{$i18n.t('New Skill')}
+							<DocumentArrowUpSolid className="size-3.5" />
+							{$i18n.t('Upload ZIP')}
 						</button>
 					</div>
 				</div>
@@ -1484,11 +1399,7 @@
 	</div>
 </Modal>
 
-<Modal
-	size="md"
-	bind:show={showImportModal}
-	className="bg-white/95 dark:bg-gray-950/95 backdrop-blur-xl rounded-[1.75rem]"
->
+<Modal size="md" bind:show={showImportModal} className="bg-white/95 dark:bg-gray-950/95 rounded-lg">
 	<div class="p-6">
 		<div class="flex items-start justify-between gap-4">
 			<div>
@@ -1503,7 +1414,7 @@
 			</div>
 
 			<button
-				class="rounded-xl p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-850 dark:hover:text-gray-200"
+				class="rounded-lg p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-850 dark:hover:text-gray-200"
 				on:click={() => (showImportModal = false)}
 			>
 				<XMark className="size-5" />
@@ -1511,30 +1422,31 @@
 		</div>
 
 		<div class="mt-5">
-			<label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-200" for="skill-import-url">
+			<label
+				class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-200"
+				for="skill-import-url"
+			>
 				{importType === 'github' ? $i18n.t('GitHub URL') : $i18n.t('SKILL.md URL')}
 			</label>
 			<input
 				id="skill-import-url"
-				class="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-gray-400 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:focus:border-gray-700"
+				class="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-gray-400 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:focus:border-gray-700"
 				bind:value={importValue}
-				placeholder={
-					importType === 'github'
-						? 'https://github.com/org/repo/tree/main/skill-path'
-						: 'https://example.com/SKILL.md'
-				}
+				placeholder={importType === 'github'
+					? 'https://github.com/org/repo/tree/main/skill-path'
+					: 'https://example.com/SKILL.md'}
 			/>
 		</div>
 
 		<div class="mt-6 flex justify-end gap-2">
 			<button
-				class="rounded-2xl border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-850"
+				class="rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-850"
 				on:click={() => (showImportModal = false)}
 			>
 				{$i18n.t('Cancel')}
 			</button>
 			<button
-				class="inline-flex items-center gap-2 rounded-2xl bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
+				class="inline-flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
 				on:click={handleImport}
 				disabled={importLoading}
 			>
@@ -1547,24 +1459,22 @@
 	</div>
 </Modal>
 
-<Modal
-	size="lg"
-	bind:show={showEditor}
-	className="bg-white/95 dark:bg-gray-950/95 backdrop-blur-xl rounded-[1.75rem]"
->
+<Modal size="lg" bind:show={showEditor} className="bg-white/95 dark:bg-gray-950/95 rounded-lg">
 	<div class="flex max-h-[85vh] flex-col">
-		<div class="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-5 dark:border-gray-800">
+		<div
+			class="flex items-start justify-between gap-4 border-b border-gray-100 px-6 py-5 dark:border-gray-800"
+		>
 			<div>
 				<div class="text-lg font-semibold text-gray-900 dark:text-gray-100">
-					{editingSkill ? $i18n.t('Edit Skill') : $i18n.t('New Skill')}
+					{$i18n.t('Skill Package')}
 				</div>
 				<div class="mt-1 text-sm text-gray-500 dark:text-gray-400">
-					{$i18n.t('Skills still reuse the existing prompt-skill injection flow for compatibility.')}
+					{$i18n.t('Edit package metadata, access, and automatic activation settings.')}
 				</div>
 			</div>
 
 			<button
-				class="rounded-xl p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-850 dark:hover:text-gray-200"
+				class="rounded-lg p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-gray-850 dark:hover:text-gray-200"
 				on:click={() => (showEditor = false)}
 			>
 				<XMark className="size-5" />
@@ -1574,56 +1484,130 @@
 		<div class="min-h-0 flex-1 overflow-y-auto px-6 py-5">
 			<div class="space-y-4">
 				<div>
-					<label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-200" for="skill-name">
+					<label
+						class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-200"
+						for="skill-name"
+					>
 						{$i18n.t('Name')}
 					</label>
 					<input
 						id="skill-name"
-						class="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-gray-400 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:focus:border-gray-700"
+						class="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-gray-400 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:focus:border-gray-700"
 						bind:value={skillForm.name}
 						placeholder={$i18n.t('e.g. Release Notes Writer')}
 					/>
 				</div>
 
 				<div>
-					<label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-200" for="skill-description">
+					<label
+						class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-200"
+						for="skill-description"
+					>
 						{$i18n.t('Description')}
 					</label>
 					<input
 						id="skill-description"
-						class="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-gray-400 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:focus:border-gray-700"
+						class="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-gray-400 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:focus:border-gray-700"
 						bind:value={skillForm.description}
 						placeholder={$i18n.t('Describe when this skill should be used')}
 					/>
 				</div>
 
+				{#if $user?.role === 'admin'}
+					<div
+						class="rounded-lg border border-gray-200 bg-white px-4 py-3 dark:border-gray-800 dark:bg-gray-900"
+					>
+						<label class="flex items-start justify-between gap-4">
+							<div>
+								<div class="text-sm font-medium text-gray-900 dark:text-gray-100">
+									{$i18n.t('Allow automatic activation')}
+								</div>
+								<div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+									{$i18n.t(
+										'When enabled, this Skill can be selected automatically for matching chat requests.'
+									)}
+								</div>
+							</div>
+							<input
+								class="mt-1 h-4 w-4 rounded border-gray-300 accent-gray-900 dark:accent-white"
+								type="checkbox"
+								bind:checked={skillForm.autoEnabled}
+							/>
+						</label>
+
+						{#if skillForm.autoEnabled}
+							<div class="mt-4 space-y-3">
+								<div>
+									<label
+										class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-200"
+										for="skill-activation-description"
+									>
+										{$i18n.t('Activation hint')}
+									</label>
+									<textarea
+										id="skill-activation-description"
+										class="min-h-20 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-gray-400 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100 dark:focus:border-gray-700"
+										bind:value={skillForm.activationDescription}
+										placeholder={$i18n.t('Describe the user requests that should use this Skill.')}
+									></textarea>
+								</div>
+
+								<div>
+									<label
+										class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-200"
+										for="skill-activation-keywords"
+									>
+										{$i18n.t('Activation keywords')}
+									</label>
+									<input
+										id="skill-activation-keywords"
+										class="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-gray-400 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100 dark:focus:border-gray-700"
+										bind:value={skillForm.activationKeywords}
+										placeholder={$i18n.t('Comma-separated keywords')}
+									/>
+								</div>
+							</div>
+						{/if}
+					</div>
+				{/if}
+
 				<div>
-					<label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-200" for="skill-tags">
+					<label
+						class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-200"
+						for="skill-tags"
+					>
 						{$i18n.t('Tags')}
 					</label>
 					<input
 						id="skill-tags"
-						class="w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-gray-400 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:focus:border-gray-700"
+						class="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm outline-none transition focus:border-gray-400 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:focus:border-gray-700"
 						bind:value={skillForm.tags}
 						placeholder={$i18n.t('Comma-separated tags')}
 					/>
 				</div>
 
 				<div>
-					<label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-200" for="skill-content">
-						{$i18n.t('Content')}
+					<label
+						class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-200"
+						for="skill-content"
+					>
+						SKILL.md
 					</label>
 					<textarea
 						id="skill-content"
-						class="min-h-[18rem] w-full rounded-2xl border border-gray-200 bg-white px-4 py-3 font-mono text-sm outline-none transition focus:border-gray-400 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-100 dark:focus:border-gray-700"
+						class="min-h-[18rem] w-full rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 font-mono text-sm text-gray-700 outline-none dark:border-gray-800 dark:bg-gray-950 dark:text-gray-200"
 						bind:value={skillForm.content}
-						placeholder={$i18n.t('Write the instructions that should be injected when this skill is selected...')}
+						readonly
 					></textarea>
 				</div>
 
 				{#if editingSkill && getSkillSource(editingSkill) === 'lobehub'}
-					<div class="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300">
-						<div class="font-medium text-gray-800 dark:text-gray-100">{$i18n.t('LobeHub Skill')}</div>
+					<div
+						class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300"
+					>
+						<div class="font-medium text-gray-800 dark:text-gray-100">
+							{$i18n.t('LobeHub Skill')}
+						</div>
 						<div class="mt-1">LobeHub</div>
 						{#if getSkillSourceUrl(editingSkill)}
 							<a
@@ -1638,8 +1622,12 @@
 						{/if}
 					</div>
 				{:else if editingSkill?.source && editingSkill.source !== 'manual'}
-					<div class="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300">
-						<div class="font-medium text-gray-800 dark:text-gray-100">{$i18n.t('Imported Skill')}</div>
+					<div
+						class="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300"
+					>
+						<div class="font-medium text-gray-800 dark:text-gray-100">
+							{$i18n.t('Imported Skill')}
+						</div>
 						<div class="mt-1">{getImportSourceLabel(editingSkill.source)}</div>
 						{#if getSkillSourceUrl(editingSkill)}
 							<a
@@ -1657,31 +1645,33 @@
 			</div>
 		</div>
 
-			<div class="flex items-center justify-between gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-800">
-				<button
-					class="inline-flex items-center gap-2 rounded-2xl border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:hover:bg-transparent dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-850 dark:disabled:hover:bg-transparent disabled:opacity-60 disabled:cursor-not-allowed"
-					disabled={!canManageAcl}
-					on:click={() => {
-						if (!canManageAcl) return;
-						showAccessControlModal = true;
-					}}
-				>
+		<div
+			class="flex items-center justify-between gap-3 border-t border-gray-100 px-6 py-4 dark:border-gray-800"
+		>
+			<button
+				class="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:hover:bg-transparent dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-850 dark:disabled:hover:bg-transparent disabled:opacity-60 disabled:cursor-not-allowed"
+				disabled={!canManageAcl}
+				on:click={() => {
+					if (!canManageAcl) return;
+					showAccessControlModal = true;
+				}}
+			>
 				<LockClosed className="size-4" />
 				{accessControl === null ? $i18n.t('Public') : $i18n.t('Restricted')}
 			</button>
 
 			<div class="flex items-center gap-2">
 				<button
-					class="rounded-2xl border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-850"
+					class="rounded-lg border border-gray-200 px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-850"
 					on:click={() => (showEditor = false)}
 				>
 					{$i18n.t('Cancel')}
 				</button>
 				<button
-					class="rounded-2xl bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
+					class="rounded-lg bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
 					on:click={saveSkill}
 				>
-					{editingSkill ? $i18n.t('Save') : $i18n.t('Create')}
+					{$i18n.t('Save')}
 				</button>
 			</div>
 		</div>

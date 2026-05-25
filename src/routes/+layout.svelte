@@ -13,8 +13,7 @@
 		activeUserIds,
 		USAGE_POOL,
 		chatId,
-		chats,
-		currentChatPage,
+		chatListRefreshRevision,
 		tags,
 		temporaryChatEnabled,
 		isLastActiveTab,
@@ -49,7 +48,7 @@
 	import { localizeCommonError } from '$lib/utils/common-errors';
 	import { initScrollbarAutohide } from '$lib/utils/scrollbars';
 	import { setTextScale, TEXT_SCALE_DEFAULT } from '$lib/utils/text-scale';
-	import { getAllTags, getChatList } from '$lib/apis/chats';
+	import { getAllTags } from '$lib/apis/chats';
 	import { initPWAInstallSupport } from '$lib/utils/pwa';
 	import NotificationToast from '$lib/components/NotificationToast.svelte';
 	import AppSidebar from '$lib/components/app/AppSidebar.svelte';
@@ -68,6 +67,20 @@
 	const BREAKPOINT = 768;
 
 	$: setTextScale($settings?.textScale ?? TEXT_SCALE_DEFAULT);
+
+	const hasAuthenticatedConfig = (backendConfig) =>
+		backendConfig?.default_prompt_suggestions !== undefined;
+
+	const applyBackendConfig = async (backendConfig) => {
+		if (!backendConfig) {
+			return;
+		}
+
+		// Branding: treat APP_NAME as source of truth for frontend identity.
+		// Backend config name may still be the upstream default ("Open WebUI"), which causes title flicker.
+		await config.set({ ...backendConfig, name: APP_NAME });
+		await WEBUI_NAME.set(APP_NAME);
+	};
 
 	const formatError = (error) =>
 		localizeCommonError(error, (key, options) => $i18n.t(key, options));
@@ -171,6 +184,13 @@
 
 		notifiedChatCompletions.set(notificationKey, now);
 		return true;
+	};
+
+	const refreshSidebarChatList = (eventChatId) => {
+		if (!eventChatId || $temporaryChatEnabled) {
+			return;
+		}
+		chatListRefreshRevision.update((value) => value + 1);
 	};
 
 	const setupSocket = async (enableWebsocket) => {
@@ -373,6 +393,13 @@
 		const type = event?.data?.type ?? null;
 		const data = event?.data?.data ?? null;
 
+		if (type === 'chat:title') {
+			refreshSidebarChatList(event.chat_id);
+		} else if (type === 'chat:tags') {
+			tags.set(await getAllTags(localStorage.token));
+			refreshSidebarChatList(event.chat_id);
+		}
+
 		if ((event.chat_id !== $chatId && !$temporaryChatEnabled) || isFocused) {
 			if (type === 'chat:completion') {
 				const { done, content, title } = data;
@@ -403,11 +430,6 @@
 						unstyled: true
 					});
 				}
-			} else if (type === 'chat:title') {
-				currentChatPage.set(1);
-				await chats.set(await getChatList(localStorage.token, $currentChatPage));
-			} else if (type === 'chat:tags') {
-				tags.set(await getAllTags(localStorage.token));
 			}
 		} else if (data?.session_id === $socket.id) {
 			if (type === 'execute:python') {
@@ -569,7 +591,7 @@
 
 		let backendConfig = null;
 		try {
-			backendConfig = await getBackendConfig();
+			backendConfig = await getBackendConfig(localStorage.token);
 			console.log('Backend config:', backendConfig);
 		} catch (error) {
 			console.error('Error loading backend config:', error);
@@ -583,7 +605,7 @@
 			const browserLanguages = navigator.languages
 				? navigator.languages
 				: [navigator.language || navigator.userLanguage];
-			const lang = backendConfig.default_locale
+			const lang = backendConfig?.default_locale
 				? backendConfig.default_locale
 				: bestMatchingLanguage(languages, browserLanguages, 'en-US');
 			await changeLanguage(lang);
@@ -591,10 +613,7 @@
 
 		if (backendConfig) {
 			// Save Backend Status to Store
-			// Branding: treat APP_NAME as source of truth for frontend identity.
-			// Backend config name may still be the upstream default ("Open WebUI"), which causes title flicker.
-			await config.set({ ...backendConfig, name: APP_NAME });
-			await WEBUI_NAME.set(APP_NAME);
+			await applyBackendConfig(backendConfig);
 
 			if ($config) {
 				await setupSocket($config.features?.enable_websocket ?? true);
@@ -611,6 +630,20 @@
 
 					if (sessionUser) {
 						// Save Session User to Store
+						if (sessionUser.token) {
+							localStorage.token = sessionUser.token;
+						}
+
+						if (!hasAuthenticatedConfig($config)) {
+							const authenticatedBackendConfig = await getBackendConfig(
+								sessionUser.token ?? localStorage.token
+							).catch((error) => {
+								console.error('Error loading authenticated backend config:', error);
+								return null;
+							});
+							await applyBackendConfig(authenticatedBackendConfig);
+						}
+
 						$socket.emit('user-join', { auth: { token: sessionUser.token } });
 
 						await user.set(sessionUser);

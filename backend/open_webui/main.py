@@ -386,6 +386,7 @@ from open_webui.config import (
     ENABLE_COMMUNITY_SHARING,
     ENABLE_USER_WEBHOOKS,
     USER_PERMISSIONS,
+    NEW_USER_DEFAULT_SETTINGS,
     DEFAULT_GROUP_SHARE_PERMISSION,
     OAUTH_GROUP_DEFAULT_SHARE,
     DEFAULT_USER_ROLE,
@@ -393,11 +394,21 @@ from open_webui.config import (
     DEFAULT_MODELS,
     MODEL_ORDER_LIST,
     # WebUI (OAuth)
+    ENABLE_OAUTH_LOGIN,
+    ENABLE_OAUTH_SIGNUP,
+    OAUTH_MERGE_ACCOUNTS_BY_EMAIL,
+    OAUTH_CLIENT_ID,
+    OAUTH_CLIENT_SECRET,
+    OPENID_PROVIDER_URL,
+    OPENID_REDIRECT_URI,
+    OAUTH_SCOPES,
+    OAUTH_PROVIDER_NAME,
     ENABLE_OAUTH_ROLE_MANAGEMENT,
     OAUTH_ROLES_CLAIM,
     OAUTH_EMAIL_CLAIM,
     OAUTH_PICTURE_CLAIM,
     OAUTH_USERNAME_CLAIM,
+    OAUTH_ALLOWED_DOMAINS,
     OAUTH_ALLOWED_ROLES,
     OAUTH_ADMIN_ROLES,
     # WebUI (LDAP)
@@ -660,6 +671,7 @@ async def log_request_validation_error(request: Request, exc: RequestValidationE
     return await request_validation_exception_handler(request, exc)
 
 oauth_manager = OAuthManager(app)
+app.state.oauth_manager = oauth_manager
 
 app.state.config = AppConfig(
     redis_url=REDIS_URL,
@@ -849,6 +861,7 @@ app.state.config.ADMIN_EMAIL = ADMIN_EMAIL
 app.state.config.DEFAULT_MODELS = DEFAULT_MODELS
 app.state.config.DEFAULT_PROMPT_SUGGESTIONS = DEFAULT_PROMPT_SUGGESTIONS
 app.state.config.DEFAULT_USER_ROLE = DEFAULT_USER_ROLE
+app.state.config.NEW_USER_DEFAULT_SETTINGS = NEW_USER_DEFAULT_SETTINGS
 
 app.state.config.USER_PERMISSIONS = USER_PERMISSIONS
 app.state.config.DEFAULT_GROUP_SHARE_PERMISSION = DEFAULT_GROUP_SHARE_PERMISSION
@@ -865,6 +878,16 @@ app.state.config.ENABLE_USER_WEBHOOKS = ENABLE_USER_WEBHOOKS
 app.state.config.OAUTH_USERNAME_CLAIM = OAUTH_USERNAME_CLAIM
 app.state.config.OAUTH_PICTURE_CLAIM = OAUTH_PICTURE_CLAIM
 app.state.config.OAUTH_EMAIL_CLAIM = OAUTH_EMAIL_CLAIM
+app.state.config.ENABLE_OAUTH_LOGIN = ENABLE_OAUTH_LOGIN
+app.state.config.ENABLE_OAUTH_SIGNUP = ENABLE_OAUTH_SIGNUP
+app.state.config.OAUTH_MERGE_ACCOUNTS_BY_EMAIL = OAUTH_MERGE_ACCOUNTS_BY_EMAIL
+app.state.config.OAUTH_CLIENT_ID = OAUTH_CLIENT_ID
+app.state.config.OAUTH_CLIENT_SECRET = OAUTH_CLIENT_SECRET
+app.state.config.OPENID_PROVIDER_URL = OPENID_PROVIDER_URL
+app.state.config.OPENID_REDIRECT_URI = OPENID_REDIRECT_URI
+app.state.config.OAUTH_SCOPES = OAUTH_SCOPES
+app.state.config.OAUTH_PROVIDER_NAME = OAUTH_PROVIDER_NAME
+app.state.config.OAUTH_ALLOWED_DOMAINS = OAUTH_ALLOWED_DOMAINS
 
 app.state.config.ENABLE_OAUTH_ROLE_MANAGEMENT = ENABLE_OAUTH_ROLE_MANAGEMENT
 app.state.config.OAUTH_ROLES_CLAIM = OAUTH_ROLES_CLAIM
@@ -1662,7 +1685,7 @@ async def chat_completion(
         form_data["metadata"] = metadata
 
         form_data, metadata, events = await process_chat_payload(
-            request, form_data, user, metadata, model
+            request, form_data, user, metadata, model, tasks=tasks
         )
         request.state.metadata = metadata
 
@@ -1735,7 +1758,7 @@ async def chat_completion(
 
             try:
                 retry_form_data, retry_metadata, retry_events = await process_chat_payload(
-                    request, retry_form_data, user, retry_metadata, model
+                    request, retry_form_data, user, retry_metadata, model, tasks=tasks
                 )
                 response = await chat_completion_handler(request, retry_form_data, user)
                 return await process_chat_response(
@@ -1782,7 +1805,7 @@ async def chat_completion(
 
             try:
                 retry_form_data, retry_metadata, retry_events = await process_chat_payload(
-                    request, retry_form_data, user, retry_metadata, model
+                    request, retry_form_data, user, retry_metadata, model, tasks=tasks
                 )
                 response = await chat_completion_handler(request, retry_form_data, user)
                 return await process_chat_response(
@@ -1825,7 +1848,7 @@ async def chat_completion(
 
             try:
                 retry_form_data, retry_metadata, retry_events = await process_chat_payload(
-                    request, retry_form_data, user, retry_metadata, model
+                    request, retry_form_data, user, retry_metadata, model, tasks=tasks
                 )
                 response = await chat_completion_handler(request, retry_form_data, user)
                 return await process_chat_response(
@@ -1986,21 +2009,35 @@ def _get_user_tool_calling_mode(request: Request, user) -> str:
     return app.state.config.TOOL_CALLING_MODE
 
 
-@app.get("/api/config")
-async def get_app_config(request: Request):
-    user = None
+def _get_config_user(request: Request):
+    auth_token = getattr(request.state, "token", None)
+    token_candidates = []
+
+    if auth_token is None:
+        auth_token = get_http_authorization_cred(request.headers.get("Authorization"))
+
+    if auth_token is not None and auth_token.scheme.lower() == "bearer":
+        token_candidates.append(auth_token.credentials)
+
     if "token" in request.cookies:
-        token = request.cookies.get("token")
-        try:
-            data = decode_token(token)
-        except Exception as e:
-            log.debug(e)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token",
-            )
+        token_candidates.append(request.cookies.get("token"))
+
+    for token in token_candidates:
+        if not token:
+            continue
+
+        data = decode_token(token)
         if data is not None and "id" in data:
             user = Users.get_user_by_id(data["id"])
+            if user is not None:
+                return user
+
+    return None
+
+
+@app.get("/api/config")
+async def get_app_config(request: Request):
+    user = _get_config_user(request)
 
     user_count = Users.get_num_users()
     onboarding = False
@@ -2183,23 +2220,22 @@ async def get_app_changelog():
 # OAuth Login & Callback
 ############################
 
-# SessionMiddleware is used by authlib for oauth
-if len(OAUTH_PROVIDERS) > 0:
-    try:
-        from starlette.middleware.sessions import SessionMiddleware
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "OAuth is configured but the required dependency 'itsdangerous' is not installed. "
-            "Install it and rebuild the image."
-        ) from exc
+# SessionMiddleware is used by authlib for oauth and must exist before an
+# administrator enables OAuth from the settings page.
+try:
+    from starlette.middleware.sessions import SessionMiddleware
+except ModuleNotFoundError as exc:
+    raise RuntimeError(
+        "OAuth requires the dependency 'itsdangerous'. Install it and rebuild the image."
+    ) from exc
 
-    app.add_middleware(
-        SessionMiddleware,
-        secret_key=WEBUI_SECRET_KEY,
-        session_cookie="oui-session",
-        same_site=WEBUI_SESSION_COOKIE_SAME_SITE,
-        https_only=WEBUI_SESSION_COOKIE_SECURE,
-    )
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=WEBUI_SECRET_KEY,
+    session_cookie="oui-session",
+    same_site=WEBUI_SESSION_COOKIE_SAME_SITE,
+    https_only=WEBUI_SESSION_COOKIE_SECURE,
+)
 
 
 @app.get("/oauth/{provider}/login")

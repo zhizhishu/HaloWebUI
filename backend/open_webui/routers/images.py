@@ -36,7 +36,15 @@ from open_webui.utils.chat_image_refs import (
 )
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.utils.access_control import has_permission
-from open_webui.utils.error_handling import build_error_detail, read_requests_error_payload
+from open_webui.utils.api_key_pool import (
+    get_api_key_attempts,
+    normalize_api_key_pool_config,
+    should_retry_api_key,
+)
+from open_webui.utils.error_handling import (
+    build_error_detail,
+    read_requests_error_payload,
+)
 from open_webui.utils.model_identity import (
     AMBIGUOUS_MODEL_CODE,
     AMBIGUOUS_MODEL_DETAIL,
@@ -65,16 +73,16 @@ IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 router = APIRouter()
 
-COMFYUI_WORKFLOW_NODE_MAPPING_INVALID = (
-    "ComfyUI workflow node mapping is invalid. Please update the workflow node IDs to match the current workflow."
-)
+COMFYUI_WORKFLOW_NODE_MAPPING_INVALID = "ComfyUI workflow node mapping is invalid. Please update the workflow node IDs to match the current workflow."
 
 IMAGE_MODEL_DISCOVERY_CACHE_TTL_SECONDS = 60.0
 IMAGE_MODEL_DISCOVERY_CACHE_MAX_ENTRIES = 64
 IMAGE_MODEL_DISCOVERY_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
-OPENAI_IMAGE_BATCH_SPLIT_CONCURRENCY = 2
+OPENAI_IMAGE_BATCH_SPLIT_CONCURRENCY = 4
 MARKDOWN_IMAGE_URL_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
-DATA_IMAGE_URL_RE = re.compile(r"data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+", re.IGNORECASE)
+DATA_IMAGE_URL_RE = re.compile(
+    r"data:image\/[a-z0-9.+-]+;base64,[a-z0-9+/=\s]+", re.IGNORECASE
+)
 
 OPENAI_IMAGE_DEFAULT_RESPONSE_FORMAT_PREFIXES = (
     "chatgpt-image-",
@@ -114,6 +122,28 @@ OPENAI_DEDICATED_IMAGE_MODEL_RE = re.compile(
     ),
     re.IGNORECASE,
 )
+
+
+class OpenAIImagePartialBatchError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        route_label: str,
+        model_id: str,
+        requested_n: int,
+        images: list[dict[str, Any]],
+        failures: list[dict[str, Any]],
+    ):
+        self.route_label = route_label
+        self.model_id = model_id
+        self.requested_n = requested_n
+        self.images = images
+        self.failures = failures
+        super().__init__(
+            f"Generated {len(images)} of {requested_n} images; {len(failures)} image requests failed."
+        )
+
+
 OPENAI_IMAGE_EDIT_COMPAT_MODEL_RE = re.compile(
     "|".join(
         (
@@ -188,7 +218,9 @@ NEGATIVE_IMAGE_HINTS = (
     "video-generation",
     "video generation",
 )
-NEGATIVE_TOKEN_RE = re.compile(r"(^|[\/._:-])(vision|vl|asr|video)([\/._:-]|$)", re.IGNORECASE)
+NEGATIVE_TOKEN_RE = re.compile(
+    r"(^|[\/._:-])(vision|vl|asr|video)([\/._:-]|$)", re.IGNORECASE
+)
 VERSION_LIKE_BASE_URL_RE = re.compile(
     r"/(?:compatible-mode/)?v\d+(?:[a-z]+\d*)?$", re.IGNORECASE
 )
@@ -266,11 +298,7 @@ def _filter_process_debug_env(env: dict[str, str]) -> dict[str, str]:
         "REQUESTS_CA_BUNDLE",
         "CURL_CA_BUNDLE",
     )
-    return {
-        key: str(env.get(key) or "")
-        for key in allowed_keys
-        if key in env
-    }
+    return {key: str(env.get(key) or "") for key in allowed_keys if key in env}
 
 
 def _evict_stale_image_models_cache(now: float) -> None:
@@ -282,7 +310,9 @@ def _evict_stale_image_models_cache(now: float) -> None:
     for cache_key in stale_keys:
         IMAGE_MODEL_DISCOVERY_CACHE.pop(cache_key, None)
 
-    overflow = len(IMAGE_MODEL_DISCOVERY_CACHE) - IMAGE_MODEL_DISCOVERY_CACHE_MAX_ENTRIES
+    overflow = (
+        len(IMAGE_MODEL_DISCOVERY_CACHE) - IMAGE_MODEL_DISCOVERY_CACHE_MAX_ENTRIES
+    )
     if overflow <= 0:
         return
 
@@ -302,7 +332,9 @@ def _can_use_image_generation(request: Request, user) -> bool:
         return True
     try:
         return has_permission(
-            user.id, "features.image_generation", request.app.state.config.USER_PERMISSIONS
+            user.id,
+            "features.image_generation",
+            request.app.state.config.USER_PERMISSIONS,
         )
     except Exception:
         return False
@@ -415,7 +447,9 @@ def _extract_comfyui_input_options(input_spec) -> list[dict]:
     return extracted
 
 
-def _get_comfyui_models(info: dict, workflow: dict, workflow_nodes: list[dict]) -> list[dict]:
+def _get_comfyui_models(
+    info: dict, workflow: dict, workflow_nodes: list[dict]
+) -> list[dict]:
     model_node = next(
         (
             node
@@ -557,17 +591,17 @@ def _shared_key_available(request: Request, engine: str) -> bool:
     engine = _normalize_engine(engine)
 
     if engine == "openai":
-        return _is_non_empty(getattr(cfg, "IMAGES_OPENAI_API_BASE_URL", "")) and _is_non_empty(
-            getattr(cfg, "IMAGES_OPENAI_API_KEY", "")
-        )
+        return _is_non_empty(
+            getattr(cfg, "IMAGES_OPENAI_API_BASE_URL", "")
+        ) and _is_non_empty(getattr(cfg, "IMAGES_OPENAI_API_KEY", ""))
     if engine == "gemini":
-        return _is_non_empty(getattr(cfg, "IMAGES_GEMINI_API_BASE_URL", "")) and _is_non_empty(
-            getattr(cfg, "IMAGES_GEMINI_API_KEY", "")
-        )
+        return _is_non_empty(
+            getattr(cfg, "IMAGES_GEMINI_API_BASE_URL", "")
+        ) and _is_non_empty(getattr(cfg, "IMAGES_GEMINI_API_KEY", ""))
     if engine == "grok":
-        return _is_non_empty(getattr(cfg, "IMAGES_GROK_API_BASE_URL", "")) and _is_non_empty(
-            getattr(cfg, "IMAGES_GROK_API_KEY", "")
-        )
+        return _is_non_empty(
+            getattr(cfg, "IMAGES_GROK_API_BASE_URL", "")
+        ) and _is_non_empty(getattr(cfg, "IMAGES_GROK_API_KEY", ""))
     if engine == "comfyui":
         return _is_non_empty(getattr(cfg, "COMFYUI_BASE_URL", ""))
     if engine in ("automatic1111", ""):
@@ -628,27 +662,35 @@ def _sync_image_provider_config_state(request: Request) -> None:
 
     openai_base_url = str(getattr(cfg, "IMAGES_OPENAI_API_BASE_URL", "") or "")
     openai_force_mode = bool(getattr(cfg, "IMAGES_OPENAI_API_FORCE_MODE", False))
-    normalized_openai_base_url, normalized_openai_force_mode = _normalize_image_provider_base_url(
-        openai_base_url,
-        "/v1",
-        force_mode=openai_force_mode,
+    normalized_openai_base_url, normalized_openai_force_mode = (
+        _normalize_image_provider_base_url(
+            openai_base_url,
+            "/v1",
+            force_mode=openai_force_mode,
+        )
     )
     if normalized_openai_base_url != openai_base_url:
         request.app.state.config.IMAGES_OPENAI_API_BASE_URL = normalized_openai_base_url
     if normalized_openai_force_mode != openai_force_mode:
-        request.app.state.config.IMAGES_OPENAI_API_FORCE_MODE = normalized_openai_force_mode
+        request.app.state.config.IMAGES_OPENAI_API_FORCE_MODE = (
+            normalized_openai_force_mode
+        )
 
     gemini_base_url = str(getattr(cfg, "IMAGES_GEMINI_API_BASE_URL", "") or "")
     gemini_force_mode = bool(getattr(cfg, "IMAGES_GEMINI_API_FORCE_MODE", False))
-    normalized_gemini_base_url, normalized_gemini_force_mode = _normalize_image_provider_base_url(
-        gemini_base_url,
-        "/v1beta",
-        force_mode=gemini_force_mode,
+    normalized_gemini_base_url, normalized_gemini_force_mode = (
+        _normalize_image_provider_base_url(
+            gemini_base_url,
+            "/v1beta",
+            force_mode=gemini_force_mode,
+        )
     )
     if normalized_gemini_base_url != gemini_base_url:
         request.app.state.config.IMAGES_GEMINI_API_BASE_URL = normalized_gemini_base_url
     if normalized_gemini_force_mode != gemini_force_mode:
-        request.app.state.config.IMAGES_GEMINI_API_FORCE_MODE = normalized_gemini_force_mode
+        request.app.state.config.IMAGES_GEMINI_API_FORCE_MODE = (
+            normalized_gemini_force_mode
+        )
 
     grok_base_url = str(getattr(cfg, "IMAGES_GROK_API_BASE_URL", "") or "")
     normalized_grok_base_url, _ = _normalize_image_provider_base_url(
@@ -680,12 +722,16 @@ def _model_id_basename(model_id: str) -> str:
 def _strip_connection_model_prefix(model_id: str, api_config: Optional[dict]) -> str:
     normalized_model_id = str(model_id or "").strip()
     cfg = api_config if isinstance(api_config, dict) else {}
-    prefix_id = str(cfg.get("_resolved_prefix_id") or cfg.get("prefix_id") or "").strip()
+    prefix_id = str(
+        cfg.get("_resolved_prefix_id") or cfg.get("prefix_id") or ""
+    ).strip()
     if prefix_id:
         prefix = f"{prefix_id}."
         if normalized_model_id.startswith(prefix):
             return normalized_model_id[len(prefix) :]
-    fallback_match = re.match(r"^[0-9a-f]{8}\.(.+)$", normalized_model_id, re.IGNORECASE)
+    fallback_match = re.match(
+        r"^[0-9a-f]{8}\.(.+)$", normalized_model_id, re.IGNORECASE
+    )
     if fallback_match:
         return fallback_match.group(1)
 
@@ -769,9 +815,13 @@ def _extract_modalities(model: dict) -> tuple[set[str], set[str]]:
         if not isinstance(container, dict):
             continue
         if "input_modalities" in container:
-            input_modalities.update(_collect_modality_tokens(container.get("input_modalities")))
+            input_modalities.update(
+                _collect_modality_tokens(container.get("input_modalities"))
+            )
         if "inputModalities" in container:
-            input_modalities.update(_collect_modality_tokens(container.get("inputModalities")))
+            input_modalities.update(
+                _collect_modality_tokens(container.get("inputModalities"))
+            )
         if "output_modalities" in container:
             output_modalities.update(
                 _collect_modality_tokens(container.get("output_modalities"))
@@ -805,9 +855,11 @@ def _extract_endpoint_blob(model: dict) -> str:
         model.get("supported_endpoint_types"),
         model.get("endpoint_type"),
         model.get("api"),
-        model.get("architecture", {}).get("endpoints")
-        if isinstance(model.get("architecture"), dict)
-        else None,
+        (
+            model.get("architecture", {}).get("endpoints")
+            if isinstance(model.get("architecture"), dict)
+            else None
+        ),
     ]
     parts = [_json_blob(candidate) for candidate in candidates if candidate]
     return "\n".join(part for part in parts if part)
@@ -829,7 +881,10 @@ def _extract_openai_image_routes_from_endpoint_blob(endpoint_blob: str) -> set[s
     if (
         "/responses" in normalized
         or "openai-response" in normalized
-        or re.search(r"(?<![a-z0-9])responses(?![a-z0-9])", normalized)
+        or re.search(
+            r"(^|[\s\[\]\"'\/._:-])responses([\s\[\]\"'\/._:-]|$)",
+            normalized,
+        )
     ):
         routes.add(OPENAI_IMAGE_ROUTE_RESPONSES)
     return routes
@@ -851,9 +906,7 @@ def _endpoint_blob_has_video_route(endpoint_blob: str) -> bool:
     )
 
 
-def _resolve_default_openai_image_route(
-    routes: set[str], generation_mode: str
-) -> str:
+def _resolve_default_openai_image_route(routes: set[str], generation_mode: str) -> str:
     if generation_mode == "openai_chat_image":
         if OPENAI_IMAGE_ROUTE_CHAT in routes:
             return OPENAI_IMAGE_ROUTE_CHAT
@@ -894,11 +947,15 @@ def _should_offer_openai_chat_image_route(
     routes = endpoint_routes or set()
     if routes & {OPENAI_IMAGE_ROUTE_CHAT, OPENAI_IMAGE_ROUTE_RESPONSES}:
         return False
+    if routes == {OPENAI_IMAGE_ROUTE_EDITS}:
+        return False
     if generation_mode != "openai_images":
         return False
     if openai_router._is_official_openai_connection(base_url):
         return False
-    return _is_openai_image_edit_compatible_model(base_name)
+    return _is_openai_image_edit_compatible_model(
+        base_name
+    ) or _looks_like_gemini_image_model(base_name)
 
 
 def _model_text_blob(model: dict) -> str:
@@ -1092,6 +1149,82 @@ def _match_global_provider_connection(
     return None, "", {}
 
 
+def _get_image_source_connection_key(provider: str, source: dict[str, Any]) -> str:
+    api_config = source.get("api_config") if isinstance(source, dict) else {}
+    api_config = api_config if isinstance(api_config, dict) else {}
+    prefix = str(
+        api_config.get("_resolved_prefix_id") or api_config.get("prefix_id") or ""
+    ).strip()
+    if prefix:
+        return prefix
+    if source.get("connection_index") is not None:
+        return f"idx:{source.get('connection_index')}"
+    cache_scope = str(source.get("cache_scope") or "").strip()
+    if cache_scope:
+        return cache_scope
+    return f"{provider}:{_normalize_base_url(source.get('base_url') or '')}"
+
+
+def _normalize_image_source_api_key_pool(
+    provider: str, source: dict[str, Any]
+) -> dict[str, Any]:
+    normalized_source = dict(source or {})
+    api_config = normalized_source.get("api_config")
+    api_config = api_config if isinstance(api_config, dict) else {}
+    primary_config, primary_key = normalize_api_key_pool_config(
+        api_config,
+        normalized_source.get("key") or "",
+        provider=provider,
+        connection_key=_get_image_source_connection_key(provider, normalized_source),
+    )
+    normalized_source["api_config"] = primary_config
+    normalized_source["key"] = primary_key
+    return normalized_source
+
+
+def _get_image_source_key_attempts(provider: str, source: dict[str, Any]) -> list:
+    normalized_source = _normalize_image_source_api_key_pool(provider, source)
+    api_config = normalized_source.get("api_config") or {}
+    return get_api_key_attempts(
+        provider=provider,
+        connection_key=_get_image_source_connection_key(provider, normalized_source),
+        api_config=api_config,
+        fallback_key=normalized_source.get("key") or "",
+    )
+
+
+def _log_image_key_retry(
+    provider: str,
+    route_label: str,
+    attempt,
+    *,
+    next_attempt: int,
+    total: int,
+    status_code: Optional[int] = None,
+    exception: Optional[BaseException] = None,
+) -> None:
+    if exception is not None:
+        log.warning(
+            "[IMAGE KEY RETRY] provider=%s route=%s error_type=%s key_label=%s next=%s/%s",
+            provider,
+            route_label,
+            exception.__class__.__name__,
+            attempt.safe_label,
+            next_attempt,
+            total,
+        )
+        return
+    log.warning(
+        "[IMAGE KEY RETRY] provider=%s route=%s status=%s key_label=%s next=%s/%s",
+        provider,
+        route_label,
+        status_code,
+        attempt.safe_label,
+        next_attempt,
+        total,
+    )
+
+
 def _get_connection_name(
     api_config: Optional[dict], base_url: str, *, fallback: str = ""
 ) -> str:
@@ -1194,8 +1327,8 @@ def _list_image_provider_sources(
     else:
         return []
 
-    shared_global_index, shared_global_key, shared_api_config = _match_global_provider_connection(
-        request, provider, shared_base_url
+    shared_global_index, shared_global_key, shared_api_config = (
+        _match_global_provider_connection(request, provider, shared_base_url)
     )
 
     def _build_shared_source(
@@ -1206,7 +1339,11 @@ def _list_image_provider_sources(
 
         resolved_key = shared_key
         resolved_api_config = dict(image_api_config)
-        if (for_settings or fallback_to_global_key) and not resolved_key and shared_global_key:
+        if (
+            (for_settings or fallback_to_global_key)
+            and not resolved_key
+            and shared_global_key
+        ):
             resolved_key = shared_global_key
             if isinstance(shared_api_config, dict):
                 resolved_api_config = {**shared_api_config, **resolved_api_config}
@@ -1214,7 +1351,7 @@ def _list_image_provider_sources(
             resolved_api_config = {**shared_api_config, **resolved_api_config}
 
         effective_source = "shared" if not for_settings else "settings"
-        return {
+        source = {
             "provider": provider,
             "effective_source": effective_source,
             "base_url": shared_base_url,
@@ -1229,9 +1366,12 @@ def _list_image_provider_sources(
             ),
             "connection_icon": _get_connection_icon(resolved_api_config),
         }
+        return _normalize_image_source_api_key_pool(provider, source)
 
     if context == "settings":
-        settings_source = _build_shared_source(for_settings=True, fallback_to_global_key=True)
+        settings_source = _build_shared_source(
+            for_settings=True, fallback_to_global_key=True
+        )
         return [settings_source] if settings_source is not None else []
 
     personal_urls, personal_keys, personal_cfgs = _get_provider_user_connection_bundle(
@@ -1244,7 +1384,9 @@ def _list_image_provider_sources(
         preferred_index: Optional[int] = None,
     ) -> Optional[dict[str, Any]]:
         chosen = (
-            _get_personal_connection_exact(personal_urls, personal_keys, preferred_index)
+            _get_personal_connection_exact(
+                personal_urls, personal_keys, preferred_index
+            )
             if preferred_index is not None
             else _pick_personal_connection(personal_urls, personal_keys)
         )
@@ -1253,7 +1395,7 @@ def _list_image_provider_sources(
 
         idx, base_url, api_key = chosen
         api_config = personal_cfgs.get(str(idx), personal_cfgs.get(base_url, {})) or {}
-        return {
+        source = {
             "provider": provider,
             "effective_source": "personal",
             "base_url": _normalize_base_url(base_url),
@@ -1264,10 +1406,13 @@ def _list_image_provider_sources(
             "connection_name": _get_connection_name(api_config, base_url),
             "connection_icon": _get_connection_icon(api_config),
         }
+        return _normalize_image_source_api_key_pool(provider, source)
 
     def _list_personal_sources() -> list[dict[str, Any]]:
         sources: list[dict[str, Any]] = []
-        for idx, _base_url, _api_key in _list_personal_connections(personal_urls, personal_keys):
+        for idx, _base_url, _api_key in _list_personal_connections(
+            personal_urls, personal_keys
+        ):
             source = _resolve_personal_source(idx)
             if source is not None:
                 sources.append(source)
@@ -1314,13 +1459,19 @@ def _list_image_provider_sources(
                 *[
                     source
                     for source in personal_sources
-                    if source.get("connection_index") != preferred.get("connection_index")
+                    if source.get("connection_index")
+                    != preferred.get("connection_index")
                 ],
             ]
 
     shared_source = _build_shared_source()
     sources: list[dict[str, Any]] = []
-    if prefer_shared and shared_enabled and shared_available and shared_source is not None:
+    if (
+        prefer_shared
+        and shared_enabled
+        and shared_available
+        and shared_source is not None
+    ):
         sources.append(shared_source)
     sources.extend(personal_sources)
     if (
@@ -1379,7 +1530,9 @@ def _get_cached_image_models(cache_key: str) -> Optional[list[dict[str, Any]]]:
     return list(models)
 
 
-def _set_cached_image_models(cache_key: str, models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _set_cached_image_models(
+    cache_key: str, models: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     now = time.monotonic()
     IMAGE_MODEL_DISCOVERY_CACHE[cache_key] = (now, list(models))
     _evict_stale_image_models_cache(now)
@@ -1394,7 +1547,9 @@ def _build_image_model_selection_key(
         return normalized_model_id
 
     base_url = str(source.get("base_url") or "").strip()
-    base_hash = hashlib.sha1(base_url.encode("utf-8")).hexdigest()[:12] if base_url else ""
+    base_hash = (
+        hashlib.sha1(base_url.encode("utf-8")).hexdigest()[:12] if base_url else ""
+    )
     provider = str(source.get("provider") or "").strip()
     effective_source = str(source.get("effective_source") or "").strip()
     connection_index = source.get("connection_index")
@@ -1446,7 +1601,9 @@ def _image_source_matches_selection_hint(
         return False
 
     base_url = str(source.get("base_url") or "").strip()
-    base_hash = hashlib.sha1(base_url.encode("utf-8")).hexdigest()[:12] if base_url else ""
+    base_hash = (
+        hashlib.sha1(base_url.encode("utf-8")).hexdigest()[:12] if base_url else ""
+    )
     source_connection_index = source.get("connection_index")
     normalized_source_connection_index = (
         str(source_connection_index).strip()
@@ -1455,17 +1612,15 @@ def _image_source_matches_selection_hint(
     )
     hint_connection_index = hint.get("connection_index")
     normalized_hint_connection_index = (
-        str(hint_connection_index).strip()
-        if hint_connection_index is not None
-        else ""
+        str(hint_connection_index).strip() if hint_connection_index is not None else ""
     )
 
     return (
-        str(source.get("provider") or "").strip() == str(hint.get("provider") or "").strip()
+        str(source.get("provider") or "").strip()
+        == str(hint.get("provider") or "").strip()
         and str(source.get("effective_source") or "").strip()
         == str(hint.get("effective_source") or "").strip()
-        and normalized_source_connection_index
-        == normalized_hint_connection_index
+        and normalized_source_connection_index == normalized_hint_connection_index
         and base_hash == str(hint.get("base_hash") or "").strip()
     )
 
@@ -1497,7 +1652,11 @@ def _image_source_matches_model_ref(
     ).strip()
     if connection_id:
         has_precise_ref = True
-        api_config = source.get("api_config") if isinstance(source.get("api_config"), dict) else {}
+        api_config = (
+            source.get("api_config")
+            if isinstance(source.get("api_config"), dict)
+            else {}
+        )
         source_connection_id = str(
             source.get("connection_id")
             or api_config.get("_resolved_prefix_id")
@@ -1507,9 +1666,11 @@ def _image_source_matches_model_ref(
         if source_connection_id != connection_id:
             return False
 
-    effective_source = str(
-        model_ref.get("source") or model_ref.get("effective_source") or ""
-    ).strip().lower()
+    effective_source = (
+        str(model_ref.get("source") or model_ref.get("effective_source") or "")
+        .strip()
+        .lower()
+    )
     if effective_source in {"shared", "settings"}:
         return True
 
@@ -1529,12 +1690,15 @@ def _image_source_scope_matches_model_ref(
     ):
         return False
 
-    effective_source = str(
-        model_ref.get("source") or model_ref.get("effective_source") or ""
-    ).strip().lower()
+    effective_source = (
+        str(model_ref.get("source") or model_ref.get("effective_source") or "")
+        .strip()
+        .lower()
+    )
     if (
         effective_source
-        and effective_source != str(source.get("effective_source") or "").strip().lower()
+        and effective_source
+        != str(source.get("effective_source") or "").strip().lower()
     ):
         return False
 
@@ -1616,15 +1780,23 @@ def _build_image_model_entry(
     reference_image_default_route: Optional[str] = None,
 ) -> dict[str, Any]:
     provider = source.get("provider") if isinstance(source, dict) else None
-    effective_source = source.get("effective_source") if isinstance(source, dict) else None
-    connection_index = source.get("connection_index") if isinstance(source, dict) else None
+    effective_source = (
+        source.get("effective_source") if isinstance(source, dict) else None
+    )
+    connection_index = (
+        source.get("connection_index") if isinstance(source, dict) else None
+    )
     api_config = source.get("api_config") if isinstance(source, dict) else {}
-    connection_id = str(
-        source.get("connection_id")
-        or (api_config or {}).get("_resolved_prefix_id")
-        or (api_config or {}).get("prefix_id")
-        or ""
-    ).strip() if isinstance(source, dict) else ""
+    connection_id = (
+        str(
+            source.get("connection_id")
+            or (api_config or {}).get("_resolved_prefix_id")
+            or (api_config or {}).get("prefix_id")
+            or ""
+        ).strip()
+        if isinstance(source, dict)
+        else ""
+    )
     model_ref = (
         build_model_ref(
             provider=str(provider or ""),
@@ -1655,7 +1827,8 @@ def _build_image_model_entry(
     normalized_routes = [
         route
         for route in route_order
-        if route in {str(value or "").strip() for value in (supported_image_routes or [])}
+        if route
+        in {str(value or "").strip() for value in (supported_image_routes or [])}
     ]
     if not normalized_routes:
         if generation_mode == "openai_chat_image":
@@ -1664,12 +1837,16 @@ def _build_image_model_entry(
             normalized_routes = [OPENAI_IMAGE_ROUTE_GENERATIONS]
         elif generation_mode == "xai_images":
             normalized_routes = [OPENAI_IMAGE_ROUTE_GENERATIONS]
+    source_base_url = (
+        str(source.get("base_url") or "").strip() if isinstance(source, dict) else ""
+    )
     if (
         generation_mode == "openai_images"
         and OPENAI_IMAGE_ROUTE_CHAT not in normalized_routes
+        and source_base_url
         and _should_offer_openai_chat_image_route(
             base_name=_model_id_basename(model_id).lower(),
-            base_url=str(source.get("base_url") or "") if isinstance(source, dict) else "",
+            base_url=source_base_url,
             generation_mode=generation_mode,
             endpoint_routes=set(normalized_routes),
         )
@@ -1699,7 +1876,9 @@ def _build_image_model_entry(
             ),
             "",
         )
-    normalized_reference_default_route = str(reference_image_default_route or "").strip()
+    normalized_reference_default_route = str(
+        reference_image_default_route or ""
+    ).strip()
     if normalized_reference_default_route not in normalized_routes:
         normalized_reference_default_route = ""
     if (
@@ -1711,7 +1890,11 @@ def _build_image_model_entry(
         )
     ):
         normalized_reference_default_route = OPENAI_IMAGE_ROUTE_EDITS
-    if model_ref and generation_mode in {"openai_images", "openai_chat_image", "xai_images"}:
+    if model_ref and generation_mode in {
+        "openai_images",
+        "openai_chat_image",
+        "xai_images",
+    }:
         model_ref = {
             **model_ref,
             "image_generation_mode": generation_mode,
@@ -1730,11 +1913,7 @@ def _build_image_model_entry(
         "legacy_ids": unique_strings(
             [
                 model_id,
-                (
-                    f"{connection_id}.{model_id}"
-                    if connection_id
-                    else ""
-                ),
+                (f"{connection_id}.{model_id}" if connection_id else ""),
             ]
         ),
         "provider": source.get("provider") if isinstance(source, dict) else None,
@@ -1750,9 +1929,15 @@ def _build_image_model_entry(
         "reference_image_default_route": normalized_reference_default_route,
         "text_output_supported": bool(text_output_supported),
         "source": source.get("effective_source") if isinstance(source, dict) else None,
-        "connection_index": source.get("connection_index") if isinstance(source, dict) else None,
-        "connection_name": source.get("connection_name") if isinstance(source, dict) else None,
-        "connection_icon": source.get("connection_icon") if isinstance(source, dict) else None,
+        "connection_index": (
+            source.get("connection_index") if isinstance(source, dict) else None
+        ),
+        "connection_name": (
+            source.get("connection_name") if isinstance(source, dict) else None
+        ),
+        "connection_icon": (
+            source.get("connection_icon") if isinstance(source, dict) else None
+        ),
     }
 
 
@@ -1784,15 +1969,17 @@ def _classify_openai_image_model(
     ):
         return None
 
-    negative_hint = _matches_image_negative_hint(base_name) or _matches_image_negative_hint(
-        text_blob
-    )
+    negative_hint = _matches_image_negative_hint(
+        base_name
+    ) or _matches_image_negative_hint(text_blob)
     gemini_image_name_hint = _looks_like_gemini_image_model(
         base_name
     ) and not _matches_image_negative_hint(base_name)
-    positive_hint = _matches_image_positive_hint(base_name) or _matches_image_positive_hint(
-        text_blob
-    ) or gemini_image_name_hint
+    positive_hint = (
+        _matches_image_positive_hint(base_name)
+        or _matches_image_positive_hint(text_blob)
+        or gemini_image_name_hint
+    )
     images_endpoint_hint = OPENAI_IMAGE_ROUTE_GENERATIONS in endpoint_routes
     edits_endpoint_hint = OPENAI_IMAGE_ROUTE_EDITS in endpoint_routes
     chat_endpoint_hint = bool(
@@ -1802,8 +1989,11 @@ def _classify_openai_image_model(
             OPENAI_IMAGE_ROUTE_RESPONSES,
         }
     )
-    prefers_volcengine_images_endpoint = _is_volcengine_ark_connection(base_url) and any(
-        hint in base_name or hint in text_blob for hint in VOLCENGINE_IMAGES_ENDPOINT_HINTS
+    prefers_volcengine_images_endpoint = _is_volcengine_ark_connection(
+        base_url
+    ) and any(
+        hint in base_name or hint in text_blob
+        for hint in VOLCENGINE_IMAGES_ENDPOINT_HINTS
     )
     image_model_signal = (
         output_has_image
@@ -1820,7 +2010,11 @@ def _classify_openai_image_model(
         return None
 
     is_dedicated_image_model = _is_openai_dedicated_image_model(base_name, text_blob)
-    if images_endpoint_hint or edits_endpoint_hint or prefers_volcengine_images_endpoint:
+    if (
+        images_endpoint_hint
+        or edits_endpoint_hint
+        or prefers_volcengine_images_endpoint
+    ):
         generation_mode = "openai_images"
         detection_method = (
             "metadata"
@@ -1884,9 +2078,7 @@ def _classify_openai_image_model(
         supports_batch=generation_mode == "openai_images",
         size_mode="exact" if generation_mode == "openai_images" else "aspect_ratio",
         supports_resolution=False,
-        text_output_supported=(
-            output_has_text and not is_dedicated_image_model
-        )
+        text_output_supported=(output_has_text and not is_dedicated_image_model)
         or generation_mode == "openai_chat_image",
         source=source,
         supported_image_routes=supported_image_routes,
@@ -1899,7 +2091,9 @@ def _classify_gemini_image_model(
     *,
     source: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
-    model_id = str(model.get("id") or model.get("name") or "").replace("models/", "").strip()
+    model_id = (
+        str(model.get("id") or model.get("name") or "").replace("models/", "").strip()
+    )
     if not model_id:
         return None
 
@@ -1910,16 +2104,20 @@ def _classify_gemini_image_model(
     output_has_image = _has_image_modality(output_modalities)
     output_has_text = _has_text_modality(output_modalities)
 
-    negative_hint = _matches_image_negative_hint(base_name) or _matches_image_negative_hint(
-        text_blob
-    )
+    negative_hint = _matches_image_negative_hint(
+        base_name
+    ) or _matches_image_negative_hint(text_blob)
     gemini_image_name_hint = _looks_like_gemini_image_model(
         base_name
     ) and not _matches_image_negative_hint(base_name)
-    positive_hint = _matches_image_positive_hint(base_name) or _matches_image_positive_hint(
-        text_blob
-    ) or gemini_image_name_hint
-    has_predict = any("predict" == method or method.endswith(":predict") for method in methods)
+    positive_hint = (
+        _matches_image_positive_hint(base_name)
+        or _matches_image_positive_hint(text_blob)
+        or gemini_image_name_hint
+    )
+    has_predict = any(
+        "predict" == method or method.endswith(":predict") for method in methods
+    )
     has_generate_content = any("generatecontent" in method for method in methods)
     looks_like_imagen = "imagen" in base_name
     supports_image_size = base_name.startswith("gemini-3")
@@ -1932,7 +2130,9 @@ def _classify_gemini_image_model(
     ):
         return _build_image_model_entry(
             model_id=model_id,
-            name=str(model.get("displayName") or model.get("display_name") or model_id).strip(),
+            name=str(
+                model.get("displayName") or model.get("display_name") or model_id
+            ).strip(),
             generation_mode="gemini_predict",
             detection_method="metadata",
             supports_background=False,
@@ -1948,7 +2148,9 @@ def _classify_gemini_image_model(
     if output_has_image:
         return _build_image_model_entry(
             model_id=model_id,
-            name=str(model.get("displayName") or model.get("display_name") or model_id).strip(),
+            name=str(
+                model.get("displayName") or model.get("display_name") or model_id
+            ).strip(),
             generation_mode="gemini_generate_content_image",
             detection_method="metadata",
             supports_background=False,
@@ -1962,7 +2164,9 @@ def _classify_gemini_image_model(
     if has_generate_content and (positive_hint or output_has_image):
         return _build_image_model_entry(
             model_id=model_id,
-            name=str(model.get("displayName") or model.get("display_name") or model_id).strip(),
+            name=str(
+                model.get("displayName") or model.get("display_name") or model_id
+            ).strip(),
             generation_mode="gemini_generate_content_image",
             detection_method="metadata" if output_has_image else "heuristic",
             supports_background=False,
@@ -2015,7 +2219,11 @@ def _classify_grok_image_model(
 
 def _get_raw_model_id_for_image_search(engine: str, model: dict) -> str:
     if engine == "gemini":
-        return str(model.get("id") or model.get("name") or "").replace("models/", "").strip()
+        return (
+            str(model.get("id") or model.get("name") or "")
+            .replace("models/", "")
+            .strip()
+        )
     return str(
         model.get("id")
         or model.get("name")
@@ -2025,9 +2233,13 @@ def _get_raw_model_id_for_image_search(engine: str, model: dict) -> str:
     ).strip()
 
 
-def _get_raw_model_name_for_image_search(engine: str, model: dict, model_id: str) -> str:
+def _get_raw_model_name_for_image_search(
+    engine: str, model: dict, model_id: str
+) -> str:
     if engine == "gemini":
-        return str(model.get("displayName") or model.get("display_name") or model_id).strip()
+        return str(
+            model.get("displayName") or model.get("display_name") or model_id
+        ).strip()
     return str(
         model.get("name")
         or model.get("displayName")
@@ -2090,7 +2302,9 @@ def _build_image_model_search_candidate(
             supports_background=False,
             supports_batch=False,
             size_mode="aspect_ratio",
-            supports_image_size=_model_id_basename(model_id).lower().startswith("gemini-3"),
+            supports_image_size=_model_id_basename(model_id)
+            .lower()
+            .startswith("gemini-3"),
             text_output_supported=True,
             source=source,
         )
@@ -2142,7 +2356,9 @@ def _build_image_model_search_candidate(
     return entry
 
 
-def _merge_image_model_lists(*model_lists: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _merge_image_model_lists(
+    *model_lists: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen: set[str] = set()
     for models in model_lists:
@@ -2218,7 +2434,9 @@ def _build_search_candidate_model_meta_from_ref(
         "reference_image_default_route": str(
             model_ref.get("reference_image_default_route") or ""
         ).strip(),
-        "text_output_supported": _model_ref_bool(model_ref.get("text_output_supported")),
+        "text_output_supported": _model_ref_bool(
+            model_ref.get("text_output_supported")
+        ),
     }
 
 
@@ -2251,12 +2469,18 @@ def _resolve_openai_image_request_route(
     has_reference_image: bool = False,
 ) -> str:
     requested_route = _normalize_openai_image_route_mode(route_mode)
-    if str((selected_model_meta or {}).get("generation_mode") or "").strip() == "openai_chat_image":
+    if (
+        str((selected_model_meta or {}).get("generation_mode") or "").strip()
+        == "openai_chat_image"
+    ):
         supported_routes = _model_ref_string_list(
             (selected_model_meta or {}).get("supported_image_routes")
         )
         if requested_route == OPENAI_IMAGE_ROUTE_RESPONSES:
-            if supported_routes and OPENAI_IMAGE_ROUTE_RESPONSES not in supported_routes:
+            if (
+                supported_routes
+                and OPENAI_IMAGE_ROUTE_RESPONSES not in supported_routes
+            ):
                 raise HTTPException(
                     status_code=400,
                     detail=(
@@ -2278,10 +2502,15 @@ def _resolve_openai_image_request_route(
                     "当前模型不支持所选图片接口模式。请切换接口模式，或换用支持该模式的图片模型。"
                 ),
             )
-        default_route = str((selected_model_meta or {}).get("default_image_route") or "").strip()
+        default_route = str(
+            (selected_model_meta or {}).get("default_image_route") or ""
+        ).strip()
         if default_route == OPENAI_IMAGE_ROUTE_RESPONSES:
             return OPENAI_IMAGE_ROUTE_RESPONSES
-        if OPENAI_IMAGE_ROUTE_CHAT not in supported_routes and OPENAI_IMAGE_ROUTE_RESPONSES in supported_routes:
+        if (
+            OPENAI_IMAGE_ROUTE_CHAT not in supported_routes
+            and OPENAI_IMAGE_ROUTE_RESPONSES in supported_routes
+        ):
             return OPENAI_IMAGE_ROUTE_RESPONSES
         if supported_routes and OPENAI_IMAGE_ROUTE_CHAT not in supported_routes:
             raise HTTPException(
@@ -2296,7 +2525,9 @@ def _resolve_openai_image_request_route(
         (selected_model_meta or {}).get("supported_image_routes")
     )
     if not supported_routes:
-        generation_mode = str((selected_model_meta or {}).get("generation_mode") or "").strip()
+        generation_mode = str(
+            (selected_model_meta or {}).get("generation_mode") or ""
+        ).strip()
         supported_routes = (
             [OPENAI_IMAGE_ROUTE_CHAT]
             if generation_mode == "openai_chat_image"
@@ -2304,7 +2535,9 @@ def _resolve_openai_image_request_route(
         )
 
     if requested_route == OPENAI_IMAGE_ROUTE_AUTO:
-        default_route = str((selected_model_meta or {}).get("default_image_route") or "").strip()
+        default_route = str(
+            (selected_model_meta or {}).get("default_image_route") or ""
+        ).strip()
         if has_reference_image:
             reference_default_route = str(
                 (selected_model_meta or {}).get("reference_image_default_route") or ""
@@ -2397,34 +2630,71 @@ async def _discover_openai_image_models(
     raw_models: list[dict[str, Any]] = []
     if model_ids:
         raw_models = [
-            {"id": model_id, "name": model_id, "object": "model"} for model_id in model_ids
+            {"id": model_id, "name": model_id, "object": "model"}
+            for model_id in model_ids
         ]
     else:
         models_url = openai_router._get_openai_models_url(base_url, api_config)
-        headers = _build_openai_image_headers(base_url, api_key, api_config, user)
-
+        key_attempts = _get_image_source_key_attempts("openai", source)
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=AIOHTTP_CLIENT_TIMEOUT_MODEL_LIST),
             trust_env=True,
         ) as session:
-            async with session.get(
-                models_url,
-                headers=headers,
-                ssl=AIOHTTP_CLIENT_SESSION_SSL,
-            ) as response:
-                body = await _read_aiohttp_body(response)
-                if response.status != 200:
-                    if openai_router._looks_like_models_listing_unsupported(
-                        response.status, body
+            for attempt_idx, attempt in enumerate(key_attempts):
+                headers = _build_openai_image_headers(
+                    base_url, attempt.key, api_config, user
+                )
+                try:
+                    async with session.get(
+                        models_url,
+                        headers=headers,
+                        ssl=AIOHTTP_CLIENT_SESSION_SSL,
+                    ) as response:
+                        body = await _read_aiohttp_body(response)
+                        if response.status != 200:
+                            if openai_router._looks_like_models_listing_unsupported(
+                                response.status, body
+                            ):
+                                return []
+                            if attempt_idx + 1 < len(
+                                key_attempts
+                            ) and should_retry_api_key(
+                                api_config,
+                                status_code=response.status,
+                                body=body,
+                            ):
+                                _log_image_key_retry(
+                                    "openai",
+                                    "models",
+                                    attempt,
+                                    next_attempt=attempt_idx + 2,
+                                    total=len(key_attempts),
+                                    status_code=response.status,
+                                )
+                                continue
+                            raise HTTPException(
+                                status_code=400,
+                                detail=build_error_detail(
+                                    body,
+                                    default=f"Failed to load image models from {models_url}",
+                                ),
+                            )
+                        break
+                except Exception as error:
+                    if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                        api_config,
+                        exception=error,
                     ):
-                        return []
-                    raise HTTPException(
-                        status_code=400,
-                        detail=build_error_detail(
-                            body,
-                            default=f"Failed to load image models from {models_url}",
-                        ),
-                    )
+                        _log_image_key_retry(
+                            "openai",
+                            "models",
+                            attempt,
+                            next_attempt=attempt_idx + 2,
+                            total=len(key_attempts),
+                            exception=error,
+                        )
+                        continue
+                    raise
 
         normalized = openai_router._normalize_openai_models_response(body)
         if normalized is None:
@@ -2519,7 +2789,9 @@ async def _discover_gemini_image_models(
             for model_id in model_ids
         ]
     else:
-        response = await gemini_router.send_get_request(f"{base_url}/models", api_key, api_config)
+        response = await gemini_router.send_get_request(
+            f"{base_url}/models", api_key, api_config
+        )
         if not response:
             return []
         if response.get("error"):
@@ -2570,7 +2842,10 @@ async def _list_raw_image_models_for_source(
                 }
                 for model_id in model_ids
             ]
-        return [{"id": model_id, "name": model_id, "object": "model"} for model_id in model_ids]
+        return [
+            {"id": model_id, "name": model_id, "object": "model"}
+            for model_id in model_ids
+        ]
 
     if engine == "openai":
         models_url = openai_router._get_openai_models_url(base_url, api_config)
@@ -2607,7 +2882,9 @@ async def _list_raw_image_models_for_source(
         return normalized.get("data", []) or []
 
     if engine == "gemini":
-        response = await gemini_router.send_get_request(f"{base_url}/models", api_key, api_config)
+        response = await gemini_router.send_get_request(
+            f"{base_url}/models", api_key, api_config
+        )
         if not response:
             return []
         if response.get("error"):
@@ -2879,7 +3156,9 @@ async def _discover_image_models(
     connection_index: Optional[int] = None,
     strict: bool = False,
 ) -> list[dict[str, Any]]:
-    engine = _normalize_engine(getattr(request.app.state.config, "IMAGE_GENERATION_ENGINE", ""))
+    engine = _normalize_engine(
+        getattr(request.app.state.config, "IMAGE_GENERATION_ENGINE", "")
+    )
     if engine not in {"openai", "gemini", "grok"}:
         return await _discover_image_models_for_source(request, user, engine, None)
 
@@ -2998,7 +3277,9 @@ async def _discover_image_model_search_candidates(
     if not query:
         return []
 
-    engine = _normalize_engine(getattr(request.app.state.config, "IMAGE_GENERATION_ENGINE", ""))
+    engine = _normalize_engine(
+        getattr(request.app.state.config, "IMAGE_GENERATION_ENGINE", "")
+    )
     if engine not in {"openai", "gemini", "grok"}:
         return []
 
@@ -3193,7 +3474,9 @@ async def _select_runtime_image_provider_source(
     return candidate_sources[0], None
 
 
-def _apply_image_model_regex_filter(request: Request, models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _apply_image_model_regex_filter(
+    request: Request, models: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     regex = getattr(request.app.state.config, "IMAGE_MODEL_FILTER_REGEX", "")
     if not regex or not models:
         return models
@@ -3332,9 +3615,11 @@ async def update_config(
         )
         if openai_base_url_set or openai_force_mode_set:
             openai_base_url, openai_force_mode = _normalize_image_provider_base_url(
-                form_data.openai.OPENAI_API_BASE_URL
-                if openai_base_url_set
-                else request.app.state.config.IMAGES_OPENAI_API_BASE_URL,
+                (
+                    form_data.openai.OPENAI_API_BASE_URL
+                    if openai_base_url_set
+                    else request.app.state.config.IMAGES_OPENAI_API_BASE_URL
+                ),
                 "/v1",
                 force_mode=(
                     form_data.openai.OPENAI_API_FORCE_MODE
@@ -3363,9 +3648,11 @@ async def update_config(
         )
         if gemini_base_url_set or gemini_force_mode_set:
             gemini_base_url, gemini_force_mode = _normalize_image_provider_base_url(
-                form_data.gemini.GEMINI_API_BASE_URL
-                if gemini_base_url_set
-                else request.app.state.config.IMAGES_GEMINI_API_BASE_URL,
+                (
+                    form_data.gemini.GEMINI_API_BASE_URL
+                    if gemini_base_url_set
+                    else request.app.state.config.IMAGES_GEMINI_API_BASE_URL
+                ),
                 "/v1beta",
                 force_mode=(
                     form_data.gemini.GEMINI_API_FORCE_MODE
@@ -3558,7 +3845,9 @@ async def get_usage_config(request: Request, user=Depends(get_verified_user)):
     cfg = request.app.state.config
     engine = _normalize_engine(getattr(cfg, "IMAGE_GENERATION_ENGINE", ""))
     shared_enabled = bool(getattr(cfg, "ENABLE_IMAGE_GENERATION_SHARED_KEY", False))
-    shared_available = _shared_key_available(request, engine) if shared_enabled else False
+    shared_available = (
+        _shared_key_available(request, engine) if shared_enabled else False
+    )
 
     personal_supported = engine in ("openai", "gemini", "grok")
     provider = engine if personal_supported else None
@@ -3622,9 +3911,13 @@ async def update_image_config(
             except re.error:
                 raise HTTPException(
                     status_code=400,
-                    detail=ERROR_MESSAGES.INCORRECT_FORMAT("  (invalid regex pattern)."),
+                    detail=ERROR_MESSAGES.INCORRECT_FORMAT(
+                        "  (invalid regex pattern)."
+                    ),
                 )
-        request.app.state.config.IMAGE_MODEL_FILTER_REGEX = form_data.IMAGE_MODEL_FILTER_REGEX
+        request.app.state.config.IMAGE_MODEL_FILTER_REGEX = (
+            form_data.IMAGE_MODEL_FILTER_REGEX
+        )
 
     return {
         "IMAGE_MODEL_FILTER_REGEX": request.app.state.config.IMAGE_MODEL_FILTER_REGEX,
@@ -3679,6 +3972,7 @@ class GenerateImageForm(BaseModel):
     model: Optional[str] = None
     model_ref: Optional[dict[str, Any]] = None
     prompt: str
+    stream: Optional[bool] = None
     size: Optional[str] = None
     image_size: Optional[str] = None
     aspect_ratio: Optional[str] = None
@@ -3711,7 +4005,9 @@ def load_b64_image_data(b64_str):
         return None
 
 
-def _normalize_url_origin(url: Optional[str]) -> Optional[tuple[str, str, Optional[int]]]:
+def _normalize_url_origin(
+    url: Optional[str],
+) -> Optional[tuple[str, str, Optional[int]]]:
     try:
         from urllib.parse import urlparse
 
@@ -3748,7 +4044,9 @@ def _is_allowed_internal_url(
     return False
 
 
-def load_url_image_data(url, headers=None, allowed_base_urls: Optional[list[str]] = None):
+def load_url_image_data(
+    url, headers=None, allowed_base_urls: Optional[list[str]] = None
+):
     try:
         # Basic SSRF protection: reject private/internal URLs
         from urllib.parse import urlparse
@@ -3758,12 +4056,9 @@ def load_url_image_data(url, headers=None, allowed_base_urls: Optional[list[str]
         hostname = parsed.hostname or ""
         allow_internal = _is_allowed_internal_url(url, allowed_base_urls)
 
-        if (
-            not allow_internal
-            and (
-                hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
-                or hostname.endswith(".local")
-            )
+        if not allow_internal and (
+            hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+            or hostname.endswith(".local")
         ):
             log.warning(f"Blocked SSRF attempt to internal URL: {hostname}")
             return None
@@ -3995,6 +4290,9 @@ def _extract_generated_image_payload(
     if not isinstance(item, dict):
         return None
 
+    if str(item.get("type") or "").strip().lower() in {"input_image"}:
+        return None
+
     mime_type_hint = (
         item.get("mime_type")
         or item.get("mimeType")
@@ -4076,7 +4374,9 @@ def _extract_generated_image_payload(
     source = item.get("source")
     if isinstance(source, dict):
         source_value = source.get("data") or source.get("base64") or source.get("url")
-        source_mime = source.get("media_type") or source.get("mime_type") or mime_type_hint
+        source_mime = (
+            source.get("media_type") or source.get("mime_type") or mime_type_hint
+        )
         loaded = _load_generated_image_from_value(
             source_value,
             headers=headers,
@@ -4126,6 +4426,18 @@ def _extract_generated_images_from_openai_response(
     allowed_base_urls: Optional[list[str]] = None,
 ) -> list[tuple[bytes, str]]:
     items: list[Any] = []
+    visited_containers: set[int] = set()
+    image_payload_keys = {
+        "b64_json",
+        "bytesBase64Encoded",
+        "image_base64",
+        "base64",
+        "image",
+        "result",
+        "image_url",
+        "url",
+        "file",
+    }
 
     def add_message_like(value: Any) -> None:
         if not isinstance(value, dict):
@@ -4143,13 +4455,88 @@ def _extract_generated_images_from_openai_response(
         elif isinstance(content, str):
             items.append({"text": content})
 
+    def add_container(value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                add_container(item)
+            return
+        if not isinstance(value, dict):
+            return
+
+        object_id = id(value)
+        if object_id in visited_containers:
+            return
+        visited_containers.add(object_id)
+
+        if str(value.get("type") or "").strip().lower() == "input_image":
+            return
+
+        if any(key in value for key in image_payload_keys):
+            items.append(value)
+
+        for key in ("data", "images", "output", "items"):
+            child = value.get(key)
+            if isinstance(child, (dict, list)):
+                add_container(child)
+
+        content = value.get("content")
+        if isinstance(content, (dict, list)):
+            add_container(content)
+        elif isinstance(content, str):
+            items.append({"text": content})
+
+        for key in ("item", "response", "message", "delta"):
+            child = value.get(key)
+            if isinstance(child, (dict, list)):
+                add_container(child)
+
+        for key in ("output_text", "text"):
+            text_value = value.get(key)
+            if isinstance(text_value, str):
+                items.append({"text": text_value})
+
+        choices = value.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                add_message_like(choice.get("message"))
+                add_message_like(choice.get("delta"))
+                add_container(choice.get("message"))
+                add_container(choice.get("delta"))
+
     if isinstance(body, dict):
+        add_container(body)
+
+        if any(
+            key in body
+            for key in (
+                "b64_json",
+                "bytesBase64Encoded",
+                "image_base64",
+                "base64",
+                "image",
+                "result",
+                "image_url",
+                "url",
+                "file",
+            )
+        ):
+            items.append(body)
+
         for key in ("data", "images", "output"):
             value = body.get(key)
             if isinstance(value, list):
                 items.extend(value)
             elif isinstance(value, dict):
                 items.append(value)
+
+        for key in ("item", "response"):
+            value = body.get(key)
+            if isinstance(value, dict):
+                items.append(value)
+            elif isinstance(value, list):
+                items.extend(value)
 
         for key in ("image", "image_url", "file"):
             value = body.get(key)
@@ -4175,17 +4562,25 @@ def _extract_generated_images_from_openai_response(
                 add_message_like(choice.get("delta"))
 
     images: list[tuple[bytes, str]] = []
+    seen_images: set[tuple[str, str]] = set()
     for item in items:
         loaded = _extract_generated_image_payload(
             item, headers=headers, allowed_base_urls=allowed_base_urls
         )
         if loaded:
+            image_bytes, mime_type = loaded
+            key = (hashlib.sha256(image_bytes).hexdigest(), str(mime_type or ""))
+            if key in seen_images:
+                continue
+            seen_images.add(key)
             images.append(loaded)
 
     return images
 
 
-def _extract_generated_images_from_gemini_response(body: Any) -> list[tuple[bytes, str]]:
+def _extract_generated_images_from_gemini_response(
+    body: Any,
+) -> list[tuple[bytes, str]]:
     images: list[tuple[bytes, str]] = []
 
     predictions = body.get("predictions", []) if isinstance(body, dict) else []
@@ -4199,9 +4594,14 @@ def _extract_generated_images_from_gemini_response(body: Any) -> list[tuple[byte
     if isinstance(candidates, list):
         for candidate in candidates:
             try:
-                _text, candidate_images, _grounding, _thinking, _tool_calls, _next_index = (
-                    gemini_router._extract_content_segments(candidate)
-                )
+                (
+                    _text,
+                    candidate_images,
+                    _grounding,
+                    _thinking,
+                    _tool_calls,
+                    _next_index,
+                ) = gemini_router._extract_content_segments(candidate)
             except Exception:
                 candidate_images = []
 
@@ -4227,7 +4627,9 @@ def _get_openai_images_generation_url(base_url: str, api_config: Optional[dict])
         if normalized_url.endswith(suffix):
             normalized_url = normalized_url[: -len(suffix)]
 
-    is_azure = bool((api_config or {}).get("azure")) or "openai.azure.com" in normalized_url
+    is_azure = (
+        bool((api_config or {}).get("azure")) or "openai.azure.com" in normalized_url
+    )
     if is_azure:
         api_version = str((api_config or {}).get("api_version") or "2024-02-01")
         return f"{normalized_url}/images/generations?api-version={api_version}"
@@ -4309,6 +4711,15 @@ def _parse_openai_image_stream_response(stream_text: str) -> dict[str, Any]:
             continue
 
         event_type = str(event.get("type") or "")
+        if "partial" in event_type:
+            continue
+        if isinstance(event.get("usage"), dict):
+            usage = event["usage"]
+        response_obj = event.get("response")
+        if isinstance(response_obj, dict) and isinstance(
+            response_obj.get("usage"), dict
+        ):
+            usage = response_obj["usage"]
         if event_type in {"image_generation.completed", "image_edit.completed"}:
             b64_json = event.get("b64_json")
             if b64_json:
@@ -4322,8 +4733,6 @@ def _parse_openai_image_stream_response(stream_text: str) -> dict[str, Any]:
                         )
                     )
                 images.append({"b64_json": b64_json})
-            if isinstance(event.get("usage"), dict):
-                usage = event["usage"]
 
         for image_bytes, mime_type in _extract_generated_images_from_openai_response(
             event
@@ -4332,9 +4741,7 @@ def _parse_openai_image_stream_response(stream_text: str) -> dict[str, Any]:
             if key in seen:
                 continue
             seen.add(key)
-            images.append(
-                {"b64_json": base64.b64encode(image_bytes).decode("utf-8")}
-            )
+            images.append({"b64_json": base64.b64encode(image_bytes).decode("utf-8")})
 
     body: dict[str, Any] = {"data": images}
     if usage is not None:
@@ -4342,7 +4749,9 @@ def _parse_openai_image_stream_response(stream_text: str) -> dict[str, Any]:
     return body
 
 
-def _build_openai_image_usage(body: Any, elapsed_ms: Optional[int]) -> Optional[dict[str, Any]]:
+def _build_openai_image_usage(
+    body: Any, elapsed_ms: Optional[int]
+) -> Optional[dict[str, Any]]:
     upstream_usage = body.get("usage") if isinstance(body, dict) else None
     usage = dict(upstream_usage) if isinstance(upstream_usage, dict) else {}
 
@@ -4380,7 +4789,9 @@ async def _send_openai_image_request(
         for key, value in (form_fields or {}).items():
             if value is None:
                 continue
-            request_data[key] = str(value).lower() if isinstance(value, bool) else str(value)
+            request_data[key] = (
+                str(value).lower() if isinstance(value, bool) else str(value)
+            )
         request_files = []
         for file_item in files or []:
             request_files.append(
@@ -4396,19 +4807,21 @@ async def _send_openai_image_request(
     else:
         raise RuntimeError(f"Unsupported OpenAI image request kind: {request_kind}")
 
+    expects_stream = bool(
+        (request_json or {}).get("stream")
+        or str((request_data or {}).get("stream") or "").lower() == "true"
+    )
     started_at = time.monotonic()
     try:
-        timeout = None if AIOHTTP_CLIENT_TIMEOUT is None else float(AIOHTTP_CLIENT_TIMEOUT)
+        timeout = (
+            None if AIOHTTP_CLIENT_TIMEOUT is None else float(AIOHTTP_CLIENT_TIMEOUT)
+        )
         async with httpx.AsyncClient(
             timeout=timeout,
             trust_env=True,
             verify=REQUESTS_VERIFY,
             follow_redirects=True,
         ) as client:
-            expects_stream = bool(
-                (request_json or {}).get("stream")
-                or str((request_data or {}).get("stream") or "").lower() == "true"
-            )
             if expects_stream:
                 async with client.stream(
                     "POST",
@@ -4418,7 +4831,9 @@ async def _send_openai_image_request(
                     data=request_data,
                     files=request_files,
                 ) as response:
-                    response_text = "\n".join([line async for line in response.aiter_lines()])
+                    response_text = "\n".join(
+                        [line async for line in response.aiter_lines()]
+                    )
             else:
                 response = await client.post(
                     url,
@@ -4444,20 +4859,95 @@ async def _send_openai_image_request(
                 "elapsed_ms": int((time.monotonic() - started_at) * 1000),
             }
     except Exception as error:
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
         log.warning(
             "openai_image_request_failed request_kind=%s url=%s error_type=%s error_message=%s elapsed_ms=%s",
             request_kind,
             url,
             error.__class__.__name__,
             str(error),
-            int((time.monotonic() - started_at) * 1000),
+            elapsed_ms,
         )
+        raw_error = str(error)
+        if "server disconnected without sending a response" in raw_error.lower():
+            non_stream_hint = (
+                "当前图片请求是非流式模式，长图或慢图可能在返回完整结果前被中转站、Cloudflare 或反代断开；"
+                "可在图片高级参数里打开流式传输后重试。"
+                if not expects_stream
+                else "当前图片请求已经是流式模式；请检查 New API 或反代的长请求连接设置。"
+            )
+            raw_error = (
+                "中转站在返回图片结果前断开连接。请求已经发到上游图片服务，"
+                "可能已经在上游完成或产生计费，但 HolaWebUI 没有收到 HTTP 响应头；"
+                f"{non_stream_hint}"
+                f"原始错误：{raw_error}"
+            )
         raise RuntimeError(
             build_error_detail(
-                str(error),
+                raw_error,
                 default="Failed to contact upstream image generation service",
             )
         ) from error
+
+
+async def _send_openai_image_request_with_key_pool(
+    *,
+    provider: str,
+    source: dict[str, Any],
+    api_config: dict,
+    route_label: str,
+    headers_factory: Callable[[str], dict[str, str]],
+    **request_kwargs,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    key_attempts = _get_image_source_key_attempts(provider, source)
+
+    for attempt_idx, attempt in enumerate(key_attempts):
+        headers = headers_factory(attempt.key)
+        try:
+            result = await _send_openai_image_request(
+                headers=headers,
+                **request_kwargs,
+            )
+        except Exception as error:
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                exception=error,
+            ):
+                _log_image_key_retry(
+                    provider,
+                    route_label,
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    exception=error,
+                )
+                continue
+            raise
+
+        response_status = result.get("status")
+        if (
+            isinstance(response_status, int)
+            and response_status >= 400
+            and attempt_idx + 1 < len(key_attempts)
+            and should_retry_api_key(
+                api_config,
+                status_code=response_status,
+                body=result.get("response_body"),
+            )
+        ):
+            _log_image_key_retry(
+                provider,
+                route_label,
+                attempt,
+                next_attempt=attempt_idx + 2,
+                total=len(key_attempts),
+                status_code=response_status,
+            )
+            continue
+
+        return result, headers
+
+    raise RuntimeError("Failed to contact upstream image generation service")
 
 
 def _parse_openai_image_response_json(
@@ -4474,6 +4964,25 @@ def _parse_openai_image_response_json(
                 default=default_message,
             ),
         )
+
+
+def _parse_openai_httpx_response_json(response: Any, *, default_message: str) -> Any:
+    try:
+        return response.json()
+    except Exception as error:
+        response_text = getattr(response, "text", None)
+        raise HTTPException(
+            status_code=502,
+            detail=build_error_detail(
+                response_text,
+                error,
+                default=default_message,
+            ),
+        )
+
+
+def _openai_image_stream_enabled(stream: Optional[bool]) -> bool:
+    return stream is not False
 
 
 def _raise_openai_image_request_error(
@@ -4524,9 +5033,7 @@ def _build_openai_image_upstream_error_detail(
         or (error_field if isinstance(error_field, str) else None)
     )
     error_code = (
-        body_dict.get("error_code")
-        or body_dict.get("code")
-        or nested_error.get("code")
+        body_dict.get("error_code") or body_dict.get("code") or nested_error.get("code")
     )
     title = str(body_dict.get("title") or "")
     detail = str(
@@ -4563,8 +5070,7 @@ def _build_openai_image_upstream_error_detail(
         )
 
     is_cloudflare_gateway_error = bool(
-        cloudflare_marker
-        and status_code in {502, 520, 521, 522, 523, 525, 526}
+        cloudflare_marker and status_code in {502, 520, 521, 522, 523, 525, 526}
     )
     if is_cloudflare_gateway_error:
         return (
@@ -4601,7 +5107,9 @@ def _get_openai_images_edit_url(base_url: str, api_config: Optional[dict]) -> st
         if normalized_url.endswith(suffix):
             normalized_url = normalized_url[: -len(suffix)]
 
-    is_azure = bool((api_config or {}).get("azure")) or "openai.azure.com" in normalized_url
+    is_azure = (
+        bool((api_config or {}).get("azure")) or "openai.azure.com" in normalized_url
+    )
     if is_azure:
         api_version = str((api_config or {}).get("api_version") or "2024-02-01")
         return f"{normalized_url}/images/edits?api-version={api_version}"
@@ -4651,13 +5159,40 @@ def _resolve_image_input_as_data_url(
     return mime_type, image_bytes, f"data:{mime_type};base64,{encoded}"
 
 
+def _summarize_openai_image_batch_error(
+    index: int, error: BaseException
+) -> dict[str, Any]:
+    detail = getattr(error, "detail", None)
+    if detail is None:
+        detail = str(error) or error.__class__.__name__
+
+    if isinstance(detail, (dict, list)):
+        try:
+            detail_text = json.dumps(detail, ensure_ascii=False, default=str)
+        except Exception:
+            detail_text = str(detail)
+    else:
+        detail_text = str(detail or "").strip()
+
+    status_code = getattr(error, "status_code", None)
+    failure: dict[str, Any] = {
+        "index": index,
+        "detail": detail_text or error.__class__.__name__,
+        "error_type": error.__class__.__name__,
+    }
+    if isinstance(status_code, int):
+        failure["status_code"] = status_code
+    return failure
+
+
 async def _run_openai_image_split_batch(
     *,
     route_label: str,
     model_id: str,
     n: int,
     run_single: Callable[[int], Awaitable[list[dict[str, str]]]],
-) -> list[dict[str, str]]:
+    on_image: Optional[Callable[[int, dict[str, Any]], Awaitable[None]]] = None,
+) -> list[dict[str, Any]]:
     requested_n = max(1, int(n or 1))
     if requested_n <= 1:
         return await run_single(0)
@@ -4676,19 +5211,63 @@ async def _run_openai_image_split_batch(
 
     semaphore = asyncio.Semaphore(concurrency)
 
-    async def run_guarded(index: int) -> list[dict[str, str]]:
+    async def run_guarded(index: int) -> list[dict[str, Any]]:
         async with semaphore:
-            return await run_single(index)
+            result = await run_single(index)
+
+        image_items: list[dict[str, Any]] = []
+        for image in result:
+            image_item = dict(image)
+            image_item.setdefault("slot_index", index)
+            image_items.append(image_item)
+            if on_image:
+                try:
+                    await on_image(index, image_item)
+                except Exception:
+                    log.debug("Failed to emit partial split image result", exc_info=True)
+
+        return image_items
 
     batch_results = await asyncio.gather(
         *(run_guarded(index) for index in range(requested_n)),
         return_exceptions=True,
     )
-    images: list[dict[str, str]] = []
-    for result in batch_results:
+    images: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for index, result in enumerate(batch_results):
         if isinstance(result, BaseException):
-            raise result
-        images.extend(result)
+            failures.append(_summarize_openai_image_batch_error(index, result))
+            continue
+        for image in result:
+            image_item = dict(image)
+            image_item.setdefault("slot_index", index)
+            images.append(image_item)
+    if images and failures:
+        try:
+            log.warning(
+                "openai_image_batch_split_partial route=%s model=%s requested_n=%s returned_n=%s failed_n=%s failed_indices=%s first_error=%s",
+                route_label,
+                model_id,
+                requested_n,
+                len(images),
+                len(failures),
+                [failure.get("index") for failure in failures],
+                failures[0].get("detail") if failures else "",
+            )
+        except Exception:
+            pass
+        raise OpenAIImagePartialBatchError(
+            route_label=route_label,
+            model_id=model_id,
+            requested_n=requested_n,
+            images=images,
+            failures=failures,
+        )
+    if failures:
+        first_failure_index = int(failures[0].get("index") or 0)
+        first_result = batch_results[first_failure_index]
+        if isinstance(first_result, BaseException):
+            raise first_result
     return images
 
 
@@ -4698,20 +5277,26 @@ async def _generate_via_openai_image_edits_endpoint(
     *,
     model_id: str,
     prompt: str,
+    stream: Optional[bool] = None,
     image_url: str,
     n: int,
     size: Optional[str],
     background: Optional[str],
     source: dict[str, Any],
+    partial_image_callback: Optional[
+        Callable[[int, dict[str, Any]], Awaitable[None]]
+    ] = None,
 ) -> list[dict[str, str]]:
     requested_n = max(1, int(n or 1))
     if requested_n > 1:
+
         async def run_single(_index: int) -> list[dict[str, str]]:
             return await _generate_via_openai_image_edits_endpoint(
                 request,
                 user,
                 model_id=model_id,
                 prompt=prompt,
+                stream=stream,
                 image_url=image_url,
                 n=1,
                 size=size,
@@ -4724,27 +5309,38 @@ async def _generate_via_openai_image_edits_endpoint(
             model_id=model_id,
             n=requested_n,
             run_single=run_single,
+            on_image=partial_image_callback,
         )
 
     n = requested_n
     base_url = source.get("base_url") or ""
     api_key = source.get("key") or ""
     api_config = source.get("api_config") or {}
-    headers = _build_openai_image_headers(
-        base_url,
-        api_key,
-        api_config,
-        user,
-        content_type=None,
-    )
-    content_type_header = next(
-        (header for header in list(headers.keys()) if header.lower() == "content-type"),
-        None,
-    )
-    if content_type_header:
-        headers.pop(content_type_header, None)
+
+    def build_attempt_headers(selected_key: str) -> dict[str, str]:
+        headers = _build_openai_image_headers(
+            base_url,
+            selected_key,
+            api_config,
+            user,
+            content_type=None,
+        )
+        content_type_header = next(
+            (
+                header
+                for header in list(headers.keys())
+                if header.lower() == "content-type"
+            ),
+            None,
+        )
+        if content_type_header:
+            headers.pop(content_type_header, None)
+        return headers
+
+    headers = build_attempt_headers(api_key)
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
     base_name = _model_id_basename(upstream_model_id).lower()
+    stream_enabled = _openai_image_stream_enabled(stream)
 
     resolved_image = _resolve_image_edit_input(request, user, image_url)
     if not resolved_image:
@@ -4763,7 +5359,11 @@ async def _generate_via_openai_image_edits_endpoint(
         payload["size"] = size
     if background:
         payload["background"] = background
-    if not _openai_image_model_has_default_response_format(base_name):
+    if _openai_image_model_has_default_response_format(base_name):
+        if stream_enabled:
+            payload["stream"] = True
+            payload["partial_images"] = 1
+    else:
         payload["response_format"] = "b64_json"
 
     image_extension = mimetypes.guess_extension(image_mime or "image/png") or ".png"
@@ -4783,7 +5383,9 @@ async def _generate_via_openai_image_edits_endpoint(
             upstream_model_id,
             str(image_url or "").strip(),
             source_file_id or "",
-            source_file_meta.get("name") or getattr(source_file, "filename", None) or "",
+            source_file_meta.get("name")
+            or getattr(source_file, "filename", None)
+            or "",
             source_file_meta.get("size") or "",
             hashlib.sha256(image_bytes).hexdigest(),
             image_mime or "",
@@ -4793,17 +5395,27 @@ async def _generate_via_openai_image_edits_endpoint(
             sorted(payload.keys()),
             [image_field_name],
             _get_openai_images_edit_url(base_url, api_config),
-            json.dumps(_redact_upstream_headers(headers), ensure_ascii=False, sort_keys=True),
+            json.dumps(
+                _redact_upstream_headers(headers), ensure_ascii=False, sort_keys=True
+            ),
             os.getpid(),
             os.getcwd(),
-            json.dumps(_filter_process_debug_env(os.environ), ensure_ascii=False, sort_keys=True),
+            json.dumps(
+                _filter_process_debug_env(os.environ),
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
         )
     except Exception:
         pass
     generation_url = _get_openai_images_edit_url(base_url, api_config)
-    result = await _send_openai_image_request(
+    result, headers = await _send_openai_image_request_with_key_pool(
+        provider="openai",
+        source=source,
+        api_config=api_config,
+        route_label="edits",
+        headers_factory=build_attempt_headers,
         url=generation_url,
-        headers=headers,
         request_kind="multipart",
         form_fields=payload,
         files=[
@@ -4878,19 +5490,25 @@ async def _generate_via_openai_images_endpoint(
     *,
     model_id: str,
     prompt: str,
+    stream: Optional[bool] = None,
     n: int,
     size: Optional[str],
     background: Optional[str],
     source: dict[str, Any],
+    partial_image_callback: Optional[
+        Callable[[int, dict[str, Any]], Awaitable[None]]
+    ] = None,
 ) -> list[dict[str, str]]:
     requested_n = max(1, int(n or 1))
     if requested_n > 1:
+
         async def run_single(_index: int) -> list[dict[str, str]]:
             return await _generate_via_openai_images_endpoint(
                 request,
                 user,
                 model_id=model_id,
                 prompt=prompt,
+                stream=stream,
                 n=1,
                 size=size,
                 background=background,
@@ -4902,15 +5520,20 @@ async def _generate_via_openai_images_endpoint(
             model_id=model_id,
             n=requested_n,
             run_single=run_single,
+            on_image=partial_image_callback,
         )
 
     n = requested_n
     base_url = source.get("base_url") or ""
     api_key = source.get("key") or ""
     api_config = source.get("api_config") or {}
-    headers = _build_openai_image_headers(base_url, api_key, api_config, user)
+
+    def build_attempt_headers(selected_key: str) -> dict[str, str]:
+        return _build_openai_image_headers(base_url, selected_key, api_config, user)
+
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
     base_name = _model_id_basename(upstream_model_id).lower()
+    stream_enabled = _openai_image_stream_enabled(stream)
 
     payload: dict[str, Any] = {
         "model": upstream_model_id,
@@ -4919,16 +5542,24 @@ async def _generate_via_openai_images_endpoint(
     }
     if size:
         payload["size"] = size
-    if not _openai_image_model_has_default_response_format(base_name):
+    if _openai_image_model_has_default_response_format(base_name):
+        if stream_enabled:
+            payload["stream"] = True
+            payload["partial_images"] = 1
+    else:
         payload["response_format"] = "b64_json"
 
     if background:
         payload["background"] = background
 
     generation_url = _get_openai_images_generation_url(base_url, api_config)
-    result = await _send_openai_image_request(
+    result, headers = await _send_openai_image_request_with_key_pool(
+        provider="openai",
+        source=source,
+        api_config=api_config,
+        route_label="generations",
+        headers_factory=build_attempt_headers,
         url=generation_url,
-        headers=headers,
         request_kind="json",
         json_body=payload,
     )
@@ -4991,7 +5622,6 @@ async def _generate_via_xai_images(
     base_url = source.get("base_url") or ""
     api_key = source.get("key") or ""
     api_config = source.get("api_config") or {}
-    headers = _build_openai_image_headers(base_url, api_key, api_config, user)
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
 
     effective_aspect_ratio = _normalize_grok_aspect_ratio(aspect_ratio)
@@ -5014,22 +5644,67 @@ async def _generate_via_xai_images(
         payload["resolution"] = effective_resolution
 
     generation_url = _get_openai_images_generation_url(base_url, api_config)
-    response = await asyncio.to_thread(
-        requests.post,
-        generation_url,
-        json=payload,
-        headers=headers,
-        verify=REQUESTS_VERIFY,
-    )
+    response: Optional[requests.Response] = None
+    headers: dict[str, str] = {}
+    key_attempts = _get_image_source_key_attempts("grok", source)
+    for attempt_idx, attempt in enumerate(key_attempts):
+        headers = _build_openai_image_headers(base_url, attempt.key, api_config, user)
+        try:
+            response = await asyncio.to_thread(
+                requests.post,
+                generation_url,
+                json=payload,
+                headers=headers,
+                verify=REQUESTS_VERIFY,
+            )
+        except Exception as error:
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                exception=error,
+            ):
+                _log_image_key_retry(
+                    "grok",
+                    "xai_images",
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    exception=error,
+                )
+                continue
+            raise RuntimeError(
+                build_error_detail(
+                    str(error),
+                    default="Failed to contact xAI /images/generations",
+                )
+            ) from error
 
-    if response.status_code >= 400:
-        raise HTTPException(
-            status_code=response.status_code,
-            detail=build_error_detail(
-                read_requests_error_payload(response),
-                default="Failed to generate image via xAI /images/generations",
-            ),
-        )
+        if response.status_code >= 400:
+            error_body = read_requests_error_payload(response)
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                status_code=response.status_code,
+                body=error_body,
+            ):
+                _log_image_key_retry(
+                    "grok",
+                    "xai_images",
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    status_code=response.status_code,
+                )
+                continue
+            raise HTTPException(
+                status_code=response.status_code,
+                detail=build_error_detail(
+                    error_body,
+                    default="Failed to generate image via xAI /images/generations",
+                ),
+            )
+        break
+
+    if response is None:
+        raise RuntimeError("Failed to contact xAI /images/generations")
 
     response_body = _parse_upstream_json_response(
         response,
@@ -5061,21 +5736,50 @@ async def _generate_via_openai_chat_image(
     model_id: str,
     prompt: str,
     source: dict[str, Any],
+    stream: Optional[bool] = None,
     image_url: Optional[str] = None,
     prefer_responses: bool = False,
+    n: int = 1,
+    partial_image_callback: Optional[
+        Callable[[int, dict[str, Any]], Awaitable[None]]
+    ] = None,
 ) -> list[dict[str, str]]:
     base_url = source.get("base_url") or ""
     api_key = source.get("key") or ""
     api_config = source.get("api_config") or {}
-    headers = _build_openai_image_headers(base_url, api_key, api_config, user)
     chat_url = openai_router._get_openai_chat_completions_url(base_url, api_config)
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
-    use_responses_api = bool(prefer_responses) or openai_router._should_use_responses_api(
+    use_responses_api = bool(
+        prefer_responses
+    ) or openai_router._should_use_responses_api(
         base_url,
         api_config,
         upstream_model_id,
         native_web_search=False,
     )
+    requested_n = max(1, int(n or 1))
+    if requested_n > 1:
+
+        async def run_single(_index: int) -> list[dict[str, str]]:
+            return await _generate_via_openai_chat_image(
+                request,
+                user,
+                model_id=model_id,
+                prompt=prompt,
+                source=source,
+                stream=stream,
+                image_url=image_url,
+                prefer_responses=prefer_responses,
+                n=1,
+            )
+
+        return await _run_openai_image_split_batch(
+            route_label="responses" if use_responses_api else "chat",
+            model_id=model_id,
+            n=requested_n,
+            run_single=run_single,
+            on_image=partial_image_callback,
+        )
 
     image_input: Optional[tuple[str, bytes, str]] = None
     if image_url:
@@ -5102,20 +5806,24 @@ async def _generate_via_openai_chat_image(
     if not responses_content:
         responses_content.append({"type": "input_text", "text": prompt_text})
 
+    stream_enabled = _openai_image_stream_enabled(stream)
     if use_responses_api:
         request_url = _get_openai_responses_url(base_url)
+        image_generation_tool: dict[str, Any] = {"type": "image_generation"}
+        if stream_enabled:
+            image_generation_tool["partial_images"] = 1
         payload: dict[str, Any] = {
             "model": upstream_model_id,
             "input": [{"role": "user", "content": responses_content}],
-            "tools": [{"type": "image_generation"}],
-            "stream": False,
+            "tools": [image_generation_tool],
+            "stream": stream_enabled,
         }
     else:
         request_url = chat_url
         payload = {
             "model": upstream_model_id,
             "messages": [{"role": "user", "content": chat_content}],
-            "stream": True,
+            "stream": stream_enabled,
         }
     upload_metadata: dict[str, Any] = {
         "model": upstream_model_id,
@@ -5149,79 +5857,293 @@ async def _generate_via_openai_chat_image(
         pass
 
     try:
-        timeout = None if AIOHTTP_CLIENT_TIMEOUT is None else float(AIOHTTP_CLIENT_TIMEOUT)
+        timeout = (
+            None if AIOHTTP_CLIENT_TIMEOUT is None else float(AIOHTTP_CLIENT_TIMEOUT)
+        )
+        key_attempts = _get_image_source_key_attempts("openai", source)
         async with httpx.AsyncClient(
             timeout=timeout,
             trust_env=True,
             verify=REQUESTS_VERIFY,
             follow_redirects=True,
         ) as client:
-            if use_responses_api:
-                response = await client.post(
-                    request_url,
-                    headers=headers,
-                    json=payload,
+            for attempt_idx, attempt in enumerate(key_attempts):
+                headers = _build_openai_image_headers(
+                    base_url, attempt.key, api_config, user
                 )
-                if response.status_code >= 400:
-                    error_body = response.text
-                    raise HTTPException(
-                        status_code=response.status_code,
-                        detail=_build_openai_image_upstream_error_detail(
-                            response.status_code,
-                            error_body,
-                            default="Failed to generate image via upstream /responses",
-                            route_label="responses",
-                        ),
-                    )
-
-                try:
-                    response_body = response.json()
-                except Exception as error:
-                    raise HTTPException(
-                        status_code=502,
-                        detail=build_error_detail(
-                            response.text,
-                            error,
-                            default="Invalid JSON response from upstream /responses",
-                        ),
-                    )
-
-                elapsed_ms = int((time.monotonic() - started_at) * 1000)
-                usage = _build_openai_image_usage(response_body, elapsed_ms)
-                _append_unique_generated_images(
-                    images,
-                    _extract_generated_images_from_openai_response(
-                        response_body,
+                if use_responses_api and stream_enabled:
+                    async with client.stream(
+                        "POST",
+                        request_url,
                         headers=headers,
-                        allowed_base_urls=[base_url],
-                    ),
-                    seen_images,
-                )
+                        json=payload,
+                    ) as response:
+                        if response.status_code >= 400:
+                            error_body = (await response.aread()).decode(
+                                "utf-8", errors="replace"
+                            )
+                            if attempt_idx + 1 < len(
+                                key_attempts
+                            ) and should_retry_api_key(
+                                api_config,
+                                status_code=response.status_code,
+                                body=error_body,
+                            ):
+                                _log_image_key_retry(
+                                    "openai",
+                                    "responses",
+                                    attempt,
+                                    next_attempt=attempt_idx + 2,
+                                    total=len(key_attempts),
+                                    status_code=response.status_code,
+                                )
+                                continue
+                            raise HTTPException(
+                                status_code=response.status_code,
+                                detail=_build_openai_image_upstream_error_detail(
+                                    response.status_code,
+                                    error_body,
+                                    default="Failed to generate image via upstream /responses",
+                                    route_label="responses",
+                                ),
+                            )
 
-                try:
-                    log.info(
-                        "openai_chat_image_result status=%s elapsed_ms=%s image_count=%s responses=%s response_headers=%s",
-                        response.status_code,
-                        elapsed_ms,
-                        len(images),
-                        "yes",
-                        json.dumps(
-                            _redact_upstream_headers(dict(response.headers)),
-                            ensure_ascii=False,
-                            sort_keys=True,
-                        ),
+                        async for raw_line in response.aiter_lines():
+                            line = str(raw_line or "").strip()
+                            if (
+                                not line
+                                or line.startswith(":")
+                                or line.startswith("event:")
+                            ):
+                                continue
+                            data = (
+                                line[len("data:") :].strip()
+                                if line.startswith("data:")
+                                else line
+                            )
+                            if not data or data == "[DONE]":
+                                continue
+                            try:
+                                event = json.loads(data)
+                            except Exception:
+                                continue
+                            if isinstance(event, dict):
+                                if isinstance(event.get("usage"), dict):
+                                    usage = event["usage"]
+                                response_obj = event.get("response")
+                                if isinstance(response_obj, dict) and isinstance(
+                                    response_obj.get("usage"), dict
+                                ):
+                                    usage = response_obj["usage"]
+                                if "partial" in str(event.get("type") or ""):
+                                    continue
+                            _append_unique_generated_images(
+                                images,
+                                _extract_generated_images_from_openai_response(
+                                    event,
+                                    headers=headers,
+                                    allowed_base_urls=[base_url],
+                                ),
+                                seen_images,
+                            )
+
+                        try:
+                            log.info(
+                                "openai_chat_image_result status=%s elapsed_ms=%s image_count=%s responses=%s response_headers=%s",
+                                response.status_code,
+                                int((time.monotonic() - started_at) * 1000),
+                                len(images),
+                                "yes",
+                                json.dumps(
+                                    _redact_upstream_headers(dict(response.headers)),
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                ),
+                            )
+                        except Exception:
+                            pass
+                        break
+                elif use_responses_api:
+                    response = await client.post(
+                        request_url,
+                        headers=headers,
+                        json=payload,
                     )
-                except Exception:
-                    pass
-            else:
-                async with client.stream(
-                    "POST",
-                    request_url,
-                    headers=headers,
-                    json=payload,
-                ) as response:
                     if response.status_code >= 400:
-                        error_body = (await response.aread()).decode("utf-8", errors="replace")
+                        error_body = response.text
+                        if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                            api_config,
+                            status_code=response.status_code,
+                            body=error_body,
+                        ):
+                            _log_image_key_retry(
+                                "openai",
+                                "responses",
+                                attempt,
+                                next_attempt=attempt_idx + 2,
+                                total=len(key_attempts),
+                                status_code=response.status_code,
+                            )
+                            continue
+                        raise HTTPException(
+                            status_code=response.status_code,
+                            detail=_build_openai_image_upstream_error_detail(
+                                response.status_code,
+                                error_body,
+                                default="Failed to generate image via upstream /responses",
+                                route_label="responses",
+                            ),
+                        )
+
+                    response_body = _parse_openai_httpx_response_json(
+                        response,
+                        default_message="Invalid JSON response from upstream /responses",
+                    )
+                    if isinstance(response_body, dict):
+                        if isinstance(response_body.get("usage"), dict):
+                            usage = response_body["usage"]
+                        response_obj = response_body.get("response")
+                        if isinstance(response_obj, dict) and isinstance(
+                            response_obj.get("usage"), dict
+                        ):
+                            usage = response_obj["usage"]
+                    _append_unique_generated_images(
+                        images,
+                        _extract_generated_images_from_openai_response(
+                            response_body,
+                            headers=headers,
+                            allowed_base_urls=[base_url],
+                        ),
+                        seen_images,
+                    )
+                    try:
+                        log.info(
+                            "openai_chat_image_result status=%s elapsed_ms=%s image_count=%s responses=%s response_headers=%s",
+                            response.status_code,
+                            int((time.monotonic() - started_at) * 1000),
+                            len(images),
+                            "yes",
+                            json.dumps(
+                                _redact_upstream_headers(dict(response.headers)),
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                        )
+                    except Exception:
+                        pass
+                    break
+                elif stream_enabled:
+                    async with client.stream(
+                        "POST",
+                        request_url,
+                        headers=headers,
+                        json=payload,
+                    ) as response:
+                        if response.status_code >= 400:
+                            error_body = (await response.aread()).decode(
+                                "utf-8", errors="replace"
+                            )
+                            if attempt_idx + 1 < len(
+                                key_attempts
+                            ) and should_retry_api_key(
+                                api_config,
+                                status_code=response.status_code,
+                                body=error_body,
+                            ):
+                                _log_image_key_retry(
+                                    "openai",
+                                    "chat",
+                                    attempt,
+                                    next_attempt=attempt_idx + 2,
+                                    total=len(key_attempts),
+                                    status_code=response.status_code,
+                                )
+                                continue
+                            raise HTTPException(
+                                status_code=response.status_code,
+                                detail=_build_openai_image_upstream_error_detail(
+                                    response.status_code,
+                                    error_body,
+                                    default="Failed to generate image via upstream chat/completions",
+                                    route_label="chat",
+                                ),
+                            )
+
+                        async for raw_line in response.aiter_lines():
+                            line = str(raw_line or "").strip()
+                            if (
+                                not line
+                                or line.startswith(":")
+                                or line.startswith("event:")
+                            ):
+                                continue
+                            data = (
+                                line[len("data:") :].strip()
+                                if line.startswith("data:")
+                                else line
+                            )
+                            if not data or data == "[DONE]":
+                                continue
+                            try:
+                                event = json.loads(data)
+                            except Exception:
+                                continue
+                            if isinstance(event, dict) and isinstance(
+                                event.get("usage"), dict
+                            ):
+                                usage = event["usage"]
+                            if isinstance(event, dict) and "partial" in str(
+                                event.get("type") or ""
+                            ):
+                                continue
+                            _append_unique_generated_images(
+                                images,
+                                _extract_generated_images_from_openai_response(
+                                    event,
+                                    headers=headers,
+                                    allowed_base_urls=[base_url],
+                                ),
+                                seen_images,
+                            )
+
+                        try:
+                            log.info(
+                                "openai_chat_image_result status=%s elapsed_ms=%s image_count=%s responses=%s response_headers=%s",
+                                response.status_code,
+                                int((time.monotonic() - started_at) * 1000),
+                                len(images),
+                                "no",
+                                json.dumps(
+                                    _redact_upstream_headers(dict(response.headers)),
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                ),
+                            )
+                        except Exception:
+                            pass
+                        break
+                else:
+                    response = await client.post(
+                        request_url,
+                        headers=headers,
+                        json=payload,
+                    )
+                    if response.status_code >= 400:
+                        error_body = response.text
+                        if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                            api_config,
+                            status_code=response.status_code,
+                            body=error_body,
+                        ):
+                            _log_image_key_retry(
+                                "openai",
+                                "chat",
+                                attempt,
+                                next_attempt=attempt_idx + 2,
+                                total=len(key_attempts),
+                                status_code=response.status_code,
+                            )
+                            continue
                         raise HTTPException(
                             status_code=response.status_code,
                             detail=_build_openai_image_upstream_error_detail(
@@ -5232,29 +6154,23 @@ async def _generate_via_openai_chat_image(
                             ),
                         )
 
-                    async for raw_line in response.aiter_lines():
-                        line = str(raw_line or "").strip()
-                        if not line or line.startswith(":") or line.startswith("event:"):
-                            continue
-                        data = line[len("data:") :].strip() if line.startswith("data:") else line
-                        if not data or data == "[DONE]":
-                            continue
-                        try:
-                            event = json.loads(data)
-                        except Exception:
-                            continue
-                        if isinstance(event, dict) and isinstance(event.get("usage"), dict):
-                            usage = event["usage"]
-                        _append_unique_generated_images(
-                            images,
-                            _extract_generated_images_from_openai_response(
-                                event,
-                                headers=headers,
-                                allowed_base_urls=[base_url],
-                            ),
-                            seen_images,
-                        )
-
+                    response_body = _parse_openai_httpx_response_json(
+                        response,
+                        default_message="Invalid JSON response from upstream chat/completions",
+                    )
+                    if isinstance(response_body, dict) and isinstance(
+                        response_body.get("usage"), dict
+                    ):
+                        usage = response_body["usage"]
+                    _append_unique_generated_images(
+                        images,
+                        _extract_generated_images_from_openai_response(
+                            response_body,
+                            headers=headers,
+                            allowed_base_urls=[base_url],
+                        ),
+                        seen_images,
+                    )
                     try:
                         log.info(
                             "openai_chat_image_result status=%s elapsed_ms=%s image_count=%s responses=%s response_headers=%s",
@@ -5270,7 +6186,8 @@ async def _generate_via_openai_chat_image(
                         )
                     except Exception:
                         pass
-    except HTTPException:
+                    break
+    except (HTTPException, OpenAIImagePartialBatchError):
         raise
     except Exception as error:
         raise RuntimeError(
@@ -5312,9 +6229,6 @@ async def _generate_via_gemini_predict(
     api_key = source.get("key") or ""
     api_config = source.get("api_config") or {}
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
-    attempts = gemini_router._auth_attempts(
-        f"{base_url}/models/{upstream_model_id}:predict", api_key, api_config
-    )
     payload = {
         "instances": {"prompt": prompt},
         "parameters": {
@@ -5323,22 +6237,62 @@ async def _generate_via_gemini_predict(
         },
     }
 
-    try:
-        response, _used_url = await asyncio.to_thread(
-            _post_json_with_attempts,
-            attempts,
-            payload,
-        )
-    except requests.HTTPError as error:
-        response = error.response
-        raise HTTPException(
-            status_code=response.status_code if response is not None else 500,
-            detail=build_error_detail(
-                read_requests_error_payload(response),
-                error,
-                default="Failed to generate image via Gemini predict",
-            ),
-        )
+    response: Optional[requests.Response] = None
+    key_attempts = _get_image_source_key_attempts("gemini", source)
+    request_url = f"{base_url}/models/{upstream_model_id}:predict"
+    for attempt_idx, attempt in enumerate(key_attempts):
+        attempts = gemini_router._auth_attempts(request_url, attempt.key, api_config)
+        try:
+            response, _used_url = await asyncio.to_thread(
+                _post_json_with_attempts,
+                attempts,
+                payload,
+            )
+            break
+        except requests.HTTPError as error:
+            response = error.response
+            error_body = read_requests_error_payload(response)
+            status_code = response.status_code if response is not None else 500
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                status_code=status_code,
+                body=error_body,
+            ):
+                _log_image_key_retry(
+                    "gemini",
+                    "predict",
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    status_code=status_code,
+                )
+                continue
+            raise HTTPException(
+                status_code=status_code,
+                detail=build_error_detail(
+                    error_body,
+                    error,
+                    default="Failed to generate image via Gemini predict",
+                ),
+            )
+        except Exception as error:
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                exception=error,
+            ):
+                _log_image_key_retry(
+                    "gemini",
+                    "predict",
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    exception=error,
+                )
+                continue
+            raise
+
+    if response is None:
+        raise RuntimeError("Failed to contact Gemini predict")
 
     response_body = _parse_upstream_json_response(
         response,
@@ -5368,16 +6322,32 @@ async def _generate_via_gemini_generate_content(
     image_size: Optional[str],
     aspect_ratio: Optional[str],
     source: dict[str, Any],
+    image_url: Optional[str] = None,
 ) -> list[dict[str, str]]:
     base_url = source.get("base_url") or ""
     api_key = source.get("key") or ""
     api_config = source.get("api_config") or {}
     upstream_model_id = _strip_connection_model_prefix(model_id, api_config)
-    attempts = gemini_router._auth_attempts(
-        f"{base_url}/models/{upstream_model_id}:generateContent", api_key, api_config
-    )
+    parts: list[dict[str, Any]] = [{"text": prompt}]
+    if image_url:
+        resolved_image = _resolve_image_edit_input(request, user, image_url)
+        if not resolved_image:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to resolve image input for Gemini generateContent request.",
+            )
+        image_mime, image_bytes = resolved_image
+        parts.append(
+            {
+                "inline_data": {
+                    "mime_type": image_mime or "image/png",
+                    "data": base64.b64encode(image_bytes).decode("utf-8"),
+                }
+            }
+        )
+
     payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
     }
     image_config: dict[str, Any] = {}
@@ -5390,22 +6360,62 @@ async def _generate_via_gemini_generate_content(
     if image_config:
         payload["generationConfig"]["imageConfig"] = image_config
 
-    try:
-        response, _used_url = await asyncio.to_thread(
-            _post_json_with_attempts,
-            attempts,
-            payload,
-        )
-    except requests.HTTPError as error:
-        response = error.response
-        raise HTTPException(
-            status_code=response.status_code if response is not None else 500,
-            detail=build_error_detail(
-                read_requests_error_payload(response),
-                error,
-                default="Failed to generate image via Gemini generateContent",
-            ),
-        )
+    response: Optional[requests.Response] = None
+    key_attempts = _get_image_source_key_attempts("gemini", source)
+    request_url = f"{base_url}/models/{upstream_model_id}:generateContent"
+    for attempt_idx, attempt in enumerate(key_attempts):
+        attempts = gemini_router._auth_attempts(request_url, attempt.key, api_config)
+        try:
+            response, _used_url = await asyncio.to_thread(
+                _post_json_with_attempts,
+                attempts,
+                payload,
+            )
+            break
+        except requests.HTTPError as error:
+            response = error.response
+            error_body = read_requests_error_payload(response)
+            status_code = response.status_code if response is not None else 500
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                status_code=status_code,
+                body=error_body,
+            ):
+                _log_image_key_retry(
+                    "gemini",
+                    "generateContent",
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    status_code=status_code,
+                )
+                continue
+            raise HTTPException(
+                status_code=status_code,
+                detail=build_error_detail(
+                    error_body,
+                    error,
+                    default="Failed to generate image via Gemini generateContent",
+                ),
+            )
+        except Exception as error:
+            if attempt_idx + 1 < len(key_attempts) and should_retry_api_key(
+                api_config,
+                exception=error,
+            ):
+                _log_image_key_retry(
+                    "gemini",
+                    "generateContent",
+                    attempt,
+                    next_attempt=attempt_idx + 2,
+                    total=len(key_attempts),
+                    exception=error,
+                )
+                continue
+            raise
+
+    if response is None:
+        raise RuntimeError("Failed to contact Gemini generateContent")
 
     response_body = _parse_upstream_json_response(
         response,
@@ -5472,8 +6482,12 @@ async def image_generations(
     raster_size = effective_size or "512x512"
     width, height = tuple(map(int, raster_size.split("x")))
     selected_model_value = str(form_data.model or "").strip()
-    _selection_hint, selected_model = _split_image_model_selection_key(selected_model_value)
-    model_ref = dict(form_data.model_ref) if isinstance(form_data.model_ref, dict) else {}
+    _selection_hint, selected_model = _split_image_model_selection_key(
+        selected_model_value
+    )
+    model_ref = (
+        dict(form_data.model_ref) if isinstance(form_data.model_ref, dict) else {}
+    )
     parsed_selection_id = parse_selection_id(selected_model_value)
     if parsed_selection_id:
         selected_model = parsed_selection_id["model_id"]
@@ -5489,6 +6503,13 @@ async def image_generations(
     selected_engine = _normalize_engine(
         getattr(request.app.state.config, "IMAGE_GENERATION_ENGINE", "")
     )
+    partial_image_callback = getattr(
+        getattr(request, "state", None),
+        "open_webui_image_generation_partial_callback",
+        None,
+    )
+    if not callable(partial_image_callback):
+        partial_image_callback = None
     model_ref_provider = str(model_ref.get("provider") or "").strip().lower()
     if model_ref_provider in {"openai", "gemini", "grok"}:
         selected_engine = model_ref_provider
@@ -5496,7 +6517,9 @@ async def image_generations(
         selection_provider = str(_selection_hint.get("provider") or "").strip().lower()
         if selection_provider in {"openai", "gemini", "grok"}:
             selected_engine = selection_provider
-    connection_user = getattr(getattr(request, "state", None), "connection_user", None) or user
+    connection_user = (
+        getattr(getattr(request, "state", None), "connection_user", None) or user
+    )
 
     if (
         selected_engine in {"openai", "gemini", "grok"}
@@ -5557,7 +6580,9 @@ async def image_generations(
     r = None
     try:
         if selected_engine == "openai":
-            credential_source = _normalize_credential_source(form_data.credential_source)
+            credential_source = _normalize_credential_source(
+                form_data.credential_source
+            )
             source: Optional[dict[str, Any]] = None
             discovered_models: Optional[list[dict[str, Any]]] = None
             if credential_source == "auto" and form_data.connection_index is None:
@@ -5579,12 +6604,15 @@ async def image_generations(
                         ),
                     )
                 if source is None:
-                    source, discovered_models = await _select_runtime_image_provider_source(
-                        request,
-                        connection_user,
-                        "openai",
-                        selected_model=selected_model_value,
-                        prefer_shared=not bool(form_data.model) and bool(selected_model),
+                    source, discovered_models = (
+                        await _select_runtime_image_provider_source(
+                            request,
+                            connection_user,
+                            "openai",
+                            selected_model=selected_model_value,
+                            prefer_shared=not bool(form_data.model)
+                            and bool(selected_model),
+                        )
                     )
 
             if source is None:
@@ -5610,12 +6638,22 @@ async def image_generations(
                     else:
                         raise
 
-            filtered_models = _apply_image_model_regex_filter(request, discovered_models)
+            filtered_models = _apply_image_model_regex_filter(
+                request, discovered_models
+            )
             selected_model_meta = next(
-                (model for model in filtered_models if model.get("id") == selected_model),
+                (
+                    model
+                    for model in filtered_models
+                    if model.get("id") == selected_model
+                ),
                 None,
             ) or next(
-                (model for model in discovered_models if model.get("id") == selected_model),
+                (
+                    model
+                    for model in discovered_models
+                    if model.get("id") == selected_model
+                ),
                 None,
             )
 
@@ -5641,9 +6679,9 @@ async def image_generations(
                     "openai", model_ref, selected_model
                 )
 
-            generation_mode = (
-                (selected_model_meta or {}).get("generation_mode") or "openai_images"
-            )
+            generation_mode = (selected_model_meta or {}).get(
+                "generation_mode"
+            ) or "openai_images"
             openai_image_route = _resolve_openai_image_request_route(
                 selected_model_meta,
                 form_data.image_route_mode,
@@ -5681,15 +6719,21 @@ async def image_generations(
                     fallback_size=effective_size,
                 )
 
-            if openai_image_route in {OPENAI_IMAGE_ROUTE_CHAT, OPENAI_IMAGE_ROUTE_RESPONSES}:
+            if openai_image_route in {
+                OPENAI_IMAGE_ROUTE_CHAT,
+                OPENAI_IMAGE_ROUTE_RESPONSES,
+            }:
                 return await _generate_via_openai_chat_image(
                     request,
                     user,
                     model_id=selected_model,
                     prompt=form_data.prompt,
                     source=source,
+                    stream=form_data.stream,
                     image_url=form_data.image_url,
                     prefer_responses=openai_image_route == OPENAI_IMAGE_ROUTE_RESPONSES,
+                    n=requested_n,
+                    partial_image_callback=partial_image_callback,
                 )
 
             if openai_image_route == OPENAI_IMAGE_ROUTE_EDITS:
@@ -5703,11 +6747,13 @@ async def image_generations(
                     user,
                     model_id=selected_model,
                     prompt=form_data.prompt,
+                    stream=form_data.stream,
                     image_url=form_data.image_url,
                     n=requested_n,
                     size=openai_request_size,
                     background=background,
                     source=source,
+                    partial_image_callback=partial_image_callback,
                 )
 
             return await _generate_via_openai_images_endpoint(
@@ -5715,14 +6761,18 @@ async def image_generations(
                 user,
                 model_id=selected_model,
                 prompt=form_data.prompt,
+                stream=form_data.stream,
                 n=requested_n,
                 size=openai_request_size,
                 background=background,
                 source=source,
+                partial_image_callback=partial_image_callback,
             )
 
         elif selected_engine == "gemini":
-            credential_source = _normalize_credential_source(form_data.credential_source)
+            credential_source = _normalize_credential_source(
+                form_data.credential_source
+            )
             source: Optional[dict[str, Any]] = None
             discovered_models: Optional[list[dict[str, Any]]] = None
             if credential_source == "auto" and form_data.connection_index is None:
@@ -5744,12 +6794,15 @@ async def image_generations(
                         ),
                     )
                 if source is None:
-                    source, discovered_models = await _select_runtime_image_provider_source(
-                        request,
-                        connection_user,
-                        "gemini",
-                        selected_model=selected_model_value,
-                        prefer_shared=not bool(form_data.model) and bool(selected_model),
+                    source, discovered_models = (
+                        await _select_runtime_image_provider_source(
+                            request,
+                            connection_user,
+                            "gemini",
+                            selected_model=selected_model_value,
+                            prefer_shared=not bool(form_data.model)
+                            and bool(selected_model),
+                        )
                     )
             if source is None:
                 source = _resolve_image_provider_source(
@@ -5774,12 +6827,22 @@ async def image_generations(
                     else:
                         raise
 
-            filtered_models = _apply_image_model_regex_filter(request, discovered_models)
+            filtered_models = _apply_image_model_regex_filter(
+                request, discovered_models
+            )
             selected_model_meta = next(
-                (model for model in filtered_models if model.get("id") == selected_model),
+                (
+                    model
+                    for model in filtered_models
+                    if model.get("id") == selected_model
+                ),
                 None,
             ) or next(
-                (model for model in discovered_models if model.get("id") == selected_model),
+                (
+                    model
+                    for model in discovered_models
+                    if model.get("id") == selected_model
+                ),
                 None,
             )
 
@@ -5808,9 +6871,9 @@ async def image_generations(
                     "gemini", model_ref, selected_model
                 )
 
-            generation_mode = (
-                (selected_model_meta or {}).get("generation_mode") or "gemini_predict"
-            )
+            generation_mode = (selected_model_meta or {}).get(
+                "generation_mode"
+            ) or "gemini_predict"
             requested_n = (
                 max(1, min(int(form_data.n or 1), 4))
                 if (selected_model_meta or {}).get("supports_batch", True)
@@ -5837,9 +6900,11 @@ async def image_generations(
                     ),
                     aspect_ratio=(
                         requested_aspect_ratio
-                        if (selected_model_meta or {}).get("size_mode") == "aspect_ratio"
+                        if (selected_model_meta or {}).get("size_mode")
+                        == "aspect_ratio"
                         else None
                     ),
+                    image_url=form_data.image_url,
                     source=source,
                 )
 
@@ -5853,7 +6918,9 @@ async def image_generations(
             )
 
         elif selected_engine == "grok":
-            credential_source = _normalize_credential_source(form_data.credential_source)
+            credential_source = _normalize_credential_source(
+                form_data.credential_source
+            )
             source: Optional[dict[str, Any]] = None
             discovered_models: Optional[list[dict[str, Any]]] = None
             if credential_source == "auto" and form_data.connection_index is None:
@@ -5875,12 +6942,15 @@ async def image_generations(
                         ),
                     )
                 if source is None:
-                    source, discovered_models = await _select_runtime_image_provider_source(
-                        request,
-                        connection_user,
-                        "grok",
-                        selected_model=selected_model_value,
-                        prefer_shared=not bool(form_data.model) and bool(selected_model),
+                    source, discovered_models = (
+                        await _select_runtime_image_provider_source(
+                            request,
+                            connection_user,
+                            "grok",
+                            selected_model=selected_model_value,
+                            prefer_shared=not bool(form_data.model)
+                            and bool(selected_model),
+                        )
                     )
             if source is None:
                 source = _resolve_image_provider_source(
@@ -5905,12 +6975,22 @@ async def image_generations(
                     else:
                         raise
 
-            filtered_models = _apply_image_model_regex_filter(request, discovered_models)
+            filtered_models = _apply_image_model_regex_filter(
+                request, discovered_models
+            )
             selected_model_meta = next(
-                (model for model in filtered_models if model.get("id") == selected_model),
+                (
+                    model
+                    for model in filtered_models
+                    if model.get("id") == selected_model
+                ),
                 None,
             ) or next(
-                (model for model in discovered_models if model.get("id") == selected_model),
+                (
+                    model
+                    for model in discovered_models
+                    if model.get("id") == selected_model
+                ),
                 None,
             )
 
@@ -6073,7 +7153,7 @@ async def image_generations(
                 )
                 images.append({"url": url})
             return images
-    except HTTPException:
+    except (HTTPException, OpenAIImagePartialBatchError):
         raise
     except Exception as e:
         error = (

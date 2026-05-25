@@ -34,6 +34,10 @@ from open_webui.env import (
 from open_webui.internal.db import Base, get_db
 from open_webui.migration_runner import run_alembic_migrations
 from open_webui.utils.redis import get_redis_connection
+from open_webui.utils.user_default_settings import (
+    DEFAULT_NEW_USER_DEFAULT_SETTINGS,
+    sanitize_new_user_default_settings,
+)
 from open_webui.retrieval.document_processing_shared import (
     FILE_PROCESSING_MODE_FULL_CONTEXT,
     FILE_PROCESSING_MODE_RETRIEVAL,
@@ -584,6 +588,17 @@ OAUTH_TOKEN_EXCHANGE_AUDIENCE = os.environ.get("OAUTH_TOKEN_EXCHANGE_AUDIENCE", 
 
 OAUTH_PROVIDERS = {}
 
+_ENABLE_OAUTH_LOGIN_ENV = os.environ.get("ENABLE_OAUTH_LOGIN")
+ENABLE_OAUTH_LOGIN = PersistentConfig(
+    "ENABLE_OAUTH_LOGIN",
+    "oauth.oidc.enable",
+    (
+        None
+        if _ENABLE_OAUTH_LOGIN_ENV is None
+        else _ENABLE_OAUTH_LOGIN_ENV.lower() == "true"
+    ),
+)
+
 GOOGLE_CLIENT_ID = PersistentConfig(
     "GOOGLE_CLIENT_ID",
     "oauth.google.client_id",
@@ -884,7 +899,8 @@ def load_oauth_providers():
         }
 
     if (
-        OAUTH_CLIENT_ID.value
+        ENABLE_OAUTH_LOGIN.value is not False
+        and OAUTH_CLIENT_ID.value
         and OAUTH_CLIENT_SECRET.value
         and OPENID_PROVIDER_URL.value
     ):
@@ -1772,6 +1788,15 @@ USER_PERMISSIONS = PersistentConfig(
     "USER_PERMISSIONS",
     "user.permissions",
     DEFAULT_USER_PERMISSIONS,
+)
+
+NEW_USER_DEFAULT_SETTINGS = PersistentConfig(
+    "NEW_USER_DEFAULT_SETTINGS",
+    "user.default_settings",
+    DEFAULT_NEW_USER_DEFAULT_SETTINGS,
+)
+NEW_USER_DEFAULT_SETTINGS.value = sanitize_new_user_default_settings(
+    NEW_USER_DEFAULT_SETTINGS.value
 )
 
 ####################################

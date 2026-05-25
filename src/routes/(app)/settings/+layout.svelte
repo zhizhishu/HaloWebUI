@@ -59,6 +59,7 @@
 	let currentPath = '';
 	let activeLinks = {
 		general: false,
+		userDefaults: false,
 		interface: false,
 		connections: false,
 		tools: false,
@@ -81,6 +82,7 @@
 		const path = currentPath || '';
 		activeLinks = {
 			general: path === '/settings',
+			userDefaults: path.startsWith('/settings/user-defaults'),
 			interface: path.startsWith('/settings/interface'),
 			connections: path.startsWith('/settings/connections'),
 			tools: path.startsWith('/settings/tools'),
@@ -135,18 +137,15 @@
 			</div>
 		</nav>
 
-		<div
-			class="pb-1 px-[18px] flex-1 max-h-full overflow-y-auto"
-			id="settings-container"
-		>
+		<div class="pb-1 px-[18px] flex-1 max-h-full overflow-y-auto" id="settings-container">
 			<div class="flex flex-col lg:flex-row w-full h-full min-h-0 pb-2 lg:space-x-4">
 				<div
 					id="settings-tabs-container"
 					class="flex flex-row overflow-x-auto gap-2.5 max-w-full lg:gap-1 lg:flex-col lg:flex-none lg:w-44 dark:text-gray-200 text-sm font-medium text-left scrollbar-none"
 				>
 					{#if isAdmin}
-					<a class={navLinkClass(activeLinks.general)} href="/settings">{$i18n.t('General')}</a>
-				{/if}
+						<a class={navLinkClass(activeLinks.general)} href="/settings">{$i18n.t('General')}</a>
+					{/if}
 					<a class={navLinkClass(activeLinks.interface)} href="/settings/interface"
 						>{$i18n.t('Interface')}</a
 					>
@@ -155,16 +154,21 @@
 						>{$i18n.t('Connections')}</a
 					>
 
-						<a class={navLinkClass(activeLinks.tools)} href="/settings/tools"
-							>{$i18n.t('Tool Integrations', { defaultValue: $i18n.t('Tools') })}</a
-						>
+					<a class={navLinkClass(activeLinks.tools)} href="/settings/tools"
+						>{$i18n.t('Tool Integrations', { defaultValue: $i18n.t('Tools') })}</a
+					>
 
-						<a class={navLinkClass(activeLinks.audio)} href="/settings/audio">{$i18n.t('Audio')}</a>
-						<a class={navLinkClass(activeLinks.dataManagement)} href="/settings/chats">{$i18n.t('Database')}</a>
-						<a class={navLinkClass(activeLinks.account)} href="/settings/account"
-							>{$i18n.t('Account Management', { defaultValue: $i18n.t('Account') })}</a
-						>
+					<a class={navLinkClass(activeLinks.audio)} href="/settings/audio">{$i18n.t('Audio')}</a>
+					<a class={navLinkClass(activeLinks.dataManagement)} href="/settings/chats"
+						>{$i18n.t('Database')}</a
+					>
+					<a class={navLinkClass(activeLinks.account)} href="/settings/account"
+						>{$i18n.t('Account Management', { defaultValue: $i18n.t('Account') })}</a
+					>
 					{#if isAdmin}
+						<a class={navLinkClass(activeLinks.userDefaults)} href="/settings/user-defaults">
+							账户预设
+						</a>
 						<a class={navLinkClass(activeLinks.models)} href="/settings/models"
 							>{$i18n.t('Model Management')}</a
 						>

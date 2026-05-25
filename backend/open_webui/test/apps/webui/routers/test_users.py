@@ -509,3 +509,77 @@ class TestUsers(AbstractPostgresTest):
         assert app.state.BASE_MODELS == ["keep"]
         assert app.state.MODELS == {"keep": {"id": "keep"}}
         assert "2" not in auth_utils._user_cache
+
+    def test_admin_can_manage_new_user_default_settings_and_new_users_receive_it(
+        self,
+    ):
+        from main import app
+
+        payload = {
+            "enabled": True,
+            "roles": ["user"],
+            "ui": {
+                "models": ["gpt-4o"],
+                "temporaryChatByDefault": True,
+                "connections": {"openai": {"OPENAI_API_KEYS": ["secret"]}},
+            },
+            "tools": {
+                "native_tools": {
+                    "TOOL_CALLING_MODE": "native",
+                    "MAX_TOOL_CALL_ROUNDS": 12,
+                    "ENABLE_WEB_SEARCH_TOOL": False,
+                }
+            },
+        }
+
+        try:
+            with mock_webui_user(id="admin", role="admin"):
+                response = self.fast_api_client.post(
+                    self.create_url("/default/settings"),
+                    json=payload,
+                )
+
+            assert response.status_code == 200
+            saved = response.json()
+            assert saved["configured"] is True
+            assert saved["enabled"] is True
+            assert saved["roles"] == ["user", "pending"]
+            assert saved["ui"]["models"] == ["gpt-4o"]
+            assert saved["ui"]["temporaryChatByDefault"] is True
+            assert "connections" not in saved["ui"]
+            assert saved["tools"]["native_tools"] == {}
+
+            created = self.users.insert_new_user(
+                id="templated",
+                name="Templated User",
+                email="templated@example.com",
+                role="user",
+            )
+            assert created.settings.ui["models"] == ["gpt-4o"]
+            assert created.settings.ui["temporaryChatByDefault"] is True
+            assert "tools" not in created.settings.model_dump(exclude_none=True)
+            assert created.settings.revision == 0
+
+            pending_created = self.users.insert_new_user(
+                id="templated-pending",
+                name="Templated Pending",
+                email="templated-pending@example.com",
+                role="pending",
+            )
+            assert pending_created.settings.ui["models"] == ["gpt-4o"]
+            assert pending_created.settings.ui["temporaryChatByDefault"] is True
+
+            admin_created = self.users.insert_new_user(
+                id="new-admin",
+                name="New Admin",
+                email="new-admin@example.com",
+                role="admin",
+            )
+            assert admin_created.settings is None
+        finally:
+            app.state.config.NEW_USER_DEFAULT_SETTINGS = {
+                "enabled": False,
+                "roles": ["user", "pending"],
+                "ui": {},
+                "tools": {"native_tools": {}},
+            }

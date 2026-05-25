@@ -4,6 +4,7 @@
 	import type { i18n as i18nType } from 'i18next';
 	import { toast } from 'svelte-sonner';
 	import { translateWithDefault } from '$lib/i18n';
+	import type { NativeWebSearchSupport } from '$lib/stores';
 
 	const i18n = getContext('i18n') as Writable<i18nType>;
 
@@ -22,6 +23,7 @@
 		describeNativeWebSearchSupport,
 		getNativeWebSearchSupport
 	} from '$lib/utils/native-web-search';
+	import { getApiKeyForRequest, getApiKeyPoolRequestConfig } from '$lib/utils/api-key-pool';
 
 	import Modal from '$lib/components/common/Modal.svelte';
 	import XMark from '$lib/components/icons/XMark.svelte';
@@ -34,19 +36,21 @@
 	import GlobeAlt from '$lib/components/icons/GlobeAlt.svelte';
 	import Gift from '$lib/components/icons/Gift.svelte';
 	import Photo from '$lib/components/icons/Photo.svelte';
-	import { formatConnectionErrorToast } from '$lib/utils/connection-errors';
+	import { formatModelFetchErrorToast } from '$lib/utils/connection-errors';
 
 	export let show = false;
 	export let modelIds: string[] = [];
 	export let url = '';
 	export let force_mode = false;
 	export let key = '';
+	export let api_key_pool: any = undefined;
 	export let azure = false;
 	export let api_version: string | undefined = undefined;
 	export let ollama = false;
 	export let gemini = false;
 	export let grok = false;
 	export let anthropic = false;
+	export let prefix_id: string | undefined = undefined;
 	export let auth_type: string | undefined = undefined;
 	export let headers: Record<string, string> | undefined = undefined;
 	export let anthropic_version: string | undefined = undefined;
@@ -59,17 +63,30 @@
 		id: string;
 		name?: string;
 		native_web_search_supported?: boolean;
-		native_web_search_support?: Record<string, any>;
+		native_web_search_support?: NativeWebSearchSupport;
 	};
 	let availableModels: AvailableModel[] = [];
 	let serverModelListRequiresManualEntry = false;
+	let serverPublicModelCatalog = false;
+	let serverPublicModelCatalogMessage = '';
+	let modelFetchErrorMessage = '';
+	let requestApiKeyPool: any = undefined;
+	let requestKey = '';
 
-	const describeConnectionError = (error: unknown) => {
-		const { title, description } = formatConnectionErrorToast(error, (key, options) =>
+	$: requestApiKeyPool = getApiKeyPoolRequestConfig(api_key_pool);
+	$: requestKey = getApiKeyForRequest(key, requestApiKeyPool);
+
+	const withRequestApiKeyPool = (config: Record<string, any>) => ({
+		...config,
+		...(requestApiKeyPool ? { api_key_pool: requestApiKeyPool } : {})
+	});
+
+	const describeModelFetchError = (error: unknown) => {
+		const { title, description } = formatModelFetchErrorToast(error, (key, options) =>
 			$i18n.t(key, options)
 		);
 
-		return description ? `${title} ${description}` : title;
+		return description ? `${title}。${description}` : title;
 	};
 
 	const tr = (key: string, defaultValue: string) =>
@@ -127,12 +144,15 @@
 
 		loading = true;
 		serverModelListRequiresManualEntry = false;
+		serverPublicModelCatalog = false;
+		serverPublicModelCatalogMessage = '';
+		modelFetchErrorMessage = '';
 		try {
 			let data: any;
 
 			if (ollama) {
 				// Use backend proxy to avoid CORS issues
-				data = await verifyOllamaConnection(localStorage.token, { url, key });
+				data = await verifyOllamaConnection(localStorage.token, { url, key: requestKey });
 				availableModels = (data?.models || []).map((m: any) => ({
 					id: m.name || m.model,
 					name: m.name || m.model
@@ -141,11 +161,12 @@
 				// Use backend proxy to avoid CORS issues
 				data = await verifyGeminiConnection(localStorage.token, {
 					url,
-					key,
-					config: {
+					key: requestKey,
+					config: withRequestApiKeyPool({
+						...(prefix_id ? { prefix_id } : {}),
 						...(auth_type ? { auth_type } : {}),
 						...(headers ? { headers } : {})
-					}
+					})
 				});
 
 				// Gemini native: { models: [{ name: "models/...", displayName: "..." }, ...] }
@@ -153,20 +174,21 @@
 					throw new Error('Gemini: Invalid response (expected models.list format)');
 				}
 
-					availableModels = (data.models || []).map((m: any) => ({
-						id: m.name?.replace('models/', '') || m.name,
-						name: m.displayName || m.name,
-						native_web_search_supported: m.native_web_search_supported,
-						native_web_search_support: m.native_web_search_support
-					}));
+				availableModels = (data.models || []).map((m: any) => ({
+					id: m.name?.replace('models/', '') || m.name,
+					name: m.displayName || m.name,
+					native_web_search_supported: m.native_web_search_supported,
+					native_web_search_support: m.native_web_search_support
+				}));
 			} else if (grok) {
 				data = await verifyGrokConnection(localStorage.token, {
 					url,
-					key,
-					config: {
+					key: requestKey,
+					config: withRequestApiKeyPool({
+						...(prefix_id ? { prefix_id } : {}),
 						...(auth_type ? { auth_type } : {}),
 						...(headers ? { headers } : {})
-					}
+					})
 				});
 
 				if (!Array.isArray(data?.models)) {
@@ -180,13 +202,14 @@
 			} else if (anthropic) {
 				data = await verifyAnthropicConnection(localStorage.token, {
 					url,
-					key,
-					config: {
+					key: requestKey,
+					config: withRequestApiKeyPool({
+						...(prefix_id ? { prefix_id } : {}),
 						...(auth_type ? { auth_type } : {}),
 						...(anthropic_version ? { anthropic_version } : {}),
 						...(anthropic_beta && anthropic_beta.length ? { anthropic_beta } : {}),
 						...(headers ? { headers } : {})
-					}
+					})
 				});
 
 				if (!Array.isArray(data?.data)) {
@@ -199,27 +222,35 @@
 				}));
 			} else {
 				// Use backend proxy to avoid CORS issues
-					data = await verifyOpenAIConnection(localStorage.token, {
-						url,
-						key,
-						purpose: 'models',
-						config: {
-							force_mode,
-							...(azure ? { azure: true } : {}),
-							...(api_version ? { api_version } : {}),
-							...(auth_type ? { auth_type } : {}),
-							...(headers ? { headers } : {})
-						}
-					});
-					availableModels = (data?.data || []).map((m: any) => ({
-						id: m.id,
-						name: m.name || m.id,
-						native_web_search_supported: m.native_web_search_supported,
-						native_web_search_support: m.native_web_search_support
-					}));
+				data = await verifyOpenAIConnection(localStorage.token, {
+					url,
+					key: requestKey,
+					purpose: 'models',
+					config: withRequestApiKeyPool({
+						...(prefix_id ? { prefix_id } : {}),
+						force_mode,
+						...(azure ? { azure: true } : {}),
+						...(api_version ? { api_version } : {}),
+						...(auth_type ? { auth_type } : {}),
+						...(headers ? { headers } : {})
+					})
+				});
+				availableModels = (data?.data || []).map((m: any) => ({
+					id: m.id,
+					name: m.name || m.id,
+					native_web_search_supported: m.native_web_search_supported,
+					native_web_search_support: m.native_web_search_support
+				}));
 
 				serverModelListRequiresManualEntry =
 					data?._openwebui?.manual_model_ids_required === true;
+				serverPublicModelCatalog = data?._openwebui?.public_model_catalog === true;
+				serverPublicModelCatalogMessage = serverPublicModelCatalog
+					? $i18n.t(
+							"Loaded {{count}} candidate models from the site's public catalog. This list is not verified against the current API key; test selected models before saving.",
+							{ count: availableModels.length }
+						)
+					: '';
 			}
 
 			if (serverModelListRequiresManualEntry) {
@@ -229,16 +260,23 @@
 						duration: 6000
 					}
 				);
+			} else if (serverPublicModelCatalog) {
+				toast.warning(serverPublicModelCatalogMessage, {
+					duration: 8000
+				});
 			} else {
 				toast.success($i18n.t('Found {{count}} models', { count: availableModels.length }));
 			}
 		} catch (error) {
+			modelFetchErrorMessage = describeModelFetchError(error);
 			toast.error($i18n.t('Failed to fetch models'), {
-				description: describeConnectionError(error),
-				duration: 6000
+				description: modelFetchErrorMessage,
+				duration: 8000
 			});
 			availableModels = [];
 			serverModelListRequiresManualEntry = false;
+			serverPublicModelCatalog = false;
+			serverPublicModelCatalogMessage = '';
 		} finally {
 			loading = false;
 		}
@@ -439,6 +477,14 @@
 				</div>
 			</div>
 
+			{#if serverPublicModelCatalog}
+				<div
+					class="mx-4 mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200"
+				>
+					{serverPublicModelCatalogMessage}
+				</div>
+			{/if}
+
 			<div class="max-h-64 overflow-y-auto">
 				{#if groupedModels.length > 0}
 					{#each groupedModels as [group, models]}
@@ -551,6 +597,8 @@
 					<div class="px-4 py-8 text-center text-sm text-gray-500">
 						{#if serverModelListRequiresManualEntry}
 							{$i18n.t('This provider does not expose a model list. Add model IDs manually below.')}
+						{:else if modelFetchErrorMessage}
+							<div class="mx-auto max-w-xl leading-6">{modelFetchErrorMessage}</div>
 						{:else}
 							{$i18n.t('Click refresh button to fetch models from server')}
 						{/if}

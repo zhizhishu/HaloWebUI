@@ -62,6 +62,44 @@ def test_send_openai_image_request_uses_httpx_json(monkeypatch):
     assert captured["post_kwargs"]["files"] is None
 
 
+def test_send_openai_image_request_explains_disconnected_response(monkeypatch):
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            raise images_router.httpx.RemoteProtocolError(
+                "Server disconnected without sending a response."
+            )
+
+    monkeypatch.setattr(images_router.httpx, "AsyncClient", FakeAsyncClient)
+
+    try:
+        asyncio.run(
+            images_router._send_openai_image_request(
+                url="https://relay.example.com/v1/images/edits",
+                headers={"Authorization": "Bearer test"},
+                request_kind="multipart",
+                form_fields={"model": "gpt-image-2", "prompt": "cat"},
+            )
+        )
+        assert False, "expected disconnected response error"
+    except RuntimeError as exc:
+        message = str(exc)
+
+    assert "中转站在返回图片结果前断开连接" in message
+    assert "没有收到 HTTP 响应头" in message
+    assert "当前图片请求是非流式模式" in message
+    assert "打开流式传输后重试" in message
+    assert "Server disconnected without sending a response" in message
+
+
 def test_send_openai_image_request_parses_official_stream(monkeypatch):
     b64_image = base64.b64encode(b"generated" * 32).decode("utf-8")
 
@@ -106,6 +144,73 @@ def test_send_openai_image_request_parses_official_stream(monkeypatch):
 
     assert result["status"] == 200
     assert json.loads(result["response_body"])["data"] == [{"b64_json": b64_image}]
+
+
+def test_send_openai_image_request_parses_responses_completed_stream(monkeypatch):
+    b64_image = base64.b64encode(b"generated" * 32).decode("utf-8")
+
+    class FakeStreamResponse:
+        status_code = 200
+        headers = {"content-type": "text/event-stream"}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def aiter_lines(self):
+            yield (
+                "data: "
+                + json.dumps(
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "output": [
+                                {
+                                    "type": "image_generation_call",
+                                    "result": b64_image,
+                                }
+                            ],
+                            "usage": {"output_tokens": 1},
+                        },
+                    }
+                )
+            )
+            yield "data: [DONE]"
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        def stream(self, method, url, **kwargs):
+            return FakeStreamResponse()
+
+    monkeypatch.setattr(images_router.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = asyncio.run(
+        images_router._send_openai_image_request(
+            url="https://api.openai.com/v1/responses",
+            headers={"Authorization": "Bearer test"},
+            request_kind="json",
+            json_body={
+                "model": "gpt-image-2",
+                "input": [{"role": "user", "content": "cat"}],
+                "stream": True,
+            },
+        )
+    )
+
+    body = json.loads(result["response_body"])
+    assert result["status"] == 200
+    assert body["data"] == [{"b64_json": b64_image}]
+    assert body["usage"] == {"output_tokens": 1}
 
 
 def test_build_openai_image_usage_includes_elapsed_without_upstream_tokens():
@@ -233,10 +338,60 @@ def test_generate_via_openai_images_endpoint_uses_native_request(monkeypatch):
 
     assert captured["request_kind"] == "json"
     assert captured["json_body"]["model"] == "gpt-image-2"
+    assert captured["json_body"]["stream"] is True
+    assert captured["json_body"]["partial_images"] == 1
+    assert "response_format" not in captured["json_body"]
+    assert "size" not in captured["json_body"]
+    assert result == [{"url": "/images/generated.png"}]
+
+
+def test_generate_via_openai_images_endpoint_honors_non_stream_request(monkeypatch):
+    captured = {}
+
+    async def fake_send(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": 200,
+            "headers": {"content-type": "application/json"},
+            "response_body": json.dumps(
+                {
+                    "data": [
+                        {
+                            "b64_json": base64.b64encode(b"generated" * 32).decode("utf-8")
+                        }
+                    ]
+                }
+            ),
+        }
+
+    monkeypatch.setattr(images_router, "_send_openai_image_request", fake_send)
+    monkeypatch.setattr(
+        images_router,
+        "upload_image",
+        lambda request, payload, image_data, content_type, user: "/images/generated.png",
+    )
+
+    result = asyncio.run(
+        images_router._generate_via_openai_images_endpoint(
+            request=SimpleNamespace(),
+            user=_make_user(),
+            model_id="gpt-image-2",
+            prompt="生成一张图",
+            stream=False,
+            n=1,
+            size=None,
+            background=None,
+            source={
+                "base_url": "https://api.openai.com/v1",
+                "key": "sk-test",
+                "api_config": {},
+            },
+        )
+    )
+
     assert "stream" not in captured["json_body"]
     assert "partial_images" not in captured["json_body"]
     assert "response_format" not in captured["json_body"]
-    assert "size" not in captured["json_body"]
     assert result == [{"url": "/images/generated.png"}]
 
 
@@ -285,6 +440,72 @@ def test_generate_via_openai_images_endpoint_uses_configured_size(monkeypatch):
 
     assert captured["json_body"]["model"] == "gpt-image-2"
     assert captured["json_body"]["size"] == "1024x1024"
+
+
+def test_generate_via_openai_images_endpoint_retries_api_key_pool(monkeypatch):
+    calls = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "status": 429,
+                "headers": {"content-type": "application/json"},
+                "response_body": json.dumps({"error": {"message": "rate limit"}}),
+            }
+        return {
+            "status": 200,
+            "headers": {"content-type": "application/json"},
+            "response_body": json.dumps(
+                {
+                    "data": [
+                        {
+                            "b64_json": base64.b64encode(b"generated" * 32).decode("utf-8")
+                        }
+                    ]
+                }
+            ),
+        }
+
+    monkeypatch.setattr(images_router, "_send_openai_image_request", fake_send)
+    monkeypatch.setattr(
+        images_router,
+        "upload_image",
+        lambda request, payload, image_data, content_type, user: "/images/generated.png",
+    )
+
+    result = asyncio.run(
+        images_router._generate_via_openai_images_endpoint(
+            request=SimpleNamespace(),
+            user=_make_user(),
+            model_id="gpt-image-2",
+            prompt="生成一张图",
+            n=1,
+            size=None,
+            background=None,
+            source={
+                "provider": "openai",
+                "base_url": "https://api.openai.com/v1",
+                "key": "sk-a",
+                "api_config": {
+                    "api_key_pool": {
+                        "keys": [
+                            {"id": "a", "label": "A", "key": "sk-a", "enabled": True},
+                            {"id": "b", "label": "B", "key": "sk-b", "enabled": True},
+                        ],
+                        "mode": "priority",
+                        "retry": {"enabled": True},
+                    }
+                },
+                "connection_index": 0,
+            },
+        )
+    )
+
+    assert result == [{"url": "/images/generated.png"}]
+    assert len(calls) == 2
+    assert calls[0]["headers"]["Authorization"] == "Bearer sk-a"
+    assert calls[1]["headers"]["Authorization"] == "Bearer sk-b"
 
 
 def test_generate_via_openai_images_endpoint_splits_batch_into_single_requests(monkeypatch):
@@ -336,10 +557,11 @@ def test_generate_via_openai_images_endpoint_splits_batch_into_single_requests(m
     assert len(calls) == 3
     assert [call["json_body"]["n"] for call in calls] == [1, 1, 1]
     assert all(call["json_body"]["size"] == "1024x1024" for call in calls)
+    assert all(call["json_body"]["stream"] is True for call in calls)
     assert result == [
-        {"url": "/images/generated-1.png"},
-        {"url": "/images/generated-2.png"},
-        {"url": "/images/generated-3.png"},
+        {"url": "/images/generated-1.png", "slot_index": 0},
+        {"url": "/images/generated-2.png", "slot_index": 1},
+        {"url": "/images/generated-3.png", "slot_index": 2},
     ]
 
 
@@ -434,8 +656,8 @@ def test_generate_via_openai_images_endpoint_strips_connection_prefix(monkeypatc
     )
 
     assert captured["json_body"]["model"] == "gpt-image-2"
-    assert "stream" not in captured["json_body"]
-    assert "partial_images" not in captured["json_body"]
+    assert captured["json_body"]["stream"] is True
+    assert captured["json_body"]["partial_images"] == 1
     assert "response_format" not in captured["json_body"]
 
 
@@ -600,10 +822,11 @@ def test_generate_via_openai_image_edits_endpoint_splits_batch_into_single_reque
     assert len(calls) == 2
     assert [call["form_fields"]["n"] for call in calls] == [1, 1]
     assert all(call["form_fields"]["size"] == "1536x1024" for call in calls)
+    assert all(call["form_fields"]["stream"] is True for call in calls)
     assert all(call["files"][0]["field_name"] == "image" for call in calls)
     assert result == [
-        {"url": "/images/edited-1.png"},
-        {"url": "/images/edited-2.png"},
+        {"url": "/images/edited-1.png", "slot_index": 0},
+        {"url": "/images/edited-2.png", "slot_index": 1},
     ]
 
 

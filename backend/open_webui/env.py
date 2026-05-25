@@ -258,7 +258,7 @@ if FROM_INIT_PY:
 
 STATIC_DIR = Path(os.getenv("STATIC_DIR", OPEN_WEBUI_DIR / "static"))
 
-FONTS_DIR = Path(os.getenv("FONTS_DIR", OPEN_WEBUI_DIR / "static" / "fonts"))
+FONTS_DIR = Path(os.getenv("FONTS_DIR", OPEN_WEBUI_DIR / "fonts"))
 
 FRONTEND_BUILD_DIR = Path(os.getenv("FRONTEND_BUILD_DIR", BASE_DIR / "build")).resolve()
 
@@ -493,12 +493,12 @@ MCP_STDIO_ALLOWED_COMMANDS = os.environ.get(
     "npx,node,python,python3,uvx,uv,deno",
 )
 
-MCP_TOOL_CALL_TIMEOUT = os.environ.get("MCP_TOOL_CALL_TIMEOUT", "30")
+MCP_TOOL_CALL_TIMEOUT = os.environ.get("MCP_TOOL_CALL_TIMEOUT", "300")
 
 try:
     MCP_TOOL_CALL_TIMEOUT = int(MCP_TOOL_CALL_TIMEOUT)
 except Exception:
-    MCP_TOOL_CALL_TIMEOUT = 30
+    MCP_TOOL_CALL_TIMEOUT = 300
 
 ####################################
 # TOOL SERVER SSL

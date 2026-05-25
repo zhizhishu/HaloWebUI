@@ -38,6 +38,7 @@
 	} from '$lib/utils';
 	import { WEBUI_BASE_URL } from '$lib/constants';
 	import { translateWithDefault } from '$lib/i18n';
+	import { resolveCopyFormattedPreference } from '$lib/utils/copy-format';
 	import { saveUserSettingsPatch } from '$lib/utils/user-settings';
 
 	import Name from './Name.svelte';
@@ -66,7 +67,8 @@
 		AlignLeft,
 		Lightbulb,
 		Globe,
-		ArrowRight
+		ArrowRight,
+		CircleAlert
 	} from 'lucide-svelte';
 	import { DropdownMenu } from 'bits-ui';
 	import { flyAndScale } from '$lib/utils/transitions';
@@ -108,6 +110,9 @@
 			path?: string;
 			source?: string;
 			generated?: boolean;
+			status?: string;
+			slot_index?: number;
+			error?: string;
 			[key: string]: unknown;
 		}[];
 		timestamp: number;
@@ -116,6 +121,12 @@
 			done: boolean;
 			action: string;
 			description: string;
+			hidden?: boolean;
+			error?: boolean;
+			warning?: boolean;
+			count?: number;
+			failed?: number;
+			total?: number;
 			urls?: string[];
 			query?: string;
 		}[];
@@ -123,10 +134,18 @@
 			done: boolean;
 			action: string;
 			description: string;
+			hidden?: boolean;
+			error?: boolean;
+			warning?: boolean;
+			count?: number;
+			failed?: number;
+			total?: number;
 			urls?: string[];
 			query?: string;
 		};
 		done: boolean;
+		stopped?: boolean;
+		stoppedByUser?: boolean;
 		completedAt?: number;
 		usage?: Record<string, unknown>;
 		error?:
@@ -163,6 +182,7 @@
 			usage?: unknown;
 		};
 	}
+	type MessageFile = NonNullable<MessageType['files']>[number];
 
 	export let chatId = '';
 	export let history;
@@ -216,6 +236,113 @@
 	$: visibleMessageFiles = (message?.files ?? []).filter(
 		(file) => file?.source !== 'code_interpreter' && file?.generated !== true
 	);
+	const isImageGenerationResultFile = (file: MessageFile) =>
+		file?.source === 'image_generation' || file?.type === 'image_generation_error';
+	const imageGenerationSlotNumber = (file: MessageFile, index: number) => {
+		const rawSlotIndex = Number(file?.slot_index);
+		return Number.isFinite(rawSlotIndex) ? rawSlotIndex + 1 : index + 1;
+	};
+	const imageGenerationErrorText = (file: MessageFile) => {
+		if (file?.error_code === 'missing_image_result') {
+			return tr('上游没有返回这张图片。', 'The upstream did not return this image.');
+		}
+		const text = `${file?.error ?? ''}`.trim();
+		return text || tr('图片生成失败', 'Image generation failed');
+	};
+	const normalizeImageGenerationSlotCount = (value: unknown, fallback = 1) => {
+		const parsed = Number(value);
+		const count = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+		return Math.max(1, Math.min(Math.floor(count), 4));
+	};
+	const imageGenerationGridColumns = (slotCount: number) => {
+		if (slotCount <= 1) {
+			return 1;
+		}
+		if (slotCount === 3) {
+			return 3;
+		}
+		return 2;
+	};
+	const imageGenerationGridStyle = (slotCount: number) => {
+		const columns = imageGenerationGridColumns(slotCount);
+		const maxWidth = slotCount === 1 ? 280 : slotCount === 3 ? 660 : 560;
+		return `grid-template-columns: repeat(${columns}, minmax(0, 1fr)); max-width: ${maxWidth}px;`;
+	};
+	const getImageGenerationStatusSlotCount = (
+		statuses: NonNullable<MessageType['statusHistory']>
+	) => {
+		for (let index = statuses.length - 1; index >= 0; index -= 1) {
+			const status = statuses[index];
+			if (!status?.hidden && status?.action === 'image_generation') {
+				const rawCount = status?.total ?? status?.count;
+				const parsed = Number(rawCount);
+				if (Number.isFinite(parsed) && parsed > 0) {
+					return parsed;
+				}
+			}
+		}
+		return null;
+	};
+	const getImageGenerationHighestResultSlot = (files: MessageFile[]) =>
+		files.reduce((highest, file, index) => {
+			const rawSlotIndex = Number(file?.slot_index);
+			const slotIndex = Number.isFinite(rawSlotIndex) ? rawSlotIndex : index;
+			return Math.max(highest, slotIndex);
+		}, -1);
+	const buildImageGenerationResultSlots = (files: MessageFile[], slotCount: number) => {
+		const count = normalizeImageGenerationSlotCount(slotCount, files.length || 1);
+		const slots: (MessageFile | null)[] = Array.from({ length: count }, () => null);
+		let nextAvailableSlot = 0;
+
+		for (const file of files) {
+			const rawSlotIndex = Number(file?.slot_index);
+			let slotIndex = Number.isFinite(rawSlotIndex) ? rawSlotIndex : -1;
+			if (slotIndex < 0 || slotIndex >= count) {
+				while (nextAvailableSlot < count && slots[nextAvailableSlot] !== null) {
+					nextAvailableSlot += 1;
+				}
+				slotIndex = nextAvailableSlot;
+			}
+			if (slotIndex >= 0 && slotIndex < count) {
+				slots[slotIndex] = file;
+			}
+		}
+
+		return slots;
+	};
+	const getActiveImageGenerationStatus = (statuses: NonNullable<MessageType['statusHistory']>) => {
+		for (let index = statuses.length - 1; index >= 0; index -= 1) {
+			const status = statuses[index];
+			if (!status?.hidden && status?.action === 'image_generation' && status?.done === false) {
+				return status;
+			}
+		}
+		return null;
+	};
+	$: imageGenerationResultFiles = visibleMessageFiles
+		.filter(isImageGenerationResultFile)
+		.sort((a, b) => Number(a?.slot_index ?? 0) - Number(b?.slot_index ?? 0));
+	$: imageGenerationStatusSlotCount = getImageGenerationStatusSlotCount(
+		message?.statusHistory ?? [...(message?.status ? [message?.status] : [])]
+	);
+	$: imageGenerationHighestResultSlot =
+		getImageGenerationHighestResultSlot(imageGenerationResultFiles);
+	$: imageGenerationResultSlotCount = normalizeImageGenerationSlotCount(
+		imageGenerationStatusSlotCount ??
+			Math.max(imageGenerationResultFiles.length, imageGenerationHighestResultSlot + 1),
+		1
+	);
+	$: imageGenerationResultSlots = buildImageGenerationResultSlots(
+		imageGenerationResultFiles,
+		imageGenerationResultSlotCount
+	);
+	$: showImageGenerationResultGrid =
+		imageGenerationResultFiles.length > 0 &&
+		(imageGenerationResultSlotCount > 1 ||
+			imageGenerationResultFiles.some((file) => file?.type === 'image_generation_error'));
+	$: otherVisibleMessageFiles = visibleMessageFiles.filter(
+		(file) => !showImageGenerationResultGrid || !isImageGenerationResultFile(file)
+	);
 	$: hasVisibleMessageFiles = messageHasVisibleFiles(message?.files);
 	$: renderableMessageError = getRenderableMessageError(message?.error, message?.files);
 	$: hasAnyThinkingOutput =
@@ -244,6 +371,15 @@
 	);
 	$: hasActiveImageGenerationStatus = displayStatusHistory.some(
 		(status) => !status?.hidden && status?.action === 'image_generation' && status?.done === false
+	);
+	$: activeImageGenerationStatus = getActiveImageGenerationStatus(displayStatusHistory);
+	$: pendingImageGenerationSlotCount = normalizeImageGenerationSlotCount(
+		activeImageGenerationStatus?.total ?? activeImageGenerationStatus?.count,
+		1
+	);
+	$: pendingImageGenerationSlots = Array.from(
+		{ length: pendingImageGenerationSlotCount },
+		(_, index) => index
 	);
 	$: showImageGenerationPlaceholder =
 		hasActiveImageGenerationStatus &&
@@ -329,11 +465,6 @@
 	let showRegenerateConfirm = false;
 	let showRegenerateMenu = false;
 	let regenerateInput = '';
-
-	type RenderedCopyPayload = {
-		text: string;
-		html?: string;
-	};
 
 	$: modelSupportsThinking = model?.info?.meta?.capabilities?.reasoning ?? false;
 
@@ -468,30 +599,10 @@
 		);
 	};
 
-	const writeRenderedCopyPayload = async (payload: RenderedCopyPayload) => {
-		if (($settings?.copyFormatted ?? false) && payload.html) {
-			try {
-				const data = new ClipboardItem({
-					'text/html': new Blob([payload.html], { type: 'text/html' }),
-					'text/plain': new Blob([payload.text], { type: 'text/plain' })
-				});
-				await navigator.clipboard.write([data]);
-				return true;
-			} catch (error) {
-				console.error('Failed to copy rendered HTML content:', error);
-			}
-		}
-
-		return await _copyToClipboard(payload.text, $settings?.copyFormatted ?? false);
-	};
-
 	const copyToClipboard = async (text) => {
 		text = removeAllDetails(text);
 
-		const renderedPayload = contentRendererRef?.getCopyPayload?.();
-		const res = renderedPayload
-			? await writeRenderedCopyPayload(renderedPayload)
-			: await _copyToClipboard(text, $settings?.copyFormatted ?? false);
+		const res = await _copyToClipboard(text, resolveCopyFormattedPreference($settings));
 
 		if (res) {
 			toast.success($i18n.t('Copying to clipboard was successful!'));
@@ -1042,6 +1153,7 @@
 															{$i18n.t(status?.description, {
 																count: status?.count ?? status?.urls?.length ?? 0,
 																failed: status?.failed ?? 0,
+																total: status?.total,
 																searchQuery: status?.query
 															})}
 														{:else if status?.description === 'No search query generated'}
@@ -1052,6 +1164,7 @@
 															{$i18n.t(status?.description, {
 																count: status?.count,
 																failed: status?.failed ?? 0,
+																total: status?.total,
 																searchQuery: status?.query
 															})}
 														{/if}
@@ -1110,6 +1223,7 @@
 														{$i18n.t(status?.description, {
 															count: status?.count,
 															failed: status?.failed ?? 0,
+															total: status?.total,
 															searchQuery: status?.query
 														})}
 													{/if}
@@ -1121,9 +1235,78 @@
 							{/if}
 						{/if}
 
-						{#if visibleMessageFiles.filter((f) => f.type === 'image').length > 0}
+						{#if showImageGenerationResultGrid}
+							<div
+								class="my-2 grid w-full gap-2"
+								style={imageGenerationGridStyle(imageGenerationResultSlotCount)}
+								aria-label={tr('图片生成结果', 'Image generation results')}
+							>
+									{#each imageGenerationResultSlots as file, index}
+										<div
+											class="min-w-0 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-900"
+										>
+											<div class="relative aspect-[4/5] bg-gray-100 dark:bg-gray-950">
+												{#if file?.type === 'image' && file.url}
+													<Image
+														src={file.url}
+														alt={`${tr('第 {{index}} 张', 'Image {{index}}', {
+															index: imageGenerationSlotNumber(file, index)
+														})}`}
+														className="h-full w-full outline-hidden focus:outline-hidden"
+														imageClassName="h-full w-full object-contain"
+													/>
+												{:else if file}
+													<div
+														class="flex h-full w-full flex-col justify-between gap-3 bg-red-50 p-3 text-red-800 dark:bg-red-950/30 dark:text-red-200"
+													>
+													<div class="flex items-center gap-2 text-sm font-medium">
+														<CircleAlert className="size-4 shrink-0" strokeWidth="1.9" />
+														<span>{tr('生成失败', 'Failed')}</span>
+													</div>
+													<div class="min-h-0 overflow-y-auto text-xs leading-5 break-words">
+														{imageGenerationErrorText(file)}
+													</div>
+													<div class="text-[11px] text-red-600/80 dark:text-red-300/80">
+														{tr('第 {{index}} 张', 'Image {{index}}', {
+															index: imageGenerationSlotNumber(file, index)
+															})}
+														</div>
+													</div>
+												{:else}
+													<div
+														class="image-generation-placeholder relative h-full w-full overflow-hidden bg-gray-50 dark:bg-gray-900"
+													>
+														<div class="absolute inset-0 image-generation-sweep" />
+														<div
+															class="absolute inset-0 flex flex-col items-center justify-center gap-3 px-3 text-center"
+														>
+															<div
+																class="flex size-10 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 shadow-sm dark:border-gray-700 dark:bg-gray-850 dark:text-gray-300"
+															>
+																<Sparkles className="size-5" strokeWidth="1.8" />
+															</div>
+															<div class="space-y-1">
+																<div class="text-sm font-medium text-gray-700 dark:text-gray-200">
+																	{tr('图片正在生成', 'Generating image')}
+																</div>
+																<div class="text-xs text-gray-500 dark:text-gray-400">
+																	{tr('第 {{index}} 张', 'Image {{index}}', {
+																		index: index + 1
+																	})}
+																</div>
+															</div>
+														</div>
+													</div>
+												{/if}
+											</div>
+										</div>
+								{/each}
+							</div>
+						{/if}
+
+						{#if otherVisibleMessageFiles.filter((f) => f.type === 'image').length > 0}
 							<div class="my-1 flex overflow-x-auto gap-2 flex-wrap">
-								{#each visibleMessageFiles as file}
+								{#each otherVisibleMessageFiles as file}
 									<div>
 										{#if file.type === 'image'}
 											<Image
@@ -1241,32 +1424,37 @@
 										id="response-content-container"
 									>
 										{#if showImageGenerationPlaceholder}
-											<div class="my-2 w-full max-w-[420px] select-none" aria-live="polite">
-												<div
-													class="image-generation-placeholder relative aspect-[4/3] overflow-hidden rounded-lg border border-gray-200/80 bg-gray-50 dark:border-gray-700/70 dark:bg-gray-900"
-												>
-													<div class="absolute inset-0 image-generation-sweep" />
+											<div
+												class="my-2 grid w-full select-none gap-2"
+												style={imageGenerationGridStyle(pendingImageGenerationSlotCount)}
+												aria-live="polite"
+											>
+												{#each pendingImageGenerationSlots as slotIndex}
 													<div
-														class="absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center"
+														class="image-generation-placeholder relative aspect-[4/5] overflow-hidden rounded-lg border border-gray-200/80 bg-gray-50 dark:border-gray-700/70 dark:bg-gray-900"
 													>
+														<div class="absolute inset-0 image-generation-sweep" />
 														<div
-															class="flex size-12 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 shadow-sm dark:border-gray-700 dark:bg-gray-850 dark:text-gray-300"
+															class="absolute inset-0 flex flex-col items-center justify-center gap-3 px-3 text-center"
 														>
-															<Sparkles className="size-5" strokeWidth="1.8" />
-														</div>
-														<div class="space-y-1">
-															<div class="text-sm font-medium text-gray-700 dark:text-gray-200">
-																{tr('图片正在生成', 'Generating image')}
+															<div
+																class="flex size-10 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-500 shadow-sm dark:border-gray-700 dark:bg-gray-850 dark:text-gray-300"
+															>
+																<Sparkles className="size-5" strokeWidth="1.8" />
 															</div>
-															<div class="text-xs text-gray-500 dark:text-gray-400">
-																{tr(
-																	'请稍候，完成后会显示最终图片',
-																	'The final image will appear here'
-																)}
+															<div class="space-y-1">
+																<div class="text-sm font-medium text-gray-700 dark:text-gray-200">
+																	{tr('图片正在生成', 'Generating image')}
+																</div>
+																<div class="text-xs text-gray-500 dark:text-gray-400">
+																	{tr('第 {{index}} 张', 'Image {{index}}', {
+																		index: slotIndex + 1
+																	})}
+																</div>
 															</div>
 														</div>
 													</div>
-												</div>
+												{/each}
 											</div>
 										{:else if showInitialThinkingIndicator}
 											<!-- Keep the waiting indicator visible even before backend status steps arrive -->
@@ -1277,12 +1465,20 @@
 										{/if}
 
 										{#if message.content === '' && message.done && !renderableMessageError && !hasVisibleMessageFiles}
-											<!-- Empty response: model returned 0 tokens without error -->
-											<Error
-												content={$i18n.t(
-													'Model returned an empty response. Try resending or switching models.'
-												)}
-											/>
+											{#if message.stopped || message.stoppedByUser}
+												<div
+													class="status-description flex items-center gap-1.5 py-1 text-[13px] leading-5 text-gray-500 dark:text-gray-400"
+												>
+													{$i18n.t('Response stopped.')}
+												</div>
+											{:else}
+												<!-- Empty response: model returned 0 tokens without error -->
+												<Error
+													content={$i18n.t(
+														'Model returned an empty response. Try resending or switching models.'
+													)}
+												/>
+											{/if}
 										{:else if message.content && message.error !== true}
 											<!-- always show message contents even if there's an error -->
 											<!-- unless message.error === true which is legacy error handling, where the error message is stored in message.content -->

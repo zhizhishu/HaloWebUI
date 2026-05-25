@@ -104,6 +104,8 @@
 		resolveConfiguredDefaultWebSearchMode
 	} from '$lib/utils/native-web-search';
 	import { filterAvailableToolIds } from '$lib/utils/tool-selection';
+	import { hasVisibleMessageFiles as messageHasVisibleFiles } from '$lib/utils/chat-message-errors';
+	import { hasActiveChatResponse } from '$lib/utils/chat-response-state';
 
 	import { generateChatCompletion } from '$lib/apis/ollama';
 	import {
@@ -188,14 +190,20 @@
 	const buildImageDataUrl = (mimeType: string, data: string) => `data:${mimeType};base64,${data}`;
 	const mergeMessageFiles = (existing: any[] = [], incoming: any[] = []) => {
 		const merged = [];
-		const seen = new Set<string>();
+		const seen = new Map<string, number>();
 
 		for (const file of [...existing, ...incoming]) {
 			if (!file || typeof file !== 'object') continue;
 			const normalized = JSON.parse(JSON.stringify(file));
-			const key = JSON.stringify(normalized);
-			if (seen.has(key)) continue;
-			seen.add(key);
+			const id = typeof normalized.id === 'string' ? normalized.id.trim() : '';
+			const url = typeof normalized.url === 'string' ? normalized.url.trim() : '';
+			const key = id ? `id:${id}` : url ? `url:${url}` : JSON.stringify(normalized);
+			const existingIndex = seen.get(key);
+			if (existingIndex !== undefined) {
+				merged[existingIndex] = { ...merged[existingIndex], ...normalized };
+				continue;
+			}
+			seen.set(key, merged.length);
 			merged.push(normalized);
 		}
 
@@ -846,6 +854,7 @@
 	}
 
 	let taskIds = null;
+	let stoppedResponseMessageIds = new Set<string>();
 	let messageQueue: { id: string; prompt: string; files: any[] }[] = [];
 	let branchingMessageId: string | null = null;
 
@@ -2317,7 +2326,25 @@
 				const type = event?.data?.type ?? null;
 				const data = event?.data?.data ?? null;
 
-				if (type === 'status') {
+				if (type === 'task-cancelled') {
+					await markResponseMessagesStopped(message.id);
+				} else if (
+					(isResponseStopped(message) || stoppedResponseMessageIds.has(message.id)) &&
+					[
+						'chat:message:delta',
+						'message',
+						'chat:message',
+						'replace',
+						'chat:message:files',
+						'files',
+						'chat:message:follow_ups',
+						'source',
+						'citation',
+						'status'
+					].includes(type)
+				) {
+					return;
+				} else if (type === 'status') {
 					if (message?.statusHistory) {
 						message.statusHistory.push(data);
 					} else {
@@ -2342,8 +2369,6 @@
 					}
 				} else if (type === 'chat:title') {
 					chatTitle.set(data);
-					currentChatPage.set(1);
-					await chats.set(await getChatList(localStorage.token, $currentChatPage));
 				} else if (type === 'chat:tags') {
 					chat = await getChatById(localStorage.token, $chatId);
 					allTags.set(await getAllTags(localStorage.token));
@@ -3281,13 +3306,14 @@
 
 		if (hasPendingTask) {
 			for (const [messageId, message] of Object.entries(history.messages)) {
-				if (message?.role === 'assistant' && message.done === false) {
+				if (message?.role === 'assistant' && message.done === false && !isResponseStopped(message)) {
 					pendingAssistantIds.add(messageId);
 				}
 			}
 
 			const currentMessage = history.currentId ? history.messages[history.currentId] : null;
-			if (currentMessage?.role === 'assistant') {
+			const currentMessageStopped = isResponseStopped(currentMessage);
+			if (currentMessage?.role === 'assistant' && !currentMessageStopped) {
 				pendingAssistantIds.add(currentMessage.id);
 
 				const parentMessage = currentMessage.parentId
@@ -3295,15 +3321,15 @@
 					: null;
 				for (const siblingId of parentMessage?.childrenIds ?? []) {
 					const sibling = history.messages[siblingId];
-					if (sibling?.role === 'assistant' && sibling.done !== true) {
+					if (sibling?.role === 'assistant' && sibling.done !== true && !isResponseStopped(sibling)) {
 						pendingAssistantIds.add(siblingId);
 					}
 				}
 			}
 
-			if (pendingAssistantIds.size === 0) {
+			if (pendingAssistantIds.size === 0 && !currentMessageStopped) {
 				const latestAssistantEntry = Object.entries(history.messages)
-					.filter(([, message]) => message?.role === 'assistant')
+					.filter(([, message]) => message?.role === 'assistant' && !isResponseStopped(message))
 					.sort(([, a], [, b]) => (a?.timestamp ?? 0) - (b?.timestamp ?? 0))
 					.at(-1);
 
@@ -3312,22 +3338,29 @@
 				}
 			}
 		}
+		const hasActivePendingResponse = hasPendingTask && pendingAssistantIds.size > 0;
 
 		for (const [messageId, message] of Object.entries(history.messages)) {
 			if (message?.role !== 'assistant') {
 				continue;
 			}
 
-			if (hasPendingTask && pendingAssistantIds.has(messageId)) {
+			if (hasActivePendingResponse && pendingAssistantIds.has(messageId)) {
 				message.done = false;
+			} else if (!hasActivePendingResponse && isUnresolvedEmptyAssistantMessage(message)) {
+				markUnresolvedEmptyAssistantMessage(message);
 			} else {
 				message.done = true;
 			}
 		}
 
+		if (!hasActivePendingResponse) {
+			taskIds = null;
+		}
+
 		activeChatIds.update((ids) => {
 			const next = new Set(ids);
-			if (hasPendingTask && $chatId) {
+			if (hasActivePendingResponse && $chatId) {
 				next.add($chatId);
 			} else {
 				next.delete($chatId);
@@ -3350,27 +3383,7 @@
 	};
 
 	const isStreamingResponseActive = () => {
-		if (Array.isArray(taskIds) && taskIds.length > 0) {
-			return true;
-		}
-
-		if (!history.currentId) {
-			return false;
-		}
-
-		const currentMessage = history.messages?.[history.currentId];
-		if (!currentMessage) {
-			return false;
-		}
-
-		if (currentMessage.role === 'assistant') {
-			return currentMessage.done !== true;
-		}
-
-		return (currentMessage.childrenIds ?? []).some((messageId) => {
-			const childMessage = history.messages?.[messageId];
-			return childMessage?.role === 'assistant' && childMessage?.done !== true;
-		});
+		return hasActiveChatResponse(history, taskIds);
 	};
 
 	const shouldAutoScrollOnStreaming = () => {
@@ -4125,8 +4138,121 @@
 		pendingGeminiImages.delete(messageId);
 	};
 
+	const getHistoryMessage = (messageId: string | null | undefined) =>
+		messageId ? ((history.messages ?? {}) as Record<string, any>)?.[messageId] : null;
+
+	const isResponseStopped = (message: any) => message?.stopped === true || message?.stoppedByUser === true;
+
+	const isUnresolvedEmptyAssistantMessage = (message: any) => {
+		if (message?.role !== 'assistant' || isResponseStopped(message)) {
+			return false;
+		}
+
+		if (`${message?.content ?? ''}`.trim() || message?.error || message?.completedAt) {
+			return false;
+		}
+
+		if (messageHasVisibleFiles(message?.files)) {
+			return false;
+		}
+
+		const statuses = Array.isArray(message?.statusHistory)
+			? message.statusHistory
+			: message?.status
+				? [message.status]
+				: [];
+
+		return statuses.some((status) => status?.done === false && !status?.hidden);
+	};
+
+	const markUnresolvedEmptyAssistantMessage = (message: any) => {
+		message.done = true;
+		message.error = {
+			type: 'generation_interrupted',
+			title: $i18n.t('Generation was interrupted. Please retry.'),
+			body: $i18n.t(
+				'This reply started but did not receive a final response from the backend. It has been closed so the chat will not stay stuck.'
+			),
+			content: $i18n.t('Generation was interrupted. Please retry.'),
+			reasons: ['api_upstream_error', 'proxy_error'],
+			suggestion: 'retry_or_switch'
+		};
+	};
+
+	const markResponseMessagesStopped = async (targetMessageId: string | null = null) => {
+		const currentMessage = targetMessageId
+			? getHistoryMessage(targetMessageId)
+			: history.currentId
+				? getHistoryMessage(history.currentId)
+				: null;
+		const responseMessageIds = new Set<string>();
+		const messages = (history.messages ?? {}) as Record<string, any>;
+
+		if (currentMessage?.role === 'assistant') {
+			if (targetMessageId || currentMessage.done !== true || isResponseStopped(currentMessage)) {
+				responseMessageIds.add(currentMessage.id);
+			}
+
+			const parentMessage = getHistoryMessage(currentMessage.parentId);
+			for (const siblingId of parentMessage?.childrenIds ?? []) {
+				const sibling = getHistoryMessage(siblingId);
+				if (sibling?.role === 'assistant' && sibling.done !== true && !isResponseStopped(sibling)) {
+					responseMessageIds.add(siblingId);
+				}
+			}
+		} else {
+			for (const childId of currentMessage?.childrenIds ?? []) {
+				const child = getHistoryMessage(childId);
+				if (child?.role === 'assistant' && child.done !== true && !isResponseStopped(child)) {
+					responseMessageIds.add(childId);
+				}
+			}
+		}
+
+		if (responseMessageIds.size === 0) {
+			return;
+		}
+
+		const completedAt = Date.now() / 1000;
+		for (const messageId of responseMessageIds) {
+			const message = getHistoryMessage(messageId);
+			if (!message) continue;
+
+			stoppedResponseMessageIds.add(messageId);
+			await releaseResponseAnimationController(messageId);
+			clearPendingGeminiImages(messageId, true);
+
+			messages[messageId] = {
+				...message,
+				done: true,
+				stopped: true,
+				stoppedByUser: true,
+				completedAt
+			};
+		}
+		stoppedResponseMessageIds = new Set(stoppedResponseMessageIds);
+		history = history;
+
+		activeChatIds.update((ids) => {
+			const next = new Set(ids);
+			next.delete($chatId);
+			return next;
+		});
+
+		if ($chatId && $chatId !== 'local') {
+			await saveChatHandler($chatId, history);
+		}
+	};
+
 	const chatCompletionEventHandler = async (data, message, chatId) => {
 		const { id, done, choices, content, sources, error, usage, files } = data;
+		if (isResponseStopped(message) || stoppedResponseMessageIds.has(message?.id)) {
+			if (done) {
+				stoppedResponseMessageIds.delete(message.id);
+				stoppedResponseMessageIds = new Set(stoppedResponseMessageIds);
+			}
+			return;
+		}
 
 		if (files) {
 			message.files = mergeMessageFiles(message.files, files);
@@ -4312,9 +4438,8 @@
 			return;
 		}
 
-		const hasPendingTask = Array.isArray(taskIds) && taskIds.length > 0;
-		const hasRunningResponse = messages.length !== 0 && messages.at(-1).done != true;
-		if (hasPendingTask || hasRunningResponse) {
+		const hasRunningResponse = isStreamingResponseActive();
+		if (hasRunningResponse) {
 			if ($settings?.enableMessageQueue ?? true) {
 				const queuedFiles = validFiles.map((file) => normalizeInputFileForMessage(file));
 				if (failedFiles.length > 0) {
@@ -4593,9 +4718,9 @@
 		await tick();
 
 		const stream =
+			params?.stream_response ??
 			model?.info?.params?.stream_response ??
 			$settings?.params?.stream_response ??
-			params?.stream_response ??
 			true;
 
 		let messages = [
@@ -4843,10 +4968,17 @@
 		if (res) {
 			if (res.error) {
 				await handleOpenAIError(res.error, responseMessage);
+			} else if (stoppedResponseMessageIds.has(responseMessageId) || isResponseStopped(responseMessage)) {
+				if (res.task_id) {
+					await stopTask(localStorage.token, res.task_id).catch((error) => {
+						toast.error(`${error}`);
+						return null;
+					});
+				}
 			} else {
-				if (taskIds) {
+				if (res.task_id && taskIds) {
 					taskIds.push(res.task_id);
-				} else {
+				} else if (res.task_id) {
 					taskIds = [res.task_id];
 				}
 			}
@@ -5214,28 +5346,22 @@
 	};
 
 	const stopResponse = async () => {
-		if (taskIds) {
-			for (const taskId of taskIds) {
+		const currentTaskIds = Array.isArray(taskIds) ? [...taskIds] : [];
+
+		await markResponseMessagesStopped();
+		taskIds = null;
+
+		for (const taskId of currentTaskIds) {
+			if (taskId) {
 				const res = await stopTask(localStorage.token, taskId).catch((error) => {
 					toast.error(`${error}`);
 					return null;
 				});
 			}
+		}
 
-			taskIds = null;
-
-			const responseMessage = history.messages[history.currentId];
-			// Set all response messages to done
-			for (const messageId of history.messages[responseMessage.parentId].childrenIds) {
-				history.messages[messageId].done = true;
-				history.messages[messageId].completedAt = Date.now() / 1000;
-			}
-
-			history.messages[history.currentId] = responseMessage;
-
-			if (autoScroll) {
-				scrollToBottom();
-			}
+		if (autoScroll) {
+			scrollToBottom();
 		}
 	};
 
