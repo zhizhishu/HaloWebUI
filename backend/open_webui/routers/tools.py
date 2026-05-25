@@ -27,7 +27,10 @@ from open_webui.utils.access_control import (
 )
 from open_webui.env import SRC_LOG_LEVELS
 
-from open_webui.utils.tools import get_tool_servers_data
+from open_webui.utils.tools import (
+    build_local_connection_tool_id_map,
+    get_tool_servers_data,
+)
 from open_webui.utils.mcp import (
     get_mcp_server_display_metadata,
     get_mcp_servers_cached_meta,
@@ -119,12 +122,18 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
                 if (server.get("config") or {}).get("enable", True)
             ]
 
+    tool_server_ids = build_local_connection_tool_id_map(
+        "openapi", tool_server_connections
+    )
+    mcp_server_ids = build_local_connection_tool_id_map("mcp", mcp_server_connections)
+
     for server in tool_servers_data:
+        tool_id = tool_server_ids.get(server["idx"], f"server:{server['idx']}")
         tools.append(
             ToolUserResponse(
                 **{
-                    "id": f"server:{server['idx']}",
-                    "user_id": f"server:{server['idx']}",
+                    "id": tool_id,
+                    "user_id": tool_id,
                     "name": server["openapi"]
                     .get("info", {})
                     .get("title", "Tool Server"),
@@ -141,6 +150,7 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
         )
 
     for server in mcp_servers_data:
+        tool_id = mcp_server_ids.get(server["idx"], f"mcp:{server['idx']}")
         transport_type = str(server.get("transport_type") or "http").lower()
         server_info = server.get("server_info", {}) or {}
         server_version = server_info.get("version")
@@ -162,8 +172,8 @@ async def get_tools(request: Request, user=Depends(get_verified_user)):
         tools.append(
             ToolUserResponse(
                 **{
-                    "id": f"mcp:{server['idx']}",
-                    "user_id": f"mcp:{server['idx']}",
+                    "id": tool_id,
+                    "user_id": tool_id,
                     "name": server_name,
                     "meta": {
                         "description": server_description,

@@ -1,6 +1,10 @@
 import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
+import hashlib
+import json
+import re
+import uuid
 from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -48,6 +52,77 @@ from open_webui.utils.shared_tool_servers import (
 
 
 router = APIRouter()
+
+CONNECTION_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+
+def _normalize_connection_id(value: Any) -> str:
+    connection_id = str(value or "").strip()
+    return connection_id if CONNECTION_ID_RE.match(connection_id) else ""
+
+
+def _connection_identity_signature(connection: dict) -> str:
+    transport_type = str(connection.get("transport_type") or "openapi").lower()
+    if transport_type == "stdio":
+        payload = {
+            "kind": "mcp_stdio",
+            "command": str(connection.get("command") or "").strip(),
+            "args": [str(item) for item in (connection.get("args") or [])],
+        }
+    elif transport_type == "http":
+        payload = {
+            "kind": "mcp_http",
+            "url": str(connection.get("url") or "").rstrip("/"),
+            "auth_type": str(connection.get("auth_type") or "none").lower(),
+        }
+    else:
+        payload = {
+            "kind": "openapi",
+            "url": str(connection.get("url") or "").rstrip("/"),
+            "path": str(connection.get("path") or "openapi.json").strip() or "openapi.json",
+            "auth_type": str(connection.get("auth_type") or "bearer").lower(),
+        }
+
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _assign_stable_connection_ids(
+    previous_connections: list[dict],
+    next_connections: list[dict],
+) -> list[dict]:
+    """Ensure local tool-server selections survive edits without relying on indexes."""
+
+    assigned: list[dict] = []
+    seen: set[str] = set()
+    previous_ids_by_signature: dict[str, list[str]] = {}
+    for previous in previous_connections:
+        previous_id = _normalize_connection_id((previous or {}).get("id"))
+        if not previous_id:
+            continue
+        signature = _connection_identity_signature(previous or {})
+        previous_ids_by_signature.setdefault(signature, []).append(previous_id)
+
+    for connection in next_connections:
+        payload = deepcopy(connection)
+        connection_id = _normalize_connection_id(payload.get("id"))
+        if not connection_id:
+            signature = _connection_identity_signature(payload)
+            candidates = [
+                value
+                for value in previous_ids_by_signature.get(signature, [])
+                if value not in seen
+            ]
+            connection_id = candidates[0] if candidates else ""
+        if not connection_id or connection_id in seen:
+            connection_id = uuid.uuid4().hex
+
+        seen.add(connection_id)
+        payload["id"] = connection_id
+        assigned.append(payload)
+
+    return assigned
 
 
 def _sanitize_connection_shared_fields(connection: dict) -> dict:
@@ -321,6 +396,11 @@ class ToolServersConfigForm(BaseModel):
 
 def _normalize_tool_server_connection(connection: ToolServerConnection) -> dict:
     payload = _sanitize_connection_shared_fields(connection.model_dump())
+    connection_id = _normalize_connection_id(payload.get("id"))
+    if connection_id:
+        payload["id"] = connection_id
+    else:
+        payload.pop("id", None)
     payload["url"] = str(payload.get("url") or "").rstrip("/")
     payload["path"] = str(payload.get("path") or "openapi.json").strip() or "openapi.json"
     payload["auth_type"] = str(payload.get("auth_type") or "bearer").lower()
@@ -352,6 +432,7 @@ async def set_tool_servers_config(
         _normalize_tool_server_connection(connection)
         for connection in form_data.TOOL_SERVER_CONNECTIONS
     ]
+    connections = _assign_stable_connection_ids(previous_connections, connections)
     connections = await _sync_shared_openapi_connections(
         user.id, previous_connections, connections
     )
@@ -622,8 +703,10 @@ class MCPServerConnection(BaseModel):
 
 
 def _normalize_mcp_server_connection(connection: MCPServerConnection) -> dict:
-    shared_id = get_connection_shared_id(connection.model_dump())
+    raw = connection.model_dump()
+    shared_id = get_connection_shared_id(raw)
     base = {
+        "id": _normalize_connection_id(raw.get("id")) or None,
         "transport_type": connection.transport_type,
         "name": connection.name,
         "description": connection.description,
@@ -702,6 +785,7 @@ async def set_mcp_servers_config(
         _normalize_mcp_server_connection(connection)
         for connection in form_data.MCP_SERVER_CONNECTIONS
     ]
+    connections = _assign_stable_connection_ids(previous_connections, connections)
     connections = await _sync_shared_mcp_connections(
         user.id, previous_connections, connections
     )

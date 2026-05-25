@@ -469,6 +469,56 @@ def test_tools_route_exposes_inherited_mcp_without_direct_tool_permission(monkey
     assert [(tool.id, tool.name) for tool in tools] == [("mcp:0", "Admin MCP")]
 
 
+def test_tools_route_exposes_stable_mcp_connection_id(monkeypatch):
+    from open_webui.routers import tools as tools_router
+
+    monkeypatch.setattr(tools_router.Tools, "get_tools_list_by_user_id", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(tools_router, "can_use_direct_tool_servers", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(tools_router, "can_user_use_mcp_server_tools", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        tools_router,
+        "get_user_mcp_server_connections",
+        lambda _request, _user: [
+            {
+                "id": "admin-mcp-1",
+                "transport_type": "http",
+                "url": "https://admin-mcp.example.com",
+                "name": "Admin MCP",
+                "description": "Inherited admin MCP",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        tools_router,
+        "get_mcp_servers_cached_meta",
+        lambda _connections: [
+            {
+                "idx": 0,
+                "id": "admin-mcp-1",
+                "transport_type": "http",
+                "url": "https://admin-mcp.example.com",
+                "name": "Admin MCP",
+                "description": "Inherited admin MCP",
+                "server_info": {"name": "admin-mcp"},
+                "config": {"enable": True},
+            }
+        ],
+    )
+
+    request = SimpleNamespace(
+        state=SimpleNamespace(token=SimpleNamespace(credentials="tok_abc")),
+        app=SimpleNamespace(state=SimpleNamespace()),
+    )
+    user = SimpleNamespace(id="user-1", role="user")
+
+    async def run():
+        return await tools_router.get_tools(request, user)
+
+    tools = asyncio.run(run())
+
+    assert [(tool.id, tool.name) for tool in tools] == [("mcp_id:admin-mcp-1", "Admin MCP")]
+
+
 def test_get_mcp_server_display_metadata_falls_back_when_custom_values_missing():
     from open_webui.utils.mcp import get_mcp_server_display_metadata
 

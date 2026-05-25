@@ -60,6 +60,11 @@ import copy
 
 log = logging.getLogger(__name__)
 
+LOCAL_OPENAPI_TOOL_PREFIX = "server:"
+LOCAL_MCP_TOOL_PREFIX = "mcp:"
+STABLE_OPENAPI_TOOL_PREFIX = "server_id:"
+STABLE_MCP_TOOL_PREFIX = "mcp_id:"
+
 
 def _normalize_tool_ids(tool_ids: list[Any] | None) -> list[str]:
     normalized: list[str] = []
@@ -84,6 +89,99 @@ def _parse_indexed_tool_id(tool_id: str, prefix: str) -> Optional[int]:
         return int(tool_id.split(":", 1)[1])
     except Exception:
         return None
+
+
+def _normalize_connection_id(value: Any) -> str:
+    connection_id = str(value or "").strip()
+    return connection_id if re.match(r"^[A-Za-z0-9_.-]{1,128}$", connection_id) else ""
+
+
+def _get_connection_stable_id(kind: str, connection: dict) -> str:
+    return _normalize_connection_id((connection or {}).get("id"))
+
+
+def build_local_connection_tool_id_map(
+    kind: str,
+    connections: list[dict],
+) -> dict[int, str]:
+    stable_prefix = (
+        STABLE_OPENAPI_TOOL_PREFIX if kind == "openapi" else STABLE_MCP_TOOL_PREFIX
+    )
+    legacy_prefix = LOCAL_OPENAPI_TOOL_PREFIX if kind == "openapi" else LOCAL_MCP_TOOL_PREFIX
+
+    stable_ids = [
+        _get_connection_stable_id(kind, connection) for connection in connections or []
+    ]
+    duplicate_ids = {
+        stable_id for stable_id in stable_ids if stable_ids.count(stable_id) > 1
+    }
+
+    return {
+        idx: (
+            f"{stable_prefix}{stable_id}"
+            if stable_id and stable_id not in duplicate_ids
+            else f"{legacy_prefix}{idx}"
+        )
+        for idx, stable_id in enumerate(stable_ids)
+    }
+
+
+def _resolve_local_connection_tool_index(
+    tool_id: str,
+    *,
+    kind: str,
+    connections: list[dict],
+) -> Optional[int]:
+    stable_prefix = (
+        STABLE_OPENAPI_TOOL_PREFIX if kind == "openapi" else STABLE_MCP_TOOL_PREFIX
+    )
+    legacy_prefix = LOCAL_OPENAPI_TOOL_PREFIX if kind == "openapi" else LOCAL_MCP_TOOL_PREFIX
+
+    legacy_idx = _parse_indexed_tool_id(tool_id, legacy_prefix)
+    if legacy_idx is not None:
+        exposed_ids = build_local_connection_tool_id_map(kind, connections)
+        return legacy_idx if exposed_ids.get(legacy_idx) == tool_id else None
+    if tool_id.startswith(legacy_prefix):
+        return None
+
+    if not tool_id.startswith(stable_prefix):
+        return None
+
+    stable_id = _normalize_connection_id(tool_id[len(stable_prefix) :])
+    if not stable_id:
+        return None
+
+    matches = [
+        idx
+        for idx, connection in enumerate(connections or [])
+        if _get_connection_stable_id(kind, connection) == stable_id
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _to_runtime_local_tool_id(
+    tool_id: str,
+    *,
+    kind: str,
+    connections: list[dict],
+) -> Optional[str]:
+    idx = _resolve_local_connection_tool_index(
+        tool_id,
+        kind=kind,
+        connections=connections,
+    )
+    if idx is None:
+        return None
+    legacy_prefix = LOCAL_OPENAPI_TOOL_PREFIX if kind == "openapi" else LOCAL_MCP_TOOL_PREFIX
+    return f"{legacy_prefix}{idx}"
+
+
+def _is_openapi_connection_tool_id(tool_id: str) -> bool:
+    return tool_id.startswith((LOCAL_OPENAPI_TOOL_PREFIX, STABLE_OPENAPI_TOOL_PREFIX))
+
+
+def _is_mcp_connection_tool_id(tool_id: str) -> bool:
+    return tool_id.startswith((LOCAL_MCP_TOOL_PREFIX, STABLE_MCP_TOOL_PREFIX))
 
 
 def _is_server_connection_enabled(connection: dict) -> bool:
@@ -112,11 +210,17 @@ def sanitize_tool_ids_for_request(
         return []
 
     sanitized_tool_ids: list[str] = []
+    sanitized_seen: set[str] = set()
     skipped_tool_ids: list[str] = []
     shared_tool_cache: dict[str, Any] = {}
 
     def skip(tool_id: str) -> None:
         skipped_tool_ids.append(tool_id)
+
+    def append_sanitized(tool_id: str) -> None:
+        if tool_id not in sanitized_seen:
+            sanitized_seen.add(tool_id)
+            sanitized_tool_ids.append(tool_id)
 
     def get_shared_tool_server(shared_id: str):
         if shared_id not in shared_tool_cache:
@@ -132,7 +236,7 @@ def sanitize_tool_ids_for_request(
         shared_kind = get_shared_tool_kind_from_tool_id(tool_id)
         if shared_kind:
             if request is None:
-                sanitized_tool_ids.append(tool_id)
+                append_sanitized(tool_id)
                 continue
 
             shared_id = get_shared_tool_id_value(tool_id)
@@ -147,11 +251,10 @@ def sanitize_tool_ids_for_request(
                 skip(tool_id)
                 continue
 
-            sanitized_tool_ids.append(tool_id)
+            append_sanitized(tool_id)
             continue
 
-        server_idx = _parse_indexed_tool_id(tool_id, "server:")
-        if server_idx is not None:
+        if _is_openapi_connection_tool_id(tool_id):
             if request is None or not can_use_direct_tool_servers(request, user):
                 skip(tool_id)
                 continue
@@ -161,8 +264,19 @@ def sanitize_tool_ids_for_request(
                     request, user
                 )
 
+            runtime_tool_id = _to_runtime_local_tool_id(
+                tool_id,
+                kind="openapi",
+                connections=tool_server_connections,
+            )
+            server_idx = (
+                _parse_indexed_tool_id(runtime_tool_id, LOCAL_OPENAPI_TOOL_PREFIX)
+                if runtime_tool_id
+                else None
+            )
             if (
-                server_idx < 0
+                server_idx is None
+                or server_idx < 0
                 or server_idx >= len(tool_server_connections)
                 or not _is_server_connection_enabled(
                     tool_server_connections[server_idx]
@@ -171,11 +285,10 @@ def sanitize_tool_ids_for_request(
                 skip(tool_id)
                 continue
 
-            sanitized_tool_ids.append(tool_id)
+            append_sanitized(runtime_tool_id)
             continue
 
-        mcp_idx = _parse_indexed_tool_id(tool_id, "mcp:")
-        if mcp_idx is not None:
+        if _is_mcp_connection_tool_id(tool_id):
             if request is None or not can_user_use_mcp_server_tools(request, user):
                 skip(tool_id)
                 continue
@@ -185,15 +298,26 @@ def sanitize_tool_ids_for_request(
                     request, user
                 )
 
+            runtime_tool_id = _to_runtime_local_tool_id(
+                tool_id,
+                kind="mcp",
+                connections=mcp_server_connections,
+            )
+            mcp_idx = (
+                _parse_indexed_tool_id(runtime_tool_id, LOCAL_MCP_TOOL_PREFIX)
+                if runtime_tool_id
+                else None
+            )
             if (
-                mcp_idx < 0
+                mcp_idx is None
+                or mcp_idx < 0
                 or mcp_idx >= len(mcp_server_connections)
                 or not _is_server_connection_enabled(mcp_server_connections[mcp_idx])
             ):
                 skip(tool_id)
                 continue
 
-            sanitized_tool_ids.append(tool_id)
+            append_sanitized(runtime_tool_id)
             continue
 
         tool = Tools.get_tool_by_id(tool_id)
@@ -201,7 +325,7 @@ def sanitize_tool_ids_for_request(
             skip(tool_id)
             continue
 
-        sanitized_tool_ids.append(tool_id)
+        append_sanitized(tool_id)
 
     if skipped_tool_ids:
         log.info(
@@ -233,14 +357,16 @@ def validate_tool_ids_access(
     if request is not None:
         validate_requested_shared_tool_ids_access(request, tool_ids, user)
         if any(
-            str(tool_id or "").strip().startswith("server:") for tool_id in tool_ids
+            _is_openapi_connection_tool_id(str(tool_id or "").strip())
+            for tool_id in tool_ids
         ) and not can_use_direct_tool_servers(request, user):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
             )
         if any(
-            str(tool_id or "").strip().startswith("mcp:") for tool_id in tool_ids
+            _is_mcp_connection_tool_id(str(tool_id or "").strip())
+            for tool_id in tool_ids
         ) and not can_user_use_mcp_server_tools(request, user):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -249,8 +375,11 @@ def validate_tool_ids_access(
 
     for tool_id in tool_ids:
         tool_id = str(tool_id or "").strip()
-        if not tool_id or tool_id.startswith(
-            ("server:", "mcp:", OPENAPI_SHARED_TOOL_PREFIX, MCP_SHARED_TOOL_PREFIX)
+        if (
+            not tool_id
+            or _is_openapi_connection_tool_id(tool_id)
+            or _is_mcp_connection_tool_id(tool_id)
+            or tool_id.startswith((OPENAPI_SHARED_TOOL_PREFIX, MCP_SHARED_TOOL_PREFIX))
         ):
             continue
 

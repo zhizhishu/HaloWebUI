@@ -1796,6 +1796,7 @@ def get_mcp_servers_cached_meta(servers: List[Dict[str, Any]]) -> List[Dict[str,
         results.append(
             {
                 "idx": idx,
+                "id": server.get("id"),
                 "transport_type": transport_type,
                 "url": _strip_trailing_slash(server.get("url") or ""),
                 "command": str(server.get("command") or "").strip(),
@@ -2023,6 +2024,7 @@ async def get_mcp_servers_data(
         results.append(
             {
                 "idx": idx,
+                "id": server.get("id"),
                 "transport_type": _get_transport_type(server),
                 "url": _strip_trailing_slash(server.get("url") or ""),
                 "command": str(server.get("command") or "").strip(),

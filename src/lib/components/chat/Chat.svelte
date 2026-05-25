@@ -1331,7 +1331,11 @@
 	};
 
 	const supportsToolValvesContext = (id: string | null | undefined): id is string =>
-		Boolean(id) && !String(id).startsWith('mcp:') && !String(id).startsWith('server:');
+		Boolean(id) &&
+		!String(id).startsWith('mcp:') &&
+		!String(id).startsWith('server:') &&
+		!String(id).startsWith('mcp_id:') &&
+		!String(id).startsWith('server_id:');
 
 	$: currentValvesContext = (() => {
 		const activeModelId =

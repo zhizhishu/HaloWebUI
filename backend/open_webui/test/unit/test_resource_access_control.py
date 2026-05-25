@@ -219,3 +219,83 @@ def test_sanitize_tool_ids_for_request_drops_stale_mcp_indices(monkeypatch):
         _make_user("admin-1", role="admin"),
         _make_request(),
     ) == ["mcp:0"]
+
+
+def test_sanitize_tool_ids_for_request_resolves_stable_mcp_ids(monkeypatch):
+    monkeypatch.setattr(tools_mod.Tools, "get_tool_by_id", lambda _tool_id: None)
+    monkeypatch.setattr(
+        tools_mod,
+        "get_user_mcp_server_connections",
+        lambda _request, _user: [
+            {"id": "admin-mcp-1", "config": {"enable": True}},
+            {"id": "admin-mcp-2", "config": {"enable": False}},
+        ],
+    )
+
+    assert tools_mod.sanitize_tool_ids_for_request(
+        ["mcp_id:admin-mcp-1", "mcp_id:admin-mcp-2", "mcp_id:missing"],
+        _make_user("admin-1", role="admin"),
+        _make_request(),
+    ) == ["mcp:0"]
+
+
+def test_sanitize_tool_ids_for_request_drops_legacy_mcp_index_when_stable_id_exists(
+    monkeypatch,
+):
+    monkeypatch.setattr(tools_mod.Tools, "get_tool_by_id", lambda _tool_id: None)
+    monkeypatch.setattr(
+        tools_mod,
+        "get_user_mcp_server_connections",
+        lambda _request, _user: [
+            {"id": "new-admin-mcp", "config": {"enable": True}},
+        ],
+    )
+
+    assert (
+        tools_mod.sanitize_tool_ids_for_request(
+            ["mcp:0"],
+            _make_user("admin-1", role="admin"),
+            _make_request(),
+        )
+        == []
+    )
+
+
+def test_sanitize_tool_ids_for_request_resolves_stable_openapi_ids(monkeypatch):
+    monkeypatch.setattr(tools_mod.Tools, "get_tool_by_id", lambda _tool_id: None)
+    monkeypatch.setattr(
+        tools_mod,
+        "get_user_tool_server_connections",
+        lambda _request, _user: [
+            {"id": "admin-openapi-1", "config": {"enable": True}},
+            {"id": "admin-openapi-2", "config": {"enable": False}},
+        ],
+    )
+
+    assert tools_mod.sanitize_tool_ids_for_request(
+        ["server_id:admin-openapi-1", "server_id:admin-openapi-2", "server_id:missing"],
+        _make_user("admin-1", role="admin"),
+        _make_request(),
+    ) == ["server:0"]
+
+
+def test_sanitize_tool_ids_for_request_drops_legacy_openapi_index_when_stable_id_exists(
+    monkeypatch,
+):
+    monkeypatch.setattr(tools_mod.Tools, "get_tool_by_id", lambda _tool_id: None)
+    monkeypatch.setattr(
+        tools_mod,
+        "get_user_tool_server_connections",
+        lambda _request, _user: [
+            {"id": "new-admin-openapi", "config": {"enable": True}},
+        ],
+    )
+
+    assert (
+        tools_mod.sanitize_tool_ids_for_request(
+            ["server:0"],
+            _make_user("admin-1", role="admin"),
+            _make_request(),
+        )
+        == []
+    )

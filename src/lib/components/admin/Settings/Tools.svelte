@@ -307,6 +307,7 @@
 	let sharedToolModalSaving = false;
 
 	const normalizeMCPServer = (server: any) => ({
+		id: server?.id ?? undefined,
 		transport_type: server?.transport_type ?? 'http',
 		url: server?.url ?? '',
 		command: server?.command ?? '',
@@ -366,6 +367,7 @@
 
 	// ==================== OpenAPI Servers 配置 ====================
 	let openAPIServers: Array<{
+		id?: string;
 		url: string;
 		path: string;
 		auth_type?: string;
@@ -553,6 +555,7 @@
 		const current = mcpServers[index] ?? {};
 		mcpServers[index] = normalizeMCPServer({
 			...server,
+			id: current.id,
 			shared_id: current.shared_id,
 			shared_access_control: current.shared_access_control,
 			shared_enabled: current.shared_enabled
@@ -1784,6 +1787,7 @@
 											onSubmit={(connection) => {
 												openAPIServers[idx] = {
 													...connection,
+													id: server.id,
 													shared_id: server.shared_id,
 													shared_access_control: server.shared_access_control,
 													shared_enabled: server.shared_enabled

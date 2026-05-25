@@ -23,6 +23,23 @@ describe('tool selection state', () => {
 		]);
 	});
 
+	it('keeps stable local server tool ids after tools are loaded', () => {
+		const tools = [{ id: 'tool-a' }, { id: 'mcp_id:admin-mcp-1' }, { id: 'server_id:openapi-1' }];
+
+		expect(
+			filterAvailableToolIds(
+				['mcp_id:admin-mcp-1', 'server_id:openapi-1', 'mcp_id:missing'],
+				tools
+			)
+		).toEqual(['mcp_id:admin-mcp-1', 'server_id:openapi-1']);
+	});
+
+	it('drops stale legacy local server indexes when stable ids are exposed', () => {
+		const tools = [{ id: 'mcp_id:admin-mcp-1' }, { id: 'server_id:openapi-1' }];
+
+		expect(filterAvailableToolIds(['mcp:0', 'server:0'], tools)).toEqual([]);
+	});
+
 	it('clears stale ids when the user currently has no available tools', () => {
 		expect(filterAvailableToolIds(['mcp:0', 'tool-a'], [])).toEqual([]);
 	});
