@@ -224,15 +224,24 @@
 		{ id: 'mimo_default', name: 'MiMo Default' },
 		{ id: 'default_zh', name: 'MiMo V2 Chinese Female' },
 		{ id: 'default_en', name: 'MiMo V2 English Female' },
-		{ id: '\u51b0\u7cd6', name: 'Bingtang (\u51b0\u7cd6)' },
-		{ id: '\u8309\u8389', name: 'Moli (\u8309\u8389)' },
-		{ id: '\u82cf\u6253', name: 'Soda (\u82cf\u6253)' },
-		{ id: '\u767d\u6866', name: 'Baihua (\u767d\u6866)' },
+		{ id: '\u51b0\u7cd6', name: '\u51b0\u7cd6' },
+		{ id: '\u8309\u8389', name: '\u8309\u8389' },
+		{ id: '\u82cf\u6253', name: '\u82cf\u6253' },
+		{ id: '\u767d\u6866', name: '\u767d\u6866' },
 		{ id: 'Mia', name: 'Mia' },
 		{ id: 'Chloe', name: 'Chloe' },
 		{ id: 'Milo', name: 'Milo' },
 		{ id: 'Dean', name: 'Dean' }
 	];
+	const MIMO_TTS_MODEL_OPTIONS = MIMO_TTS_MODELS.map((model) => ({
+		value: model.id,
+		label: model.name
+	}));
+	const MIMO_TTS_VOICE_OPTIONS = MIMO_TTS_VOICES.map((voice) => ({
+		value: voice.id,
+		label: voice.name,
+		description: voice.id !== voice.name ? voice.id : undefined
+	}));
 
 	const applyTTSEngineDefaults = (engine: string) => {
 		if (engine === 'openai') {
@@ -701,13 +710,23 @@
 				<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
 					<div class="glass-item p-4">
 						<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">{$i18n.t('TTS Voice')}</div>
-						<input list="mimo-voice-list" class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input" bind:value={TTS_VOICE} placeholder="Select a voice" />
-						<datalist id="mimo-voice-list">{#each MIMO_TTS_VOICES as voice}<option value={voice.id}>{voice.name}</option>{/each}</datalist>
+						<HaloSelect
+							bind:value={TTS_VOICE}
+							placeholder="Select a voice"
+							options={MIMO_TTS_VOICE_OPTIONS}
+							className="w-full"
+							contentAlign="start"
+						/>
 					</div>
 					<div class="glass-item p-4">
 						<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">{$i18n.t('TTS Model')}</div>
-						<input list="mimo-model-list" class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input" bind:value={TTS_MODEL} placeholder="Select a model" />
-						<datalist id="mimo-model-list">{#each MIMO_TTS_MODELS as model}<option value={model.id}>{model.name}</option>{/each}</datalist>
+						<HaloSelect
+							bind:value={TTS_MODEL}
+							placeholder="Select a model"
+							options={MIMO_TTS_MODEL_OPTIONS}
+							className="w-full"
+							contentAlign="start"
+						/>
 					</div>
 				</div>
 			{:else if TTS_ENGINE === 'azure'}
@@ -938,8 +957,26 @@
 								</div>
 							{:else if TTS_ENGINE === 'mimo'}
 								<div class="flex gap-2">
-									<div class="w-full"><div class="mb-1.5 text-sm font-medium">{$i18n.t('TTS Voice')}</div><input list="mimo-voice-list" class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden" bind:value={TTS_VOICE} placeholder="Select a voice" /><datalist id="mimo-voice-list">{#each MIMO_TTS_VOICES as voice}<option value={voice.id}>{voice.name}</option>{/each}</datalist></div>
-									<div class="w-full"><div class="mb-1.5 text-sm font-medium">{$i18n.t('TTS Model')}</div><input list="mimo-model-list" class="w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-hidden" bind:value={TTS_MODEL} placeholder="Select a model" /><datalist id="mimo-model-list">{#each MIMO_TTS_MODELS as model}<option value={model.id}>{model.name}</option>{/each}</datalist></div>
+									<div class="w-full">
+										<div class="mb-1.5 text-sm font-medium">{$i18n.t('TTS Voice')}</div>
+										<HaloSelect
+											bind:value={TTS_VOICE}
+											placeholder="Select a voice"
+											options={MIMO_TTS_VOICE_OPTIONS}
+											className="w-full"
+											contentAlign="start"
+										/>
+									</div>
+									<div class="w-full">
+										<div class="mb-1.5 text-sm font-medium">{$i18n.t('TTS Model')}</div>
+										<HaloSelect
+											bind:value={TTS_MODEL}
+											placeholder="Select a model"
+											options={MIMO_TTS_MODEL_OPTIONS}
+											className="w-full"
+											contentAlign="start"
+										/>
+									</div>
 								</div>
 							{:else if TTS_ENGINE === 'azure'}
 								<div class="flex gap-2">
@@ -1438,31 +1475,23 @@
 									<div class="grid grid-cols-1 md:grid-cols-2 gap-3">
 										<div class="glass-item p-4">
 											<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">{$i18n.t('TTS Voice')}</div>
-											<input
-												list="mimo-voice-list"
-												class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input"
+											<HaloSelect
 												bind:value={TTS_VOICE}
 												placeholder="Select a voice"
+												options={MIMO_TTS_VOICE_OPTIONS}
+												className="w-full"
+												contentAlign="start"
 											/>
-											<datalist id="mimo-voice-list">
-												{#each MIMO_TTS_VOICES as voice}
-													<option value={voice.id}>{voice.name}</option>
-												{/each}
-											</datalist>
 										</div>
 										<div class="glass-item p-4">
 											<div class="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">{$i18n.t('TTS Model')}</div>
-											<input
-												list="mimo-model-list"
-												class="w-full py-2 px-3 text-sm dark:text-gray-300 glass-input"
+											<HaloSelect
 												bind:value={TTS_MODEL}
 												placeholder="Select a model"
+												options={MIMO_TTS_MODEL_OPTIONS}
+												className="w-full"
+												contentAlign="start"
 											/>
-											<datalist id="mimo-model-list">
-												{#each MIMO_TTS_MODELS as model}
-													<option value={model.id}>{model.name}</option>
-												{/each}
-											</datalist>
 										</div>
 									</div>
 								{:else if TTS_ENGINE === 'azure'}
