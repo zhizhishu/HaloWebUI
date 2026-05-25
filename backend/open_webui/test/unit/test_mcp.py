@@ -487,6 +487,27 @@ def test_get_mcp_server_display_metadata_falls_back_when_custom_values_missing()
     assert description == "MCP (HTTP) - 未验证"
 
 
+def test_get_mcp_server_display_metadata_uses_legacy_config_description():
+    from open_webui.utils.mcp import get_mcp_server_display_metadata
+
+    title, description = get_mcp_server_display_metadata(
+        {
+            "transport_type": "http",
+            "url": "https://mcp.example.com/v1/mcp",
+            "config": {
+                "remark": "Legacy MCP",
+                "description": "Legacy admin MCP description",
+            },
+            "server_info": {"name": "mcp-fetch"},
+        },
+        index=0,
+        default_description="MCP (HTTP) - unverified",
+    )
+
+    assert title == "Legacy MCP"
+    assert description == "Legacy admin MCP description"
+
+
 def test_http_client_protocol_negotiation_retries_on_http_error():
     from aiohttp import web
 

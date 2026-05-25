@@ -1906,7 +1906,9 @@ def get_mcp_server_display_metadata(
         or (f"MCP Server {index + 1}" if index is not None else "MCP Server")
     )
 
-    custom_description = str(server.get("description") or "").strip()
+    custom_description = str(
+        server.get("description") or config.get("description") or ""
+    ).strip()
     description = custom_description or default_description
 
     return title, description
