@@ -480,6 +480,11 @@ def convert_chat_completions_to_responses_payload(
         tools = responses_payload.get("tools")
         if not isinstance(tools, list):
             tools = []
+        has_other_tools = any(
+            isinstance(t, dict)
+            and not str(t.get("type", "")).startswith("web_search")
+            for t in tools
+        )
         # Don't duplicate an existing web_search tool.
         has_web_search = any(
             isinstance(t, dict) and t.get("type", "").startswith("web_search")
@@ -490,8 +495,10 @@ def convert_chat_completions_to_responses_payload(
         responses_payload["tools"] = tools
 
         # Smart web search has already decided this turn needs live results.
-        # Force the hosted search tool instead of merely offering it.
-        if native_web_search_required:
+        # Force hosted search only when it is the only tool. If user/MCP/OpenAPI
+        # function tools are also present, forcing web_search would make those
+        # tools inaccessible in native Responses tool-calling mode.
+        if native_web_search_required and not has_other_tools:
             responses_payload["tool_choice"] = {"type": native_web_search_tool_type}
         elif "tool_choice" not in responses_payload:
             responses_payload["tool_choice"] = "auto"

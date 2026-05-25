@@ -147,6 +147,46 @@ def test_convert_chat_completions_to_responses_payload_forces_native_web_search_
     assert r["tool_choice"] == {"type": "web_search"}
 
 
+def test_convert_chat_completions_to_responses_payload_keeps_function_tools_available_with_native_web_search():
+    chat = {
+        "model": "gpt-test",
+        "messages": [{"role": "user", "content": "Find updates and call my tool"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "do_work",
+                    "description": "Run external work",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                    },
+                },
+            }
+        ],
+    }
+
+    r = convert_chat_completions_to_responses_payload(
+        chat,
+        native_web_search_tool_type="web_search",
+        native_web_search_required=True,
+    )
+
+    assert r["tools"] == [
+        {
+            "type": "function",
+            "name": "do_work",
+            "description": "Run external work",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+            },
+        },
+        {"type": "web_search"},
+    ]
+    assert r["tool_choice"] == "auto"
+
+
 def test_convert_chat_completions_to_responses_payload_strips_include_usage_stream_option():
     chat = {
         "model": "gpt-test",
