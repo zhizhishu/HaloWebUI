@@ -103,6 +103,7 @@
 		buildWebSearchModeOptions,
 		resolveConfiguredDefaultWebSearchMode
 	} from '$lib/utils/native-web-search';
+	import { filterAvailableSkillIds } from '$lib/utils/skill-selection';
 	import { filterAvailableToolIds } from '$lib/utils/tool-selection';
 	import { hasVisibleMessageFiles as messageHasVisibleFiles } from '$lib/utils/chat-message-errors';
 	import { hasActiveChatResponse } from '$lib/utils/chat-response-state';
@@ -675,12 +676,10 @@
 	};
 	const getAvailableSelectedToolIds = (ids: unknown = selectedToolIds) =>
 		filterAvailableToolIds(ids, $tools);
-	const getVisibleSkillIds = () =>
-		($skillsStore ?? []).map((skill) => String(skill?.id ?? '')).filter((id) => id);
-	const filterVisibleSkillIds = (ids: string[] = []) => {
-		const visible = new Set(getVisibleSkillIds());
-		return ids.filter((id) => visible.has(id));
-	};
+	const hasUsableSkillList = () =>
+		hasResolvedSkills || (Array.isArray($skillsStore) && $skillsStore.length > 0);
+	const getAvailableSelectedSkillIds = (ids: unknown = selectedSkillIds) =>
+		filterAvailableSkillIds(ids, hasUsableSkillList() ? $skillsStore : null);
 	const arraysEqual = (left: string[] = [], right: string[] = []) =>
 		left.length === right.length && left.every((value, index) => value === right[index]);
 	const extractSkillIdsFromText = (text: string) => {
@@ -694,7 +693,9 @@
 			.replace(/<\$([\w.\-:/]+)(?:\|[^>]+)?>\s*/g, '')
 			.trim();
 	const collectRequestSkillIds = (messages: any[] = []) => {
-		const ids = new Set<string>(skillSelectionTouched ? selectedSkillIds : []);
+		const ids = new Set<string>(
+			skillSelectionTouched ? getAvailableSelectedSkillIds(selectedSkillIds) : []
+		);
 		for (const message of messages ?? []) {
 			if (message?.role !== 'user') {
 				continue;
@@ -718,7 +719,7 @@
 				}
 			}
 		}
-		return Array.from(ids);
+		return getAvailableSelectedSkillIds(Array.from(ids));
 	};
 
 	const normalizeReasoningEffortValue = (value: unknown): string | null => {
@@ -1460,7 +1461,7 @@
 		return {
 			selected_tool_ids: availableSelectedToolIds,
 			tool_selection_touched: toolSelectionTouched,
-			selected_skill_ids: selectedSkillIds,
+			selected_skill_ids: getAvailableSelectedSkillIds(selectedSkillIds),
 			skill_selection_touched: skillSelectionTouched,
 			web_search_mode: webSearchMode,
 			web_search_mode_source: webSearchModeSource,
@@ -1479,7 +1480,7 @@
 		webSearchModeTouched: webSearchModeSource === 'user',
 		selectedToolIds: getAvailableSelectedToolIds(),
 		toolSelectionTouched,
-		selectedSkillIds,
+		selectedSkillIds: getAvailableSelectedSkillIds(selectedSkillIds),
 		skillSelectionTouched,
 		activeAssistant,
 		systemPrompt: typeof params?.system === 'string' ? params.system : null,
@@ -1533,7 +1534,7 @@
 
 		const restoredSkillIds = state.selected_skill_ids ?? state.selectedSkillIds;
 		if (Array.isArray(restoredSkillIds)) {
-			selectedSkillIds = restoredSkillIds.map((id) => String(id ?? '').trim()).filter(Boolean);
+			selectedSkillIds = getAvailableSelectedSkillIds(restoredSkillIds);
 		}
 		if (
 			state.skill_selection_touched !== undefined ||
@@ -1740,8 +1741,8 @@
 			: getAvailableSelectedToolIds(selectedToolIds);
 		toolSelectionTouched = Boolean(input.toolSelectionTouched ?? toolSelectionTouched);
 		selectedSkillIds = Array.isArray(input.selectedSkillIds)
-			? input.selectedSkillIds.map((id) => String(id ?? '').trim()).filter(Boolean)
-			: selectedSkillIds;
+			? getAvailableSelectedSkillIds(input.selectedSkillIds)
+			: getAvailableSelectedSkillIds(selectedSkillIds);
 		skillSelectionTouched = Boolean(input.skillSelectionTouched ?? skillSelectionTouched);
 		reasoningEffort = newRE;
 		maxThinkingTokens = newMT;
@@ -2181,8 +2182,12 @@
 		setSkillIds();
 	}
 
-	$: if ($skillsStore?.length) {
-		const filteredSkillIds = filterVisibleSkillIds(selectedSkillIds);
+	$: if (!hasResolvedSkills && Array.isArray($skillsStore) && $skillsStore.length > 0) {
+		hasResolvedSkills = true;
+	}
+
+	$: if (hasUsableSkillList() && Array.isArray($skillsStore)) {
+		const filteredSkillIds = getAvailableSelectedSkillIds(selectedSkillIds);
 		if (!arraysEqual(filteredSkillIds, selectedSkillIds)) {
 			selectedSkillIds = filteredSkillIds;
 		}
@@ -2255,7 +2260,7 @@
 
 		const model = atSelectedModel ?? getModelById(selectedModels[0]);
 		if (model) {
-			selectedSkillIds = filterVisibleSkillIds(model?.info?.meta?.skillIds ?? []);
+			selectedSkillIds = getAvailableSelectedSkillIds(model?.info?.meta?.skillIds ?? []);
 		}
 	};
 
@@ -3104,18 +3109,14 @@
 		}
 
 		if ($page.url.searchParams.get('skills')) {
-			selectedSkillIds = $page.url.searchParams
-				.get('skills')
-				?.split(',')
-				.map((id) => id.trim())
-				.filter((id) => id);
+			selectedSkillIds = getAvailableSelectedSkillIds(
+				$page.url.searchParams.get('skills')?.split(',')
+			);
 			skillSelectionTouched = true;
 		} else if ($page.url.searchParams.get('skill-ids')) {
-			selectedSkillIds = $page.url.searchParams
-				.get('skill-ids')
-				?.split(',')
-				.map((id) => id.trim())
-				.filter((id) => id);
+			selectedSkillIds = getAvailableSelectedSkillIds(
+				$page.url.searchParams.get('skill-ids')?.split(',')
+			);
 			skillSelectionTouched = true;
 		}
 
