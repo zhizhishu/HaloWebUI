@@ -210,9 +210,16 @@ export const importSkillFromGithub = async (token: string, url: string) => {
 	});
 };
 
-export const importSkillFromZip = async (token: string, file: File) => {
+export const importSkillFromZip = async (
+	token: string,
+	file: File,
+	options: { fallbackIdentifier?: string | null } = {}
+) => {
 	const data = new FormData();
 	data.append('file', file);
+	if (options.fallbackIdentifier?.trim()) {
+		data.append('fallback_identifier', options.fallbackIdentifier.trim());
+	}
 
 	return requestJson<SkillImportResult>('/import/zip', token, {
 		method: 'POST',
@@ -223,7 +230,8 @@ export const importSkillFromZip = async (token: string, file: File) => {
 export const importSkillFromRemoteZipUrl = async (
 	token: string,
 	url: string,
-	filename = 'skill.zip'
+	filename = 'skill.zip',
+	options: { fallbackIdentifier?: string | null } = {}
 ) => {
 	try {
 		const res = await fetch(url, {
@@ -239,7 +247,7 @@ export const importSkillFromRemoteZipUrl = async (
 			type: blob.type || 'application/zip'
 		});
 
-		return await importSkillFromZip(token, file);
+		return await importSkillFromZip(token, file, options);
 	} catch (error) {
 		if (error instanceof Error) {
 			throw error.message;

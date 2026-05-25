@@ -3,7 +3,17 @@ import logging
 from typing import Any, Optional
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
@@ -852,11 +862,16 @@ async def import_skill_from_github_route(
 async def import_skill_from_zip_route(
     request: Request,
     file: UploadFile = File(...),
+    fallback_identifier: Optional[str] = Form(default=None),
     user=Depends(get_verified_user),
 ):
     try:
         buffer = await file.read()
-        payload = await import_skill_from_zip(file.filename or "skill.zip", buffer)
+        payload = await import_skill_from_zip(
+            file.filename or "skill.zip",
+            buffer,
+            fallback_identifier=fallback_identifier,
+        )
         return await _upsert_imported_skill(user, payload)
     except SkillImportError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

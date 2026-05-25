@@ -1,5 +1,7 @@
 import pathlib
 import sys
+import zipfile
+from io import BytesIO
 from types import SimpleNamespace
 
 
@@ -10,6 +12,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from open_webui.models.skills import SkillModel  # noqa: E402
 from open_webui.utils import skill_runtime  # noqa: E402
 from open_webui.utils.skill_importer import parse_skill_markdown  # noqa: E402
+from open_webui.utils.skill_importer import parse_skill_zip  # noqa: E402
 from open_webui.utils.skill_runtime import (  # noqa: E402
     get_selected_skill_context,
     is_skill_package,
@@ -60,6 +63,58 @@ Extract and merge PDFs.
     assert payload.meta["kind"] == "skill_package"
     assert payload.meta["auto_enabled"] is False
     assert payload.meta["activation"]["keywords"] == ["pdf"]
+
+
+def test_imported_zip_uses_fallback_identifier_when_manifest_omits_one():
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "SKILL.md",
+            """---
+name: PDF Toolkit
+description: Work with PDF files
+---
+# PDF Toolkit
+
+Extract and merge PDFs.
+""",
+        )
+
+    payload = parse_skill_zip(
+        buffer.getvalue(),
+        fallback_name="anthropics-skills-pdf",
+        fallback_identifier="anthropics-skills-pdf",
+        source="zip",
+        source_url=None,
+        synthetic_identifier="zip.synthetic",
+    )
+
+    assert payload.identifier == "anthropics-skills-pdf"
+
+
+def test_imported_zip_keeps_manifest_identifier_over_fallback_identifier():
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "SKILL.md",
+            """---
+name: Custom Toolkit
+identifier: package.custom-toolkit
+---
+# Custom Toolkit
+""",
+        )
+
+    payload = parse_skill_zip(
+        buffer.getvalue(),
+        fallback_name="anthropics-skills-pdf",
+        fallback_identifier="anthropics-skills-pdf",
+        source="zip",
+        source_url=None,
+        synthetic_identifier="zip.synthetic",
+    )
+
+    assert payload.identifier == "package.custom-toolkit"
 
 
 def test_selected_skill_context_splits_prompt_and_runnable_skills(monkeypatch):

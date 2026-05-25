@@ -188,6 +188,7 @@ def parse_skill_zip(
     *,
     base_path: Optional[str] = None,
     fallback_name: Optional[str] = None,
+    fallback_identifier: Optional[str] = None,
     source: str,
     source_url: Optional[str],
     synthetic_identifier: str,
@@ -259,6 +260,7 @@ def parse_skill_zip(
         payload = parse_skill_markdown(
             raw_text,
             fallback_name=fallback_name,
+            fallback_identifier=fallback_identifier,
             package_files=package_files,
             source=source,
             source_url=source_url,
@@ -399,12 +401,17 @@ async def import_skill_from_github(url: str) -> ImportedSkillPayload:
     return payload
 
 
-async def import_skill_from_zip(filename: str, buffer: bytes) -> ImportedSkillPayload:
+async def import_skill_from_zip(
+    filename: str,
+    buffer: bytes,
+    fallback_identifier: Optional[str] = None,
+) -> ImportedSkillPayload:
     synthetic_identifier = _stable_identifier("zip", _sha256_bytes(buffer))
     fallback_name = (filename or "uploaded-skill").rsplit(".", 1)[0]
     payload = parse_skill_zip(
         buffer,
         fallback_name=fallback_name,
+        fallback_identifier=(fallback_identifier or "").strip() or None,
         source="zip",
         source_url=None,
         synthetic_identifier=synthetic_identifier,

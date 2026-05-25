@@ -586,7 +586,8 @@
 			const result = await importSkillFromRemoteZipUrl(
 				localStorage.token,
 				entry.downloadUrl,
-				`${entry.identifier}.zip`
+				`${entry.identifier}.zip`,
+				{ fallbackIdentifier: entry.identifier }
 			);
 
 			toast.success(formatImportMessage(result.status));
