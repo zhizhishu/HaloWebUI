@@ -144,6 +144,82 @@ def _provider_from_model(model: dict) -> str:
     return owned_by
 
 
+def _clean_identity_value(value) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _model_clean_id(model: dict) -> str:
+    for key in ("model_id", "original_id", "id"):
+        value = _clean_identity_value(model.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _model_dedup_key(model: dict) -> str:
+    selection_id = _clean_identity_value(model.get("selection_id"))
+    if selection_id:
+        return f"selection\0{selection_id}"
+
+    clean_id = _model_clean_id(model)
+    model_ref = get_model_ref_from_model(model)
+    if model_ref:
+        provider = _clean_identity_value(model_ref.get("provider")).lower()
+        source = _clean_identity_value(model_ref.get("source"))
+        connection_id = _clean_identity_value(
+            model_ref.get("connection_id") or model_ref.get("prefix_id")
+        )
+        connection_index = _clean_identity_value(model_ref.get("connection_index"))
+        return "\0".join(
+            ["ref", provider, source, connection_id, connection_index, clean_id]
+        )
+
+    fallback_id = get_model_selection_id(model)
+    if fallback_id:
+        provider = _provider_from_model(model)
+        connection_name = _clean_identity_value(model.get("connection_name"))
+        connection_id = _clean_identity_value(
+            model.get("connection_id") or model.get("prefix_id")
+        )
+        connection_index = _clean_identity_value(
+            model.get("connection_index") or model.get("urlIdx")
+        )
+        return "\0".join(
+            [
+                "legacy",
+                provider,
+                connection_name,
+                connection_id,
+                connection_index,
+                fallback_id,
+            ]
+        )
+
+    return ""
+
+
+def _deduplicate_models_by_identity(models: list) -> list:
+    seen: set[str] = set()
+    deduped = []
+
+    for model in models or []:
+        if not isinstance(model, dict):
+            deduped.append(model)
+            continue
+
+        key = _model_dedup_key(model)
+        if not key:
+            deduped.append(model)
+            continue
+        if key in seen:
+            continue
+
+        seen.add(key)
+        deduped.append(model)
+
+    return deduped
+
+
 def _model_ref_matches(model: dict, target_ref: dict) -> bool:
     model_ref = get_model_ref_from_model(model)
     if not model_ref:
@@ -405,9 +481,11 @@ async def _fetch_all_base_models(
             "pipe",
             active_refs=None,
         )
-    models = function_models + openai_models + ollama_models + gemini_models + anthropic_models
+    models = (
+        function_models + openai_models + ollama_models + gemini_models + anthropic_models
+    )
 
-    return models
+    return _deduplicate_models_by_identity(models)
 
 
 async def get_all_base_models(request: Request, user: UserModel = None):

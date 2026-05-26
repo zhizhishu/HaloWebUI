@@ -152,3 +152,38 @@ def test_failed_source_does_not_keep_stale_models_for_removed_connection(monkeyp
         _reset_base_model_caches()
 
     assert all(model["id"] != "oa1.gpt-old" for model in models)
+
+
+def test_base_model_deduplication_removes_duplicate_identity():
+    first = _provider_model(
+        "openai", "oa1", "deepseek-ai/deepseek-v4-flash"
+    )
+    duplicate = {**first, "name": "duplicate display name"}
+    sibling = _provider_model(
+        "openai", "oa1", "deepseek-ai/deepseek-v4-pro"
+    )
+
+    models = models_utils._deduplicate_models_by_identity(
+        [first, duplicate, sibling]
+    )
+
+    assert [model["selection_id"] for model in models] == [
+        first["selection_id"],
+        sibling["selection_id"],
+    ]
+
+
+def test_base_model_deduplication_keeps_same_model_from_different_connections():
+    first = _provider_model(
+        "openai", "oa1", "deepseek-ai/deepseek-v4-flash"
+    )
+    second = _provider_model(
+        "openai", "oa2", "deepseek-ai/deepseek-v4-flash"
+    )
+
+    models = models_utils._deduplicate_models_by_identity([first, second])
+
+    assert [model["selection_id"] for model in models] == [
+        first["selection_id"],
+        second["selection_id"],
+    ]
