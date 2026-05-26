@@ -47,3 +47,5 @@
 - 尝试：本地登录 GHCR, 创建 `halowebui-multi` buildx builder, 注册 `arm64` binfmt, 按 workflow 等价参数构建 `custom` / `future` / `git-4516d69` 双架构镜像。
 - 结果：本地双架构构建在 `npm ci` 阶段因 `ETIMEDOUT` 失败, 未推送新镜像。
 - 修改：给 `.npmrc` 添加 npm fetch 重试和超时配置, 供后续 GitHub Actions 或本地 buildx 重试使用。
+- 结果：`.npmrc` 提交 `c3c7dc9` 成功触发 Docker workflow, 但 `custom` run `26448300909` 和 `future` run `26448300968` 均失败在 Set up job 下载官方 Docker actions 阶段; 本机 curl 对相同 codeload URL 返回 200, 判断为 GitHub Runner 下载侧问题。
+- 后续：等 GitHub Runner/codeload 恢复后 rerun failed jobs, 或在网络更稳定环境重跑本地 buildx 双架构推送。
