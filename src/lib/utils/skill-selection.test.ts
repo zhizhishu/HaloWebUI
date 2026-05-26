@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { filterAvailableSkillIds, normalizeSkillIds } from './skill-selection';
+import {
+	extractSkillIdsFromText,
+	filterAvailableSkillIds,
+	normalizeSkillIds,
+	normalizeSkillMessageTextForRequest,
+	stripSkillTagsFromText
+} from './skill-selection';
 
 describe('skill selection state', () => {
 	it('normalizes persisted skill ids without duplicates', () => {
@@ -28,5 +34,40 @@ describe('skill selection state', () => {
 
 	it('clears stale ids when the user currently has no visible skills', () => {
 		expect(filterAvailableSkillIds(['skill-a', 'deleted-skill'], [])).toEqual([]);
+	});
+
+	it('extracts skill mentions from chat text', () => {
+		expect(
+			extractSkillIdsFromText('<$skill-a|Data Skill> analyze <$skill-b|Writer>')
+		).toEqual(['skill-a', 'skill-b']);
+	});
+
+	it('strips skill mentions before sending text to the model', () => {
+		expect(stripSkillTagsFromText('<$skill-a|Data Skill> analyze this')).toBe('analyze this');
+		expect(stripSkillTagsFromText('Use <$skill-a|Data Skill> now')).toBe('Use now');
+	});
+
+	it('keeps skill-only user messages non-empty after stripping mentions', () => {
+		expect(
+			normalizeSkillMessageTextForRequest('<$skill-a|Data Skill> ', {
+				ensureNonEmptySkillMention: true
+			})
+		).toBe('.');
+	});
+
+	it('does not add placeholders for ordinary blank messages', () => {
+		expect(
+			normalizeSkillMessageTextForRequest('   ', {
+				ensureNonEmptySkillMention: true
+			})
+		).toBe('');
+	});
+
+	it('does not add placeholders when skill-only text is not a user message', () => {
+		expect(
+			normalizeSkillMessageTextForRequest('<$skill-a|Data Skill> ', {
+				ensureNonEmptySkillMention: false
+			})
+		).toBe('');
 	});
 });

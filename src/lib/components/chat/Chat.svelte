@@ -103,7 +103,11 @@
 		buildWebSearchModeOptions,
 		resolveConfiguredDefaultWebSearchMode
 	} from '$lib/utils/native-web-search';
-	import { filterAvailableSkillIds } from '$lib/utils/skill-selection';
+	import {
+		extractSkillIdsFromText,
+		filterAvailableSkillIds,
+		normalizeSkillMessageTextForRequest
+	} from '$lib/utils/skill-selection';
 	import { filterAvailableToolIds } from '$lib/utils/tool-selection';
 	import { hasEffectivePersistedSelectionState } from '$lib/utils/composer-selection-state';
 	import { hasVisibleMessageFiles as messageHasVisibleFiles } from '$lib/utils/chat-message-errors';
@@ -685,16 +689,6 @@
 		filterAvailableSkillIds(ids, hasUsableSkillList() ? $skillsStore : null);
 	const arraysEqual = (left: string[] = [], right: string[] = []) =>
 		left.length === right.length && left.every((value, index) => value === right[index]);
-	const extractSkillIdsFromText = (text: string) => {
-		const matches = [...String(text ?? '').matchAll(/<\$([\w.\-:/]+)(?:\|[^>]+)?>/g)];
-		return Array.from(
-			new Set(matches.map((match) => String(match?.[1] ?? '').trim()).filter(Boolean))
-		);
-	};
-	const stripSkillTagsFromText = (text: string) =>
-		String(text ?? '')
-			.replace(/<\$([\w.\-:/]+)(?:\|[^>]+)?>\s*/g, '')
-			.trim();
 	const collectRequestSkillIds = (messages: any[] = []) => {
 		const ids = new Set<string>(
 			skillSelectionTouched ? getAvailableSelectedSkillIds(selectedSkillIds) : []
@@ -1021,8 +1015,9 @@
 					}
 				: undefined,
 			...messages.map((message) => {
-				const textContent = stripSkillTagsFromText(
-					message?.merged?.content ?? processDetails(message?.content ?? '')
+				const textContent = normalizeSkillMessageTextForRequest(
+					message?.merged?.content ?? processDetails(message?.content ?? ''),
+					{ ensureNonEmptySkillMention: message.role === 'user' }
 				);
 				const imageFiles = (message?.files ?? []).filter((file) => file.type === 'image');
 
@@ -1031,10 +1026,14 @@
 					...(imageFiles.length > 0 && message.role === 'user'
 						? {
 								content: [
-									{
-										type: 'text',
-										text: textContent
-									},
+									...(textContent
+										? [
+												{
+													type: 'text',
+													text: textContent
+												}
+											]
+										: []),
 									...imageFiles.map((file) => ({
 										type: 'image_url',
 										image_url: {
@@ -4824,7 +4823,10 @@
 
 		messages = messages
 			.map((message, idx, arr) => {
-				let textContent = stripSkillTagsFromText(message?.merged?.content ?? message.content);
+				let textContent = normalizeSkillMessageTextForRequest(
+					message?.merged?.content ?? message.content,
+					{ ensureNonEmptySkillMention: message.role === 'user' }
+				);
 
 				// Inject regeneration instruction into the last user message for API payload only
 				if (
