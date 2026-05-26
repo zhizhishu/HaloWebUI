@@ -9,6 +9,7 @@ if str(_BACKEND_DIR) not in sys.path:
 from open_webui.utils.payload import (
     apply_model_params_to_body_ollama,
     apply_model_params_to_body_openai,
+    normalize_openai_compatible_reasoning_controls,
 )
 
 
@@ -84,3 +85,144 @@ def test_apply_model_params_to_body_openai_preserves_explicit_reasoning_off():
     )
 
     assert result["reasoning_effort"] == "none"
+
+
+def test_normalize_deepseek_v4_reasoning_off_uses_thinking_disabled():
+    payload = {"model": "deepseek-v4-flash", "reasoning_effort": "none"}
+
+    result = normalize_openai_compatible_reasoning_controls(payload)
+
+    assert "reasoning_effort" not in result
+    assert result["thinking"] == {"type": "disabled"}
+    assert payload["reasoning_effort"] == "none"
+
+
+def test_normalize_deepseek_v4_reasoning_off_uses_resolved_model_candidate():
+    payload = {"model": "workspace-alias", "reasoning_effort": "off"}
+
+    result = normalize_openai_compatible_reasoning_controls(
+        payload,
+        model_id="deepseek-v4-pro",
+    )
+
+    assert "reasoning_effort" not in result
+    assert result["thinking"] == {"type": "disabled"}
+
+
+def test_normalize_reasoning_off_preserves_non_deepseek_v4_models():
+    payload = {"model": "gpt-5.2", "reasoning_effort": "none"}
+
+    result = normalize_openai_compatible_reasoning_controls(payload)
+
+    assert result is payload
+    assert result["reasoning_effort"] == "none"
+
+
+def test_normalize_deepseek_v4_xhigh_maps_to_max_and_enables_thinking():
+    payload = {"model": "deepseek-v4-flash", "reasoning_effort": "xhigh"}
+
+    result = normalize_openai_compatible_reasoning_controls(payload)
+
+    assert result["reasoning_effort"] == "max"
+    assert result["thinking"] == {"type": "enabled"}
+
+
+def test_normalize_deepseek_v4_low_medium_map_to_high_and_enable_thinking():
+    for effort in ("low", "medium", "high"):
+        payload = {"model": "deepseek-v4-flash", "reasoning_effort": effort}
+
+        result = normalize_openai_compatible_reasoning_controls(payload)
+
+        assert result["reasoning_effort"] == "high"
+        assert result["thinking"] == {"type": "enabled"}
+
+
+def test_normalize_deepseek_v4_auto_uses_enabled_toggle_without_effort():
+    payload = {"model": "deepseek-v4-flash", "reasoning_effort": "auto"}
+
+    result = normalize_openai_compatible_reasoning_controls(payload)
+
+    assert "reasoning_effort" not in result
+    assert result["thinking"] == {"type": "enabled"}
+
+
+def test_normalize_deepseek_v4_default_omits_reasoning_controls():
+    payload = {"model": "deepseek-v4-flash", "reasoning_effort": "default"}
+
+    result = normalize_openai_compatible_reasoning_controls(payload)
+
+    assert "reasoning_effort" not in result
+    assert "thinking" not in result
+
+
+def test_normalize_deepseek_hybrid_auto_uses_enabled_toggle_without_effort():
+    payload = {"model": "deepseek-chat-v3.1", "reasoning_effort": "auto"}
+
+    result = normalize_openai_compatible_reasoning_controls(payload)
+
+    assert "reasoning_effort" not in result
+    assert result["thinking"] == {"type": "enabled"}
+
+
+def test_normalize_deepseek_hybrid_off_omits_controls_for_default_non_thinking():
+    payload = {"model": "deepseek-chat-v3.1", "reasoning_effort": "none"}
+
+    result = normalize_openai_compatible_reasoning_controls(payload)
+
+    assert "reasoning_effort" not in result
+    assert "thinking" not in result
+
+
+def test_normalize_unknown_deepseek_positive_effort_is_preserved():
+    payload = {"model": "deepseek-r1", "reasoning_effort": "high"}
+
+    result = normalize_openai_compatible_reasoning_controls(payload)
+
+    assert result is payload
+    assert result["reasoning_effort"] == "high"
+
+
+def test_normalize_unknown_deepseek_auto_is_omitted():
+    payload = {"model": "deepseek-r1", "reasoning_effort": "auto"}
+
+    result = normalize_openai_compatible_reasoning_controls(payload)
+
+    assert "reasoning_effort" not in result
+    assert "thinking" not in result
+
+
+def test_normalize_deepseek_v4_responses_reasoning_off_uses_thinking_disabled():
+    payload = {"model": "deepseek-v4-flash", "reasoning": {"effort": "none"}}
+
+    result = normalize_openai_compatible_reasoning_controls(payload)
+
+    assert "reasoning" not in result
+    assert result["thinking"] == {"type": "disabled"}
+
+
+def test_normalize_deepseek_v4_responses_auto_uses_enabled_toggle_without_effort():
+    payload = {"model": "deepseek-v4-flash", "reasoning": {"effort": "auto"}}
+
+    result = normalize_openai_compatible_reasoning_controls(payload)
+
+    assert "reasoning" not in result
+    assert result["thinking"] == {"type": "enabled"}
+
+
+def test_normalize_deepseek_v4_responses_xhigh_maps_to_nested_effort():
+    payload = {"model": "deepseek-v4-flash", "reasoning": {"effort": "xhigh"}}
+
+    result = normalize_openai_compatible_reasoning_controls(payload)
+
+    assert result["reasoning"] == {"effort": "max"}
+    assert "reasoning_effort" not in result
+    assert result["thinking"] == {"type": "enabled"}
+
+
+def test_normalize_responses_reasoning_off_preserves_non_deepseek_models():
+    payload = {"model": "gpt-5.2", "reasoning": {"effort": "none"}}
+
+    result = normalize_openai_compatible_reasoning_controls(payload)
+
+    assert result is payload
+    assert result["reasoning"] == {"effort": "none"}

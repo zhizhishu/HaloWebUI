@@ -49,6 +49,7 @@ from open_webui.utils.payload import (
     apply_model_params_to_body_openai,
     apply_model_system_prompt_to_body,
     merge_additive_payload_fields,
+    normalize_openai_compatible_reasoning_controls,
     sanitize_incomplete_tool_call_messages,
 )
 from open_webui.utils.misc import (
@@ -1070,6 +1071,29 @@ def _coerce_new_api_pricing_model_entry(
     return normalized if normalized["id"] else None
 
 
+def _deduplicate_new_api_pricing_model_entries(
+    models: list[dict],
+) -> tuple[list[dict], dict[str, int]]:
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    duplicates_removed: dict[str, int] = {}
+
+    for model in models:
+        model_id = str(model.get("id") or "").strip()
+        if not model_id:
+            deduped.append(model)
+            continue
+
+        if model_id in seen:
+            duplicates_removed[model_id] = duplicates_removed.get(model_id, 0) + 1
+            continue
+
+        seen.add(model_id)
+        deduped.append(model)
+
+    return deduped, duplicates_removed
+
+
 def _normalize_new_api_public_pricing_response(
     body,
     *,
@@ -1094,20 +1118,30 @@ def _normalize_new_api_public_pricing_response(
         if (entry := _coerce_new_api_pricing_model_entry(item, api_config=api_config))
         is not None
     ]
+    models, duplicates_removed = _deduplicate_new_api_pricing_model_entries(models)
     if not models:
         return None
 
     pricing_url = _get_new_api_public_pricing_url(url)
+    metadata = {
+        "provider": "new-api",
+        "public_model_catalog": True,
+        "public_model_catalog_source": pricing_url or "/api/pricing",
+        "models_endpoint_status": models_status,
+        "models_endpoint_authorized": False,
+    }
+    if duplicates_removed:
+        metadata["public_model_catalog_duplicates_removed"] = sum(
+            duplicates_removed.values()
+        )
+        metadata["public_model_catalog_duplicate_model_ids"] = sorted(
+            duplicates_removed.keys()
+        )
+
     return {
         "object": "list",
         "data": models,
-        "_openwebui": {
-            "provider": "new-api",
-            "public_model_catalog": True,
-            "public_model_catalog_source": pricing_url or "/api/pricing",
-            "models_endpoint_status": models_status,
-            "models_endpoint_authorized": False,
-        },
+        "_openwebui": metadata,
     }
 
 
@@ -3013,6 +3047,10 @@ async def generate_chat_completion(
         payload_dict,
         custom_params,
         forbidden_keys=_CUSTOM_PARAM_FORBIDDEN_KEYS,
+    )
+    payload_dict = normalize_openai_compatible_reasoning_controls(
+        payload_dict,
+        model_id=model_id,
     )
 
     request_attempts = (

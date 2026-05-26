@@ -42,6 +42,24 @@ def test_normalize_openai_models_response_accepts_models_array():
     }
 
 
+def test_normalize_openai_models_response_does_not_create_duplicate_data_ids():
+    body = {
+        "object": "list",
+        "data": [
+            {"id": "deepseek-ai/deepseek-v4-flash", "object": "model"},
+            {"id": "deepseek-ai/deepseek-v4-flash", "object": "model"},
+        ],
+    }
+
+    normalized = _normalize_openai_models_response(body)
+
+    assert normalized is body
+    assert [model["id"] for model in normalized["data"]] == [
+        "deepseek-ai/deepseek-v4-flash",
+        "deepseek-ai/deepseek-v4-flash",
+    ]
+
+
 def test_looks_like_models_listing_unsupported_accepts_empty_404():
     assert _looks_like_models_listing_unsupported(404, "") is True
     assert _looks_like_models_listing_unsupported(405, "<html>not found</html>") is True
@@ -148,6 +166,46 @@ def test_normalize_new_api_public_pricing_response_filters_openai_chat_models():
     assert [model["id"] for model in normalized["data"]] == ["openai/gpt-4.1"]
     assert normalized["_openwebui"]["public_model_catalog"] is True
     assert normalized["_openwebui"]["models_endpoint_authorized"] is False
+
+
+def test_normalize_new_api_public_pricing_response_deduplicates_catalog_model_ids():
+    normalized = _normalize_new_api_public_pricing_response(
+        {
+            "success": True,
+            "supported_endpoint": {
+                "openai": {"path": "/v1/chat/completions", "method": "POST"},
+            },
+            "usable_group": {"default": "默认分组"},
+            "data": [
+                {
+                    "model_name": "deepseek-ai/deepseek-v4-flash",
+                    "supported_endpoint_types": ["openai"],
+                },
+                {
+                    "model_name": "deepseek-ai/deepseek-v4-flash",
+                    "supported_endpoint_types": ["openai"],
+                    "model_ratio": 0.5,
+                },
+                {
+                    "model_name": "deepseek-ai/deepseek-v4-pro",
+                    "supported_endpoint_types": ["openai"],
+                },
+            ],
+        },
+        url="https://open.cherryin.ai/v1",
+        api_config={},
+        models_status=404,
+    )
+
+    assert normalized is not None
+    assert [model["id"] for model in normalized["data"]] == [
+        "deepseek-ai/deepseek-v4-flash",
+        "deepseek-ai/deepseek-v4-pro",
+    ]
+    assert normalized["_openwebui"]["public_model_catalog_duplicates_removed"] == 1
+    assert normalized["_openwebui"]["public_model_catalog_duplicate_model_ids"] == [
+        "deepseek-ai/deepseek-v4-flash"
+    ]
 
 
 def test_normalize_new_api_public_pricing_response_allows_responses_models_when_enabled():
