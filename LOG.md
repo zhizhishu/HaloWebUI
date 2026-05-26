@@ -16,14 +16,22 @@
   - 前端 targeted vitest: 33 passed.
   - 前端 chat-event vitest: 2 passed.
   - 生产构建: `NODE_OPTIONS=--max-old-space-size=4096 npm run build` passed.
+- GitHub:
+  - `custom` Custom Regression Guard: success, run `26470361170`.
+  - `future` Custom Regression Guard: success, run `26470363875`.
+  - `custom` Docker workflow: success, run `26470361171`.
+  - `future` Docker workflow: success, run `26470363938`.
+- GHCR:
+  - `ghcr.io/zhizhishu/halowebui:custom`: `sha256:557eb5029bcd47e9fdcd2a404343d0baceee124237805b8d8f6fd7d2f997300b`, includes `linux/amd64` and `linux/arm64`.
+  - `ghcr.io/zhizhishu/halowebui:future`: `sha256:19742967a9259e24a10057d521b95e0d9d4e2e4eff23d3ae4465ec3326c25ab8`, includes `linux/amd64` and `linux/arm64`.
 - 清理: 未启动 dev server, 未打开浏览器, 未占用端口; subagent 已关闭.
-- 后续: 推送 `custom/future`, 等 GitHub Actions 与 GHCR 镜像门禁.
+- 后续: 当前 `custom/future` 同步任务已收口; `main` 的 Python CI / Frontend Build 红点可作为单独任务处理.
 
 ### Docker Workflow Recovery
 
 - 完成: 此前已把 Docker workflow 从官方 Docker actions 降级为纯 `git` / `docker` CLI 流程, 避开 GitHub Runner 下载 actions 失败.
 - 完成: `custom` 和 `future` Docker workflow 曾成功通过 build / merge / smoke-test.
-- 现状: 本轮推送后仍需重新检查最新 GitHub Actions 和 GHCR manifest.
+- 现状: 本轮最新 `custom/future` Docker workflow 已成功, GHCR 双架构 manifest 已确认.
 
 ### Project Handoff
 
