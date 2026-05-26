@@ -112,6 +112,7 @@
 	import { hasEffectivePersistedSelectionState } from '$lib/utils/composer-selection-state';
 	import { hasVisibleMessageFiles as messageHasVisibleFiles } from '$lib/utils/chat-message-errors';
 	import { hasActiveChatResponse } from '$lib/utils/chat-response-state';
+	import { getLatestEventMessage } from '$lib/utils/chat-event-state';
 
 	import { generateChatCompletion } from '$lib/apis/ollama';
 	import {
@@ -2350,6 +2351,7 @@
 			if (message) {
 				const type = event?.data?.type ?? null;
 				const data = event?.data?.data ?? null;
+				let shouldUseLatestMessageAfterEvent = false;
 
 				if (type === 'task-cancelled') {
 					await markResponseMessagesStopped(message.id);
@@ -2377,6 +2379,7 @@
 					}
 				} else if (type === 'chat:completion') {
 					await chatCompletionEventHandler(data, message, event.chat_id);
+					shouldUseLatestMessageAfterEvent = true;
 				} else if (type === 'chat:message:delta' || type === 'message') {
 					getResponseAnimationController(message).enqueue(data.content ?? '');
 				} else if (type === 'chat:message' || type === 'replace') {
@@ -2472,6 +2475,9 @@
 					// no-op: unknown event type
 				}
 
+				if (shouldUseLatestMessageAfterEvent) {
+					message = getLatestEventMessage(history, event.message_id, message);
+				}
 				history.messages[event.message_id] = message;
 			}
 		}
@@ -3787,7 +3793,7 @@
 		if ($chatId == chatId) {
 			if (!$temporaryChatEnabled) {
 				await saveChatHandler(chatId, history, {
-					messages
+					messages: createMessagesList(history, responseMessageId)
 				});
 			}
 		}
