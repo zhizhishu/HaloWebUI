@@ -38,5 +38,5 @@
 
 - 完成：`origin/custom` 与 `origin/future` 已在 `619e11e`; `origin/main` 已在作者最新 `785a055`。
 - 发现：GitHub 自动 Actions 仍只显示旧 SHA `32c4d11`; 直接 `workflow_dispatch` 对回归和镜像 workflow 连续返回 HTTP 500。
-- 修改：修复 `.github/workflows/custom-regression-guard.yaml` 中一行调度注释, 用非文档提交触发 `custom/future` push workflows。
+- 修改：修复 `.github/workflows/custom-regression-guard.yaml` 中一行调度注释; 如果该提交仍未触发 Actions, 再用 backend 单测注释提交命中 `backend/**` 路径。
 - 验证：提交后等待 `Custom Regression Guard` 与 `Create and publish Docker images with specific build args`; GHCR 需复查 `custom` / `slim` 双架构 manifest。

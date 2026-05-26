@@ -13,6 +13,7 @@ from open_webui.models.models import Models
 from open_webui.models.users import UserModel, UserSettings
 
 
+# Keep these fixtures small so inheritance regressions stay easy to isolate.
 class _WorkspaceModel:
     id = "workspace-preset"
     user_id = "admin-1"
