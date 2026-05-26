@@ -2,7 +2,7 @@
 
 ## Handoff Summary
 
-当前目标：作者最新 `upstream/main=785a055` 已合入 `custom`; `custom/future` 已推到 `origin`; GitHub Docker 镜像发布 workflow 红点已修复并发布成功。
+当前目标：按用户要求再次拉取作者最新 `upstream/main`, 如有更新则同步到 `main/custom/future`, 保留二创并推送 GitHub; 结束前做 subagent 审计。
 已完成：
 - 六条线代码工作已收口：接口配置、模型继承、MCP 继承、工具技能状态、新旧聊天发送状态、原生联网提示。
 - 当前代码基线：`custom` / `origin/custom` / `origin/future` = `f506f2b docs: record image publish blocker`。
@@ -15,8 +15,10 @@
 - 首次去 action 化 run 已越过 Set up job, 但手写 checkout 的 `bearer` git 认证失败; 已改为 `basic x-access-token` extraheader。
 - 最终 Docker workflow 成功：`custom` run `26449754920`, `future` run `26449754900`, 两者 build / merge / smoke-test 全部通过。
 下一步：
-- 服务器可重新 `docker pull ghcr.io/zhizhishu/halowebui:custom` 并重建容器。
-- 如要继续减少 GHCR 临时标签, 后续可单独设计 tag 清理或 digest 传递方案。
+- `git fetch --all --prune` 确认作者是否有新提交。
+- 若 `upstream/main` 前进: 同步 `main`, 合入 `custom`, 解决冲突, 验证后推 `origin/custom` 与 `origin/future`。
+- 若 `upstream/main` 未前进: 不做空提交, 只记录状态并报告。
+- 派只读 subagent 做同步/提交前审计。
 - 不再主动泛扫 issue；只在用户点名、真实复现、上游同步冲突、Actions/GHCR 失败时处理。
 关键文件：
 - `PROJECT_ID.md`
@@ -39,14 +41,16 @@
 - 修复后 run `26449754920` / `26449754900` 成功; GHCR `custom` digest `sha256:b234dccda9ad0973caa24fa6a618b4208a8a5f68f022a1a40913480da2b7f9be`, `future` digest `sha256:c3eabcb2b9b522dbc6dc758c175cb988528bf82a947f802b1d0dc4efd7a44c64`, 均含 `linux/amd64` 与 `linux/arm64`。
 风险/待确认：
 - 新 workflow 会留下 `build-<branch>-<sha>-main/slim-<platform>` 临时平台标签, 用来替代 artifact/digest 传递并规避 action 下载失败。
+- 待确认作者 `upstream/main` 是否较当前 `origin/main=785a055` 有新提交。
 资源清理：
-- 本轮未启动 dev server、未打开浏览器、未占用端口; 临时 buildx builder 待清理。
-最后更新：2026-05-26 06:17:39 -07:00
+- 本轮未启动 dev server、未打开浏览器、未占用端口。
+最后更新：2026-05-26 12:06:12 -07:00
 
 ## Active Tasks
 
 - [x] **Goal:** 补齐 `TASK.md` / `LOG.md`, 并把项目文件入口从旧 `TASK_LOG.md` 切到新接力结构。
 - [x] **Goal:** 修复 Docker 镜像发布 workflow 红点, 推送后确认 GHCR `custom` / `future` 新 manifest。
+- [ ] **Goal:** 拉取作者最新 `upstream/main`, 同步二创分支并完成 subagent 审计。
 
 ## Notes For Next Agent
 
