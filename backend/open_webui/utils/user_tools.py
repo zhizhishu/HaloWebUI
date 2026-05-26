@@ -263,7 +263,9 @@ def _get_admin_mcp_seed_connections(
             if MCP_SERVER_CONNECTIONS_KEY in tools:
                 admin_connections = _as_list(tools.get(MCP_SERVER_CONNECTIONS_KEY))
                 for idx, connection in enumerate(admin_connections):
-                    server_id = build_admin_mcp_server_resource_id(candidate_id, idx)
+                    server_id = build_admin_mcp_server_resource_id(
+                        candidate_id, idx, connection
+                    )
                     if not is_admin_mcp_server_allowed_for_user(target_user, server_id):
                         continue
                     inherited = deepcopy(connection)
@@ -281,7 +283,7 @@ def _get_admin_mcp_seed_connections(
     legacy = legacy if isinstance(legacy, list) else []
     legacy_connections: list[dict] = []
     for idx, connection in enumerate(legacy):
-        server_id = build_admin_mcp_server_resource_id("legacy", idx)
+        server_id = build_admin_mcp_server_resource_id("legacy", idx, connection)
         if not is_admin_mcp_server_allowed_for_user(target_user, server_id):
             continue
         inherited = deepcopy(connection)

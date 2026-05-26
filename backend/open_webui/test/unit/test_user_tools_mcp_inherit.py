@@ -288,6 +288,98 @@ def test_regular_user_selected_admin_mcp_ids_filter_inherited_servers(monkeypatc
     assert [item["url"] for item in result] == ["https://second.example.com"]
 
 
+def test_regular_user_selected_admin_mcp_stable_ids_survive_reorder(monkeypatch):
+    from open_webui.utils import user_tools as user_tools_mod
+
+    admin_user = SimpleNamespace(
+        id="admin-1",
+        role="admin",
+        settings=_Settings(
+            {
+                "tools": {
+                    "mcp_server_connections": [
+                        {
+                            "id": "second-mcp",
+                            "transport_type": "http",
+                            "url": "https://second.example.com",
+                        },
+                        {
+                            "id": "first-mcp",
+                            "transport_type": "http",
+                            "url": "https://first.example.com",
+                        },
+                    ]
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(user_tools_mod.Users, "get_users", lambda: [admin_user])
+
+    request = _build_request(inherit_enabled=True)
+    regular_user = SimpleNamespace(
+        id="user-1",
+        role="user",
+        settings=_Settings(
+            {
+                "resource_inheritance": {
+                    "admin_mcp_servers": True,
+                    "admin_mcp_server_ids": ["admin-1:id:second-mcp"],
+                }
+            }
+        ),
+    )
+
+    result = user_tools_mod.get_user_mcp_server_connections(request, regular_user)
+
+    assert [item["url"] for item in result] == ["https://second.example.com"]
+
+
+def test_legacy_admin_mcp_index_does_not_match_id_backed_connections(monkeypatch):
+    from open_webui.utils import user_tools as user_tools_mod
+
+    admin_user = SimpleNamespace(
+        id="admin-1",
+        role="admin",
+        settings=_Settings(
+            {
+                "tools": {
+                    "mcp_server_connections": [
+                        {
+                            "id": "first-mcp",
+                            "transport_type": "http",
+                            "url": "https://first.example.com",
+                        },
+                        {
+                            "id": "second-mcp",
+                            "transport_type": "http",
+                            "url": "https://second.example.com",
+                        },
+                    ]
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(user_tools_mod.Users, "get_users", lambda: [admin_user])
+
+    request = _build_request(inherit_enabled=True)
+    regular_user = SimpleNamespace(
+        id="user-1",
+        role="user",
+        settings=_Settings(
+            {
+                "resource_inheritance": {
+                    "admin_mcp_servers": True,
+                    "admin_mcp_server_ids": ["admin-1:1"],
+                }
+            }
+        ),
+    )
+
+    result = user_tools_mod.get_user_mcp_server_connections(request, regular_user)
+
+    assert result == []
+
+
 def test_regular_user_empty_selected_admin_mcp_ids_block_all_inherited_servers(
     monkeypatch,
 ):
@@ -344,6 +436,36 @@ def test_admin_mcp_inheritance_connections_mark_legacy_ids(monkeypatch):
 
     assert result[0]["_inherit_id"] == "legacy:0"
     assert result[0]["_inherited_from_user_id"] == "legacy"
+
+
+def test_admin_mcp_inheritance_connections_mark_stable_ids(monkeypatch):
+    from open_webui.utils import user_tools as user_tools_mod
+
+    admin_user = SimpleNamespace(
+        id="admin-1",
+        role="admin",
+        settings=_Settings(
+            {
+                "tools": {
+                    "mcp_server_connections": [
+                        {
+                            "id": "admin-mcp-1",
+                            "transport_type": "http",
+                            "url": "https://mcp.example.com",
+                        }
+                    ]
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(user_tools_mod.Users, "get_users", lambda: [admin_user])
+
+    request = _build_request(inherit_enabled=True)
+
+    result = user_tools_mod.get_admin_mcp_inheritance_connections(request)
+
+    assert result[0]["_inherit_id"] == "admin-1:id:admin-mcp-1"
+    assert result[0]["_inherited_from_user_id"] == "admin-1"
 
 
 def test_mcp_tool_ids_are_allowed_for_inherited_mcp_without_direct_permission(monkeypatch):

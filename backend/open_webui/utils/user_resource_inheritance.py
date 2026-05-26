@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 from open_webui.models.users import UserModel
@@ -116,5 +117,21 @@ def is_admin_mcp_server_allowed_for_user(
     return _is_allowed(get_allowed_admin_mcp_server_ids(user), [server_id])
 
 
-def build_admin_mcp_server_resource_id(owner_id: Any, index: int) -> str:
-    return f"{str(owner_id or 'admin').strip()}:{int(index)}"
+MCP_CONNECTION_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+
+def _normalize_mcp_connection_id(value: Any) -> str:
+    connection_id = str(value or "").strip()
+    return connection_id if MCP_CONNECTION_ID_RE.match(connection_id) else ""
+
+
+def build_admin_mcp_server_resource_id(
+    owner_id: Any, index: int, connection: Optional[dict] = None
+) -> str:
+    owner = str(owner_id or "admin").strip()
+    stable_id = _normalize_mcp_connection_id(
+        (connection or {}).get("id") if isinstance(connection, dict) else None
+    )
+    if stable_id:
+        return f"{owner}:id:{stable_id}"
+    return f"{owner}:{int(index)}"

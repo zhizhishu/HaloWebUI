@@ -513,6 +513,7 @@ async def get_resource_inheritance_options(
                 server_id = build_admin_mcp_server_resource_id(
                     connection.get("_inherited_from_user_id") or "admin",
                     idx,
+                    connection,
                 )
             if server_id in mcp_options_by_id:
                 continue

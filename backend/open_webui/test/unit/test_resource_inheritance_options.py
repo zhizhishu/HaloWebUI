@@ -78,3 +78,36 @@ def test_resource_inheritance_options_include_admin_models_and_mcp(monkeypatch):
     assert result["admin_models"][0]["owner_name"] == "Admin"
     assert result["admin_mcp_servers"][0]["id"] == "admin-1:0"
     assert result["admin_mcp_servers"][0]["name"] == "Admin MCP"
+
+
+def test_resource_inheritance_options_expose_stable_admin_mcp_ids(monkeypatch):
+    admin = _make_admin()
+
+    async def fake_get_all_base_models(_request, user=None):
+        return []
+
+    monkeypatch.setattr(users_router.Users, "get_users", lambda: [admin])
+    monkeypatch.setattr(
+        "open_webui.utils.models.get_all_base_models", fake_get_all_base_models
+    )
+    monkeypatch.setattr(Models, "get_all_models", lambda: [])
+    monkeypatch.setattr(
+        users_router,
+        "get_admin_mcp_inheritance_connections",
+        lambda _request: [
+            {
+                "_inherit_id": "admin-1:id:admin-mcp-1",
+                "_inherited_from_user_id": "admin-1",
+                "id": "admin-mcp-1",
+                "url": "https://mcp.example.com",
+                "name": "Admin MCP",
+                "transport_type": "streamable_http",
+            }
+        ],
+    )
+
+    result = asyncio.run(
+        users_router.get_resource_inheritance_options(_make_request(), session_user=admin)
+    )
+
+    assert result["admin_mcp_servers"][0]["id"] == "admin-1:id:admin-mcp-1"
