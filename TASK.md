@@ -2,7 +2,7 @@
 
 ## Handoff Summary
 
-当前目标：作者最新 `upstream/main=785a055` 已合入 `custom`; `custom/future` 已推到 `origin`; 代码同步完成, 正在修复 GitHub Docker 镜像发布 workflow 的 runner 下载失败红点。
+当前目标：作者最新 `upstream/main=785a055` 已合入 `custom`; `custom/future` 已推到 `origin`; GitHub Docker 镜像发布 workflow 红点已修复并发布成功。
 已完成：
 - 六条线代码工作已收口：接口配置、模型继承、MCP 继承、工具技能状态、新旧聊天发送状态、原生联网提示。
 - 当前代码基线：`custom` / `origin/custom` / `origin/future` = `f506f2b docs: record image publish blocker`。
@@ -13,9 +13,10 @@
 - Docker workflow 已恢复触发, 但失败在 GitHub Runner 下载官方 Docker actions 的 Set up job 阶段, 不是代码构建阶段。
 - 已将 `.github/workflows/docker-build.yaml` 改为纯 `git` / `docker` CLI 流程, 移除 `docker/setup-buildx-action`, `docker/login-action`, `docker/metadata-action`, `docker/build-push-action`, artifact actions 与 `actions/checkout` 的下载面。
 - 首次去 action 化 run 已越过 Set up job, 但手写 checkout 的 `bearer` git 认证失败; 已改为 `basic x-access-token` extraheader。
+- 最终 Docker workflow 成功：`custom` run `26449754920`, `future` run `26449754900`, 两者 build / merge / smoke-test 全部通过。
 下一步：
-- 提交并推送 workflow 修复到 `custom` 与 `future`, 观察新 Docker workflow。
-- 成功后复查 GHCR `custom` / `future` manifest 是否含 `linux/amd64` 与 `linux/arm64`。
+- 服务器可重新 `docker pull ghcr.io/zhizhishu/halowebui:custom` 并重建容器。
+- 如要继续减少 GHCR 临时标签, 后续可单独设计 tag 清理或 digest 传递方案。
 - 不再主动泛扫 issue；只在用户点名、真实复现、上游同步冲突、Actions/GHCR 失败时处理。
 关键文件：
 - `PROJECT_ID.md`
@@ -35,17 +36,17 @@
 - Docker workflow run `26448300909` / `26448300968` 已触发但失败在下载 `docker/setup-buildx-action` / `docker/login-action` / `docker/metadata-action` 的 action archive。
 - 本地 `rg "uses:" .github/workflows/docker-build.yaml` 无匹配; `git diff --check` 通过; YAML 可解析。
 - 去 action 化 run `26449592497` / `26449592535` 进入自定义 shell 步骤后失败在 `git fetch`, 原因为 GitHub git 不接受当前 `bearer` header; 已改为 `basic x-access-token`。
+- 修复后 run `26449754920` / `26449754900` 成功; GHCR `custom` digest `sha256:b234dccda9ad0973caa24fa6a618b4208a8a5f68f022a1a40913480da2b7f9be`, `future` digest `sha256:c3eabcb2b9b522dbc6dc758c175cb988528bf82a947f802b1d0dc4efd7a44c64`, 均含 `linux/amd64` 与 `linux/arm64`。
 风险/待确认：
-- GHCR `custom` 当前仍是旧成功镜像 digest; 服务器现在拉取不会得到本轮 workflow 修复后的新镜像。
 - 新 workflow 会留下 `build-<branch>-<sha>-main/slim-<platform>` 临时平台标签, 用来替代 artifact/digest 传递并规避 action 下载失败。
 资源清理：
 - 本轮未启动 dev server、未打开浏览器、未占用端口; 临时 buildx builder 待清理。
-最后更新：2026-05-26 06:05:04 -07:00
+最后更新：2026-05-26 06:17:39 -07:00
 
 ## Active Tasks
 
 - [x] **Goal:** 补齐 `TASK.md` / `LOG.md`, 并把项目文件入口从旧 `TASK_LOG.md` 切到新接力结构。
-- [ ] **Goal:** 修复 Docker 镜像发布 workflow 红点, 推送后确认 GHCR `custom` / `future` 新 manifest。
+- [x] **Goal:** 修复 Docker 镜像发布 workflow 红点, 推送后确认 GHCR `custom` / `future` 新 manifest。
 
 ## Notes For Next Agent
 

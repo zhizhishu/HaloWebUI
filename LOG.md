@@ -56,5 +56,7 @@
 - 修改：将 `.github/workflows/docker-build.yaml` 改为纯 `git` / `docker` CLI 流程, 去掉 Docker 官方 actions、artifact actions 与 `actions/checkout` 的下载依赖。
 - 验证：`rg "uses:" .github/workflows/docker-build.yaml` 无匹配; `git diff --check` 通过; YAML 可解析; 首次 run 已越过 Set up job, 但手写 checkout 的 `bearer` header 被 GitHub git 拒绝。
 - 修改：checkout 改为 `basic x-access-token` extraheader, 并让 builder 清理步骤只在 builder 已创建时执行。
-- 清理：未启动 dev server, 未打开浏览器, 未占用端口。
-- 后续：提交并推送到 `custom` / `future`, 观察新 Docker workflow, 成功后复查 GHCR `custom` / `future` 双架构 manifest。
+- 验证：修复后 `custom` run `26449754920` 与 `future` run `26449754900` 成功, build / merge / smoke-test 全部通过。
+- 验证：GHCR `custom` digest `sha256:b234dccda9ad0973caa24fa6a618b4208a8a5f68f022a1a40913480da2b7f9be`, `future` digest `sha256:c3eabcb2b9b522dbc6dc758c175cb988528bf82a947f802b1d0dc4efd7a44c64`, 均包含 `linux/amd64` 与 `linux/arm64`。
+- 清理：未启动 dev server, 未打开浏览器, 未占用端口; subagent 已关闭。
+- 后续：服务器可拉取 `ghcr.io/zhizhishu/halowebui:custom` 重建容器; 后续如介意 GHCR 临时平台标签, 可单独做 tag 清理方案。
