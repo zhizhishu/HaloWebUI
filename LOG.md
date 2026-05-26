@@ -40,3 +40,10 @@
 - 发现：GitHub 自动 Actions 仍只显示旧 SHA `32c4d11`; 直接 `workflow_dispatch` 对回归和镜像 workflow 连续返回 HTTP 500。
 - 修改：修复 `.github/workflows/custom-regression-guard.yaml` 中一行调度注释; 如果该提交仍未触发 Actions, 再用 backend 单测注释提交命中 `backend/**` 路径。
 - 验证：提交后等待 `Custom Regression Guard` 与 `Create and publish Docker images with specific build args`; GHCR 需复查 `custom` / `slim` 双架构 manifest。
+
+### 镜像发布降级处理
+
+- 发现：`f7c0d64` 与 `4516d69` push 事件存在, 但 GitHub Actions 仍未创建 run; 仓库 Actions 权限为 enabled/write, workflow 状态为 active。
+- 尝试：本地登录 GHCR, 创建 `halowebui-multi` buildx builder, 注册 `arm64` binfmt, 按 workflow 等价参数构建 `custom` / `future` / `git-4516d69` 双架构镜像。
+- 结果：本地双架构构建在 `npm ci` 阶段因 `ETIMEDOUT` 失败, 未推送新镜像。
+- 修改：给 `.npmrc` 添加 npm fetch 重试和超时配置, 供后续 GitHub Actions 或本地 buildx 重试使用。
