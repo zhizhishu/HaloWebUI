@@ -14,7 +14,7 @@
 
 	import { toast } from 'svelte-sonner';
 	import { getChatList, updateChatById } from '$lib/apis/chats';
-	import { copyToClipboard, extractCurlyBraceWords } from '$lib/utils';
+	import { copyToClipboard, createMessagesList, extractCurlyBraceWords } from '$lib/utils';
 
 	import Message from './Messages/Message.svelte';
 	import Loader from '../common/Loader.svelte';
@@ -89,15 +89,9 @@
 	};
 
 	$: if (history.currentId) {
-		let _messages = [];
-
-		let message = history.messages[history.currentId];
-		while (message && (showAllMessages || _messages.length < messagesCount)) {
-			_messages.unshift({ ...message });
-			message = message.parentId !== null ? history.messages[message.parentId] : null;
-		}
-
-		messages = _messages;
+		const messagePath = createMessagesList(history, history.currentId);
+		const visibleMessages = showAllMessages ? messagePath : messagePath.slice(-messagesCount);
+		messages = visibleMessages.map((message) => ({ ...message }));
 	} else {
 		messages = [];
 	}

@@ -1405,16 +1405,31 @@ export const isYoutubeUrl = (value: string) => {
 };
 
 export const createMessagesList = (history, messageId) => {
-	if (messageId === null) {
+	if (messageId === null || messageId === undefined) {
 		return [];
 	}
 
-	const message = history.messages[messageId];
-	if (message?.parentId) {
-		return [...createMessagesList(history, message.parentId), message];
-	} else {
-		return [message];
+	const messagesById = history?.messages ?? {};
+	const messages = [];
+	const visited = new Set();
+	let currentId = messageId;
+
+	while (currentId !== null && currentId !== undefined) {
+		if (visited.has(currentId)) {
+			break;
+		}
+		visited.add(currentId);
+
+		const message = messagesById[currentId];
+		if (!message) {
+			break;
+		}
+
+		messages.unshift(message);
+		currentId = message.parentId;
 	}
+
+	return messages;
 };
 
 export const formatFileSize = (size) => {
