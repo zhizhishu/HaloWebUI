@@ -49,3 +49,11 @@
 - 修改：给 `.npmrc` 添加 npm fetch 重试和超时配置, 供后续 GitHub Actions 或本地 buildx 重试使用。
 - 结果：`.npmrc` 提交 `c3c7dc9` 成功触发 Docker workflow, 但 `custom` run `26448300909` 和 `future` run `26448300968` 均失败在 Set up job 下载官方 Docker actions 阶段; 本机 curl 对相同 codeload URL 返回 200, 判断为 GitHub Runner 下载侧问题。
 - 后续：等 GitHub Runner/codeload 恢复后 rerun failed jobs, 或在网络更稳定环境重跑本地 buildx 双架构推送。
+
+### Docker workflow 去 action 化
+
+- 完成：确认 `26448300909` 与 `26448300968` 红点都死在 Set up job 下载 `docker/setup-buildx-action`, `docker/login-action`, `docker/metadata-action` 的 codeload archive, 不是代码、测试或 Dockerfile 构建失败。
+- 修改：将 `.github/workflows/docker-build.yaml` 改为纯 `git` / `docker` CLI 流程, 去掉 Docker 官方 actions、artifact actions 与 `actions/checkout` 的下载依赖。
+- 验证：`rg "uses:" .github/workflows/docker-build.yaml` 无匹配; `git diff --check` 通过; YAML 可解析。
+- 清理：未启动 dev server, 未打开浏览器, 未占用端口。
+- 后续：提交并推送到 `custom` / `future`, 观察新 Docker workflow, 成功后复查 GHCR `custom` / `future` 双架构 manifest。

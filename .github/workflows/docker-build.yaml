@@ -35,79 +35,67 @@ jobs:
           - linux/arm64
 
     steps:
-      # GitHub Packages requires the entire repository name to be in lowercase
-      # although the repository owner has a lowercase username, this prevents some people from running actions after forking
       - name: Set repository and image name to lowercase
         run: |
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >>${GITHUB_ENV}
-          echo "FULL_IMAGE_NAME=ghcr.io/${IMAGE_NAME,,}" >>${GITHUB_ENV}
-        env:
-          IMAGE_NAME: '${{ github.repository }}'
+          set -euo pipefail
+          image_name="${GITHUB_REPOSITORY,,}"
+          echo "IMAGE_NAME=${image_name}" >> "$GITHUB_ENV"
+          echo "FULL_IMAGE_NAME=${REGISTRY}/${image_name}" >> "$GITHUB_ENV"
 
       - name: Prepare
         run: |
-          platform=${{ matrix.platform }}
-          ref_name=${GITHUB_REF_NAME//\//-}
-          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
-          echo "CACHE_SCOPE=docker-${ref_name}-${platform//\//-}" >> $GITHUB_ENV
-          echo "CACHE_SCOPE_SHARED=docker-shared-${platform//\//-}" >> $GITHUB_ENV
+          set -euo pipefail
+          platform='${{ matrix.platform }}'
+          platform_pair="${platform//\//-}"
+          ref_tag="${GITHUB_REF_NAME//\//-}"
+          ref_tag="$(sed -E 's/[^A-Za-z0-9_.-]+/-/g; s/^-+//; s/-+$//' <<< "$ref_tag")"
+          ref_tag="${ref_tag:-ref}"
+          echo "PLATFORM_PAIR=${platform_pair}" >> "$GITHUB_ENV"
+          echo "REF_TAG=${ref_tag:0:48}" >> "$GITHUB_ENV"
+          echo "TEMP_TAG=build-${ref_tag:0:48}-${GITHUB_SHA:0:12}-main-${platform_pair}" >> "$GITHUB_ENV"
+          echo "BUILDER_NAME=halo-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-main-${platform_pair}" >> "$GITHUB_ENV"
 
       - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" fetch --no-tags --prune --depth=1 origin "$GITHUB_SHA"
+          git checkout --force --detach FETCH_HEAD
 
       - name: Log in to the Container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
 
-      - name: Extract metadata for Docker images (default latest tag)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.FULL_IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=sha,prefix=git-
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-          flavor: |
-            latest=${{ github.ref == 'refs/heads/main' }}
+      - name: Set up Docker Buildx
+        run: |
+          set -euo pipefail
+          docker buildx version
+          docker buildx create --name "$BUILDER_NAME" --driver docker-container --use
+          docker buildx inspect --bootstrap
 
       - name: Build Docker image (latest)
-        uses: docker/build-push-action@v6
-        id: build
-        with:
-          context: .
-          push: true
-          platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: false
-          outputs: type=image,name=${{ env.FULL_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:cache-main-${{ env.PLATFORM_PAIR }}
-          cache-to: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:cache-main-${{ env.PLATFORM_PAIR }},mode=max
-          build-args: |
-            BUILD_HASH=${{ github.sha }}
-            HALO_RUNTIME_PROFILE=main
-
-      - name: Export digest
         run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
+          set -euo pipefail
+          docker buildx build \
+            --platform '${{ matrix.platform }}' \
+            --push \
+            --provenance=false \
+            --cache-from "type=registry,ref=${FULL_IMAGE_NAME}:cache-main-${PLATFORM_PAIR}" \
+            --cache-to "type=registry,ref=${FULL_IMAGE_NAME}:cache-main-${PLATFORM_PAIR},mode=max" \
+            --build-arg "BUILD_HASH=${GITHUB_SHA}" \
+            --build-arg "HALO_RUNTIME_PROFILE=main" \
+            -t "${FULL_IMAGE_NAME}:${TEMP_TAG}" \
+            .
 
-      - name: Upload digest
-        uses: actions/upload-artifact@v4
-        with:
-          name: digests-main-${{ env.PLATFORM_PAIR }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
+      - name: Clean up builder
+        if: always()
+        run: |
+          docker buildx rm "$BUILDER_NAME" || true
 
   merge-main-images:
     runs-on: ubuntu-latest
@@ -116,62 +104,87 @@ jobs:
       contents: read
       packages: write
     outputs:
-      image_ref: ${{ steps.export_image_ref.outputs.image_ref }}
+      image_ref: ${{ steps.publish.outputs.image_ref }}
     steps:
-      # GitHub Packages requires the entire repository name to be in lowercase
-      # although the repository owner has a lowercase username, this prevents some people from running actions after forking
       - name: Set repository and image name to lowercase
         run: |
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >>${GITHUB_ENV}
-          echo "FULL_IMAGE_NAME=ghcr.io/${IMAGE_NAME,,}" >>${GITHUB_ENV}
-        env:
-          IMAGE_NAME: '${{ github.repository }}'
+          set -euo pipefail
+          image_name="${GITHUB_REPOSITORY,,}"
+          echo "IMAGE_NAME=${image_name}" >> "$GITHUB_ENV"
+          echo "FULL_IMAGE_NAME=${REGISTRY}/${image_name}" >> "$GITHUB_ENV"
 
-      - name: Download digests
-        uses: actions/download-artifact@v4
-        with:
-          pattern: digests-main-*
-          path: /tmp/digests
-          merge-multiple: true
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Prepare
+        run: |
+          set -euo pipefail
+          ref_tag="${GITHUB_REF_NAME//\//-}"
+          ref_tag="$(sed -E 's/[^A-Za-z0-9_.-]+/-/g; s/^-+//; s/-+$//' <<< "$ref_tag")"
+          ref_tag="${ref_tag:-ref}"
+          echo "REF_TAG=${ref_tag:0:48}" >> "$GITHUB_ENV"
+          echo "TEMP_PREFIX=build-${ref_tag:0:48}-${GITHUB_SHA:0:12}-main" >> "$GITHUB_ENV"
 
       - name: Log in to the Container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata for Docker images (default latest tag)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.FULL_IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=sha,prefix=git-
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-          flavor: |
-            latest=${{ github.ref == 'refs/heads/main' }}
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
 
       - name: Create manifest list and push
-        working-directory: /tmp/digests
+        id: publish
         run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.FULL_IMAGE_NAME }}@sha256:%s ' *)
+          set -euo pipefail
 
-      - name: Inspect image
-        run: |
-          docker buildx imagetools inspect ${{ env.FULL_IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+          sanitize_tag() {
+            local tag="$1"
+            tag="${tag//\//-}"
+            tag="$(sed -E 's/[^A-Za-z0-9_.-]+/-/g; s/^-+//; s/-+$//' <<< "$tag")"
+            tag="${tag:-git-${GITHUB_SHA:0:7}}"
+            printf '%s' "${tag:0:128}"
+          }
 
-      - name: Export image ref for smoke test
-        id: export_image_ref
-        run: |
-          echo "image_ref=${{ env.FULL_IMAGE_NAME }}:${{ steps.meta.outputs.version }}" >> "$GITHUB_OUTPUT"
+          short_sha="${GITHUB_SHA:0:7}"
+          tags=()
+          primary_tag=""
+
+          if [[ "$GITHUB_REF_TYPE" == "branch" ]]; then
+            branch_tag="$(sanitize_tag "$GITHUB_REF_NAME")"
+            tags+=("$branch_tag" "git-${short_sha}")
+            primary_tag="$branch_tag"
+            if [[ "$GITHUB_REF_NAME" == "main" ]]; then
+              tags+=("latest")
+            fi
+          elif [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            ref_tag="$(sanitize_tag "$GITHUB_REF_NAME")"
+            version="${GITHUB_REF_NAME#v}"
+            tags+=("$ref_tag" "git-${short_sha}")
+            primary_tag="$ref_tag"
+            if [[ "$version" =~ ^[0-9]+([.][0-9]+){1,2}([-+].*)?$ ]]; then
+              version_tag="$(sanitize_tag "$version")"
+              major_minor="$(sed -E 's/^([0-9]+)[.]([0-9]+).*/\1.\2/' <<< "$version")"
+              tags+=("$version_tag" "$(sanitize_tag "$major_minor")")
+              primary_tag="$version_tag"
+            fi
+          else
+            primary_tag="git-${short_sha}"
+            tags+=("$primary_tag")
+          fi
+
+          declare -A seen=()
+          tag_args=()
+          echo "Publishing tags:"
+          for tag in "${tags[@]}"; do
+            if [[ -n "${seen[$tag]:-}" ]]; then
+              continue
+            fi
+            seen[$tag]=1
+            echo "  - ${FULL_IMAGE_NAME}:${tag}"
+            tag_args+=("-t" "${FULL_IMAGE_NAME}:${tag}")
+          done
+
+          docker buildx imagetools create "${tag_args[@]}" \
+            "${FULL_IMAGE_NAME}:${TEMP_PREFIX}-linux-amd64" \
+            "${FULL_IMAGE_NAME}:${TEMP_PREFIX}-linux-arm64"
+
+          docker buildx imagetools inspect "${FULL_IMAGE_NAME}:${primary_tag}"
+          echo "image_ref=${FULL_IMAGE_NAME}:${primary_tag}" >> "$GITHUB_OUTPUT"
 
   smoke-test-main-image:
     runs-on: ubuntu-latest
@@ -181,14 +194,20 @@ jobs:
       packages: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" fetch --no-tags --prune --depth=1 origin "$GITHUB_SHA"
+          git checkout --force --detach FETCH_HEAD
 
       - name: Log in to the Container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
 
       - name: Run smoke test
         env:
@@ -212,72 +231,65 @@ jobs:
     steps:
       - name: Set repository and image name to lowercase
         run: |
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >>${GITHUB_ENV}
-          echo "FULL_IMAGE_NAME=ghcr.io/${IMAGE_NAME,,}" >>${GITHUB_ENV}
-        env:
-          IMAGE_NAME: '${{ github.repository }}'
+          set -euo pipefail
+          image_name="${GITHUB_REPOSITORY,,}"
+          echo "IMAGE_NAME=${image_name}" >> "$GITHUB_ENV"
+          echo "FULL_IMAGE_NAME=${REGISTRY}/${image_name}" >> "$GITHUB_ENV"
 
       - name: Prepare
         run: |
-          platform=${{ matrix.platform }}
-          ref_name=${GITHUB_REF_NAME//\//-}
-          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
-          echo "CACHE_SCOPE=docker-slim-${ref_name}-${platform//\//-}" >> $GITHUB_ENV
-          echo "CACHE_SCOPE_SHARED=docker-slim-shared-${platform//\//-}" >> $GITHUB_ENV
+          set -euo pipefail
+          platform='${{ matrix.platform }}'
+          platform_pair="${platform//\//-}"
+          ref_tag="${GITHUB_REF_NAME//\//-}"
+          ref_tag="$(sed -E 's/[^A-Za-z0-9_.-]+/-/g; s/^-+//; s/-+$//' <<< "$ref_tag")"
+          ref_tag="${ref_tag:-ref}"
+          echo "PLATFORM_PAIR=${platform_pair}" >> "$GITHUB_ENV"
+          echo "REF_TAG=${ref_tag:0:48}" >> "$GITHUB_ENV"
+          echo "TEMP_TAG=build-${ref_tag:0:48}-${GITHUB_SHA:0:12}-slim-${platform_pair}" >> "$GITHUB_ENV"
+          echo "BUILDER_NAME=halo-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-slim-${platform_pair}" >> "$GITHUB_ENV"
 
       - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" fetch --no-tags --prune --depth=1 origin "$GITHUB_SHA"
+          git checkout --force --detach FETCH_HEAD
 
       - name: Log in to the Container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
 
-      - name: Extract metadata for Docker images (slim tag)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.FULL_IMAGE_NAME }}
-          tags: |
-            type=raw,value=slim,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,prefix=git-,suffix=-slim
-            type=semver,pattern={{version}}-slim
-            type=semver,pattern={{major}}.{{minor}}-slim
+      - name: Set up Docker Buildx
+        run: |
+          set -euo pipefail
+          docker buildx version
+          docker buildx create --name "$BUILDER_NAME" --driver docker-container --use
+          docker buildx inspect --bootstrap
 
       - name: Build Docker image (slim)
-        uses: docker/build-push-action@v6
-        id: build
-        with:
-          context: .
-          push: true
-          platforms: ${{ matrix.platform }}
-          labels: ${{ steps.meta.outputs.labels }}
-          provenance: false
-          outputs: type=image,name=${{ env.FULL_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:cache-slim-${{ env.PLATFORM_PAIR }}
-          cache-to: type=registry,ref=${{ env.FULL_IMAGE_NAME }}:cache-slim-${{ env.PLATFORM_PAIR }},mode=max
-          build-args: |
-            BUILD_HASH=${{ github.sha }}
-            HALO_RUNTIME_PROFILE=slim
-
-      - name: Export digest
         run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
+          set -euo pipefail
+          docker buildx build \
+            --platform '${{ matrix.platform }}' \
+            --push \
+            --provenance=false \
+            --cache-from "type=registry,ref=${FULL_IMAGE_NAME}:cache-slim-${PLATFORM_PAIR}" \
+            --cache-to "type=registry,ref=${FULL_IMAGE_NAME}:cache-slim-${PLATFORM_PAIR},mode=max" \
+            --build-arg "BUILD_HASH=${GITHUB_SHA}" \
+            --build-arg "HALO_RUNTIME_PROFILE=slim" \
+            -t "${FULL_IMAGE_NAME}:${TEMP_TAG}" \
+            .
 
-      - name: Upload digest
-        uses: actions/upload-artifact@v4
-        with:
-          name: digests-slim-${{ env.PLATFORM_PAIR }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
+      - name: Clean up builder
+        if: always()
+        run: |
+          docker buildx rm "$BUILDER_NAME" || true
 
   merge-slim-images:
     runs-on: ubuntu-latest
@@ -288,45 +300,68 @@ jobs:
     steps:
       - name: Set repository and image name to lowercase
         run: |
-          echo "IMAGE_NAME=${IMAGE_NAME,,}" >>${GITHUB_ENV}
-          echo "FULL_IMAGE_NAME=ghcr.io/${IMAGE_NAME,,}" >>${GITHUB_ENV}
-        env:
-          IMAGE_NAME: '${{ github.repository }}'
+          set -euo pipefail
+          image_name="${GITHUB_REPOSITORY,,}"
+          echo "IMAGE_NAME=${image_name}" >> "$GITHUB_ENV"
+          echo "FULL_IMAGE_NAME=${REGISTRY}/${image_name}" >> "$GITHUB_ENV"
 
-      - name: Download digests
-        uses: actions/download-artifact@v4
-        with:
-          pattern: digests-slim-*
-          path: /tmp/digests
-          merge-multiple: true
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Prepare
+        run: |
+          set -euo pipefail
+          ref_tag="${GITHUB_REF_NAME//\//-}"
+          ref_tag="$(sed -E 's/[^A-Za-z0-9_.-]+/-/g; s/^-+//; s/-+$//' <<< "$ref_tag")"
+          ref_tag="${ref_tag:-ref}"
+          echo "REF_TAG=${ref_tag:0:48}" >> "$GITHUB_ENV"
+          echo "TEMP_PREFIX=build-${ref_tag:0:48}-${GITHUB_SHA:0:12}-slim" >> "$GITHUB_ENV"
 
       - name: Log in to the Container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata for Docker images (slim tag)
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.FULL_IMAGE_NAME }}
-          tags: |
-            type=raw,value=slim,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,prefix=git-,suffix=-slim
-            type=semver,pattern={{version}}-slim
-            type=semver,pattern={{major}}.{{minor}}-slim
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login "$REGISTRY" -u "${{ github.actor }}" --password-stdin
 
       - name: Create manifest list and push
-        working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.FULL_IMAGE_NAME }}@sha256:%s ' *)
+          set -euo pipefail
 
-      - name: Inspect image
-        run: |
-          docker buildx imagetools inspect ${{ env.FULL_IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+          sanitize_tag() {
+            local tag="$1"
+            tag="${tag//\//-}"
+            tag="$(sed -E 's/[^A-Za-z0-9_.-]+/-/g; s/^-+//; s/-+$//' <<< "$tag")"
+            tag="${tag:-git-${GITHUB_SHA:0:7}-slim}"
+            printf '%s' "${tag:0:128}"
+          }
+
+          short_sha="${GITHUB_SHA:0:7}"
+          tags=("git-${short_sha}-slim")
+          primary_tag="git-${short_sha}-slim"
+
+          if [[ "$GITHUB_REF_TYPE" == "branch" && "$GITHUB_REF_NAME" == "main" ]]; then
+            tags+=("slim")
+            primary_tag="slim"
+          elif [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [[ "$version" =~ ^[0-9]+([.][0-9]+){1,2}([-+].*)?$ ]]; then
+              version_tag="$(sanitize_tag "${version}-slim")"
+              major_minor="$(sed -E 's/^([0-9]+)[.]([0-9]+).*/\1.\2/' <<< "$version")"
+              tags+=("$version_tag" "$(sanitize_tag "${major_minor}-slim")")
+              primary_tag="$version_tag"
+            fi
+          fi
+
+          declare -A seen=()
+          tag_args=()
+          echo "Publishing tags:"
+          for tag in "${tags[@]}"; do
+            if [[ -n "${seen[$tag]:-}" ]]; then
+              continue
+            fi
+            seen[$tag]=1
+            echo "  - ${FULL_IMAGE_NAME}:${tag}"
+            tag_args+=("-t" "${FULL_IMAGE_NAME}:${tag}")
+          done
+
+          docker buildx imagetools create "${tag_args[@]}" \
+            "${FULL_IMAGE_NAME}:${TEMP_PREFIX}-linux-amd64" \
+            "${FULL_IMAGE_NAME}:${TEMP_PREFIX}-linux-arm64"
+
+          docker buildx imagetools inspect "${FULL_IMAGE_NAME}:${primary_tag}"
