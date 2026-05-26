@@ -111,6 +111,23 @@ def is_admin_model_allowed_for_user(
     return _is_allowed(get_allowed_admin_model_ids(user), list(candidate_ids))
 
 
+def build_admin_model_resource_id(owner_id: Any, model: Any) -> str:
+    owner = str(owner_id or "admin").strip()
+    if isinstance(model, dict):
+        model_id = str(
+            model.get("selection_id")
+            or model.get("id")
+            or model.get("model")
+            or model.get("name")
+            or ""
+        ).strip()
+    else:
+        model_id = str(model or "").strip()
+    if not model_id:
+        return ""
+    return f"{owner}:model:{model_id}" if owner else model_id
+
+
 def is_admin_mcp_server_allowed_for_user(
     user: Optional[UserModel], server_id: Any
 ) -> bool:

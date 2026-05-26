@@ -41,6 +41,7 @@ from open_webui.utils.user_tools import (
 )
 from open_webui.utils.user_resource_inheritance import (
     RESOURCE_INHERITANCE_KEY,
+    build_admin_model_resource_id,
     build_admin_mcp_server_resource_id,
     normalize_resource_inheritance,
 )
@@ -473,11 +474,14 @@ async def get_resource_inheritance_options(
                 if not isinstance(model, dict):
                     continue
                 model_id = str(model.get("id") or model.get("model") or "").strip()
-                if not model_id or model_id in model_options_by_id:
+                resource_id = build_admin_model_resource_id(admin.id, model)
+                if not model_id or not resource_id or resource_id in model_options_by_id:
                     continue
-                model_options_by_id[model_id] = {
-                    "id": model_id,
+                model_options_by_id[resource_id] = {
+                    "id": resource_id,
                     "name": str(model.get("name") or model_id),
+                    "display_id": model_id,
+                    "model_id": model_id,
                     "owner_id": admin.id,
                     "owner_name": admin.name,
                     "source": "base",
@@ -488,11 +492,14 @@ async def get_resource_inheritance_options(
             if not owner or not getattr(model, "is_active", True):
                 continue
             model_id = str(getattr(model, "id", "") or "").strip()
-            if not model_id or model_id in model_options_by_id:
+            resource_id = build_admin_model_resource_id(owner.id, model_id)
+            if not model_id or not resource_id or resource_id in model_options_by_id:
                 continue
-            model_options_by_id[model_id] = {
-                "id": model_id,
+            model_options_by_id[resource_id] = {
+                "id": resource_id,
                 "name": str(getattr(model, "name", None) or model_id),
+                "display_id": model_id,
+                "model_id": model_id,
                 "owner_id": owner.id,
                 "owner_name": owner.name,
                 "source": "workspace",

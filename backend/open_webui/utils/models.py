@@ -18,6 +18,7 @@ from open_webui.models.models import Models
 from open_webui.utils.plugin import load_function_module_by_id
 from open_webui.utils.access_control import has_access
 from open_webui.utils.user_resource_inheritance import (
+    build_admin_model_resource_id,
     can_user_inherit_admin_models,
     is_admin_model_allowed_for_user,
 )
@@ -525,9 +526,13 @@ async def get_all_models(request, user: UserModel = None):
                         continue
                     if not is_admin_model_allowed_for_user(
                         user,
+                        build_admin_model_resource_id(candidate.id, owner_model),
+                        owner_model.get("selection_id"),
                         owner_model.get("id"),
                         owner_model.get("model"),
                         owner_model.get("name"),
+                        owner_model.get("model_id"),
+                        owner_model.get("original_id"),
                     ):
                         continue
                     inherited = _mark_model_inherited_from_admin(
@@ -575,6 +580,9 @@ async def get_all_models(request, user: UserModel = None):
         ):
             return is_admin_model_allowed_for_user(
                 user,
+                build_admin_model_resource_id(
+                    model_row.user_id, getattr(model_row, "id", None)
+                ),
                 getattr(model_row, "id", None),
                 getattr(model_row, "base_model_id", None),
                 getattr(model_row, "name", None),

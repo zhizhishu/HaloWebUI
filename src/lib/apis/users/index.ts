@@ -427,6 +427,8 @@ export const deleteUserById = async (token: string, userId: string) => {
 export type ResourceInheritanceOption = {
 	id: string;
 	name: string;
+	display_id?: string;
+	model_id?: string;
 	description?: string;
 	owner_id?: string;
 	owner_name?: string;
@@ -447,7 +449,7 @@ export const getResourceInheritanceOptions = async (
 ): Promise<ResourceInheritanceOptions> => {
 	let error = null;
 
-	const res = await fetch(`${WEBUI_API_BASE_URL}/users/resource-inheritance/options`, {
+	const res = (await fetch(`${WEBUI_API_BASE_URL}/users/resource-inheritance/options`, {
 		method: 'GET',
 		headers: {
 			'Content-Type': 'application/json',
@@ -459,7 +461,7 @@ export const getResourceInheritanceOptions = async (
 			console.log(err);
 			error = err.detail;
 			return null;
-		});
+		})) as ResourceInheritanceOptions | null;
 
 	if (error) {
 		throw error;

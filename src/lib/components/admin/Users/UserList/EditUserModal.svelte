@@ -451,7 +451,7 @@
 													<span
 														class="block truncate text-[11px] leading-4 text-gray-400 dark:text-gray-500"
 													>
-														{option.owner_name ? `${option.owner_name} - ` : ''}{option.id}
+														{option.owner_name ? `${option.owner_name} - ` : ''}{option.display_id ?? option.id}
 													</span>
 												</span>
 											</label>
