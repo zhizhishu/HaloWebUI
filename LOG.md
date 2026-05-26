@@ -1,0 +1,27 @@
+# LOG.md
+
+## 2026-05-26
+
+### 六条线修复收口
+
+- 完成：接口配置、模型继承、MCP 继承、工具技能状态、新旧聊天发送状态、原生联网提示六条线已完成本轮修复和验证。
+- 修改：代码基线推进到 `32c4d11 Fix active chat model recovery`, 并推送到 `origin/custom` 与 `origin/future`。
+- 验证：上一轮已多次运行目标前端 vitest、后端 pytest、生产构建, 并确认 GitHub Regression Guard / Docker workflow / GHCR manifest。
+- 清理：未保留本地服务或端口。
+- 后续：除非用户点名、真实复现、上游同步冲突或发布门禁失败, 不再主动围绕六条线继续找 issue。
+
+### 项目接力文件整理
+
+- 完成：新增 `PROJECT_ID.md`, `PROJECT_CONTEXT.md`, `PROJECT_MAP.md`, `TASK.md`, `LOG.md`。
+- 修改：`PROJECT_ID.md` 改为指向 `TASK.md` / `LOG.md`; `TASK_LOG.md` 保留为 legacy 历史长记录。
+- 验证：只做文档/接力文件整理, 未改业务代码, 未运行构建/测试。
+- 清理：未启动服务、未打开浏览器、未占用端口。
+- 后续：这些文件目前未提交 Git; 是否纳入仓库由用户单独决定。
+
+### 同步状态复核
+
+- 完成：重新读取全局 `AGENTS.md`, 执行 `git fetch --all --prune`, 修正 `PROJECT_ID.md` 中会和 allowed path 冲突的 `forbidden_paths` 写法。
+- 发现：`custom` 与 `origin/custom` 同步; 当前工作分支无未推送代码提交。
+- 发现：本地 `future` 分支落后 `origin/future` 12 个提交, 但 `origin/future` 与 `origin/custom` 已在 `32c4d11`。
+- 发现：本地 `main=a0ba442` 落后 `origin/main` 3 个提交, 落后 `upstream/main` 4 个提交; `origin/main=8fb18db` 落后 `upstream/main=785a055` 1 个提交。
+- 后续：是否同步作者最新 `upstream/main` 到 `main/custom/future`, 需要用户决定。
