@@ -1,62 +1,53 @@
 # TASK.md
 
-## Handoff Summary
+## Current Goal
 
-当前目标：按用户要求再次拉取作者最新 `upstream/main`, 如有更新则同步到 `main/custom/future`, 保留二创并推送 GitHub; 结束前做 subagent 审计。
-已完成：
-- 六条线代码工作已收口：接口配置、模型继承、MCP 继承、工具技能状态、新旧聊天发送状态、原生联网提示。
-- 当前代码基线：`custom` / `origin/custom` / `origin/future` = `f506f2b docs: record image publish blocker`。
-- 已补项目文件：`PROJECT_ID.md`, `PROJECT_CONTEXT.md`, `PROJECT_MAP.md`, `TASK.md`, `LOG.md`。
-- `TASK_LOG.md` 保留为旧历史长记录，不再作为默认当前接力入口。
-- 手动 `workflow_dispatch` 对 GitHub API 连续返回 HTTP 500; workflow 注释提交和 backend 单测注释提交也未触发 Actions。
-- 本地 buildx 双架构构建失败在 `npm ci` 的 `ETIMEDOUT`; 已给 `.npmrc` 添加 fetch 重试/超时配置并推送。
-- Docker workflow 已恢复触发, 但失败在 GitHub Runner 下载官方 Docker actions 的 Set up job 阶段, 不是代码构建阶段。
-- 已将 `.github/workflows/docker-build.yaml` 改为纯 `git` / `docker` CLI 流程, 移除 `docker/setup-buildx-action`, `docker/login-action`, `docker/metadata-action`, `docker/build-push-action`, artifact actions 与 `actions/checkout` 的下载面。
-- 首次去 action 化 run 已越过 Set up job, 但手写 checkout 的 `bearer` git 认证失败; 已改为 `basic x-access-token` extraheader。
-- 最终 Docker workflow 成功：`custom` run `26449754920`, `future` run `26449754900`, 两者 build / merge / smoke-test 全部通过。
-下一步：
-- `git fetch --all --prune` 确认作者是否有新提交。
-- 若 `upstream/main` 前进: 同步 `main`, 合入 `custom`, 解决冲突, 验证后推 `origin/custom` 与 `origin/future`。
-- 若 `upstream/main` 未前进: 不做空提交, 只记录状态并报告。
-- 派只读 subagent 做同步/提交前审计。
-- 不再主动泛扫 issue；只在用户点名、真实复现、上游同步冲突、Actions/GHCR 失败时处理。
-关键文件：
-- `PROJECT_ID.md`
-- `PROJECT_CONTEXT.md`
-- `PROJECT_MAP.md`
-- `TASK.md`
-- `LOG.md`
-- `TASK_LOG.md`
-- `.github/workflows/docker-build.yaml`
-验证状态：
-- 项目接力文件已提交为 `45f1584 docs: add project handoff files`。
-- `origin/main` 已同步到 `upstream/main=785a055`。
-- `custom` 已合并作者更新, 解决 `openai.py` 与 `test_model_reasoning_priority.py` 两处 import 冲突。
-- 后端目标测试 `80 passed`; 上游新增/二创补充测试 `67 passed`; 前端关键 vitest `45 passed`; 生产构建成功。
-- `gh run list` 显示最近一次自动 Actions 仍停在旧 SHA `32c4d11`; `619e11e` / `f7c0d64` / `4516d69` 没有 Actions check-runs。
-- 本地 buildx 已登录 GHCR, 已创建 `halowebui-multi` builder 并注册 `arm64` binfmt; 首次双架构推送尝试因 npm 网络超时失败, 未推送新镜像。
-- Docker workflow run `26448300909` / `26448300968` 已触发但失败在下载 `docker/setup-buildx-action` / `docker/login-action` / `docker/metadata-action` 的 action archive。
-- 本地 `rg "uses:" .github/workflows/docker-build.yaml` 无匹配; `git diff --check` 通过; YAML 可解析。
-- 去 action 化 run `26449592497` / `26449592535` 进入自定义 shell 步骤后失败在 `git fetch`, 原因为 GitHub git 不接受当前 `bearer` header; 已改为 `basic x-access-token`。
-- 修复后 run `26449754920` / `26449754900` 成功; GHCR `custom` digest `sha256:b234dccda9ad0973caa24fa6a618b4208a8a5f68f022a1a40913480da2b7f9be`, `future` digest `sha256:c3eabcb2b9b522dbc6dc758c175cb988528bf82a947f802b1d0dc4efd7a44c64`, 均含 `linux/amd64` 与 `linux/arm64`。
-风险/待确认：
-- 新 workflow 会留下 `build-<branch>-<sha>-main/slim-<platform>` 临时平台标签, 用来替代 artifact/digest 传递并规避 action 下载失败。
-- 待确认作者 `upstream/main` 是否较当前 `origin/main=785a055` 有新提交。
-资源清理：
-- 本轮未启动 dev server、未打开浏览器、未占用端口。
-最后更新：2026-05-26 12:06:12 -07:00
+拉取作者最新 `upstream/main`, 同步到本 fork 的 `main/custom/future`, 保留二创能力, 完成 subagent 审计, 推送 GitHub, 并确认 GitHub Actions / GHCR 镜像门禁。
 
-## Active Tasks
+## Completed
 
-- [x] **Goal:** 补齐 `TASK.md` / `LOG.md`, 并把项目文件入口从旧 `TASK_LOG.md` 切到新接力结构。
-- [x] **Goal:** 修复 Docker 镜像发布 workflow 红点, 推送后确认 GHCR `custom` / `future` 新 manifest。
-- [ ] **Goal:** 拉取作者最新 `upstream/main`, 同步二创分支并完成 subagent 审计。
+- 已确认项目根目录: `C:\Users\echo\Downloads\claude\github\HaloWebUI`.
+- 已读取全局和项目规则: 父级 `C:\Users\echo\Downloads\claude` 只作为存放根目录, 本项目长期二创在 `custom`, `main` 保持贴近 upstream.
+- 已拉取作者最新代码:
+  - `upstream/main` 更新到 `f48d77a`.
+  - 新增作者提交: API key 批量添加, 多模型讨论功能.
+- 已同步 `origin/main` 到作者最新 `upstream/main`.
+- 已把 `upstream/main` 合入 `custom`, merge commit: `eb8f4c5 Merge upstream main into custom`.
+- 已人工解决 `src/lib/components/chat/Chat.svelte` 冲突:
+  - 保留作者多模型讨论功能.
+  - 保留 fork 的工具/技能选择过滤.
+  - 保留 MCP stable id / 旧聊天发送状态修复.
+  - 保留 chat completion 事件去重提交逻辑.
+- 已完成 subagent 只读审计并关闭 subagent.
+- 已补写干净 UTF-8 的 `TASK.md` / `LOG.md`, 替换原乱码接力内容.
 
-## Notes For Next Agent
+## Validation
 
-- 回复用户时按全局规则称呼“宝宝”。
-- `C:\Users\echo\Downloads\claude` 是父级存放目录，不是项目根。
-- 当前真实项目根目录是 `C:\Users\echo\Downloads\claude\github\HaloWebUI`。
-- 不要把六条线当成继续开放的待办；当前已完成。
-- 不要主动广泛浏览上游 issue；需要时先用本地复现和测试证明问题。
-- 项目接力文件已纳入 Git; 当前只等待最终 Actions/GHCR 门禁。
+- `rg -n "^(<<<<<<<|=======|>>>>>>>)" .`: 无冲突标记.
+- `git diff --check`: 通过, 仅有 Git line-ending 提示.
+- `uv run pytest backend/open_webui/test/unit/test_multi_model_discussion.py backend/open_webui/test/unit/test_model_reasoning_priority.py backend/open_webui/test/unit/test_user_tools_mcp_inherit.py -q`: 37 passed.
+- `uv run pytest backend/open_webui/test/unit/test_user_tools_mcp_inherit.py backend/open_webui/test/unit/test_resource_inheritance_options.py backend/open_webui/test/unit/test_model_reasoning_priority.py backend/open_webui/test/unit/test_multi_model_discussion.py -q`: 40 passed.
+- `npx vitest run src/lib/apis/streaming/index.test.ts src/lib/utils/chat-response-state.test.ts src/lib/utils/chat-model-recovery.test.ts src/lib/utils/tool-selection.test.ts src/lib/utils/skill-selection.test.ts`: 33 passed.
+- `npx vitest run src/lib/utils/chat-event-state.test.ts`: 2 passed.
+- `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: 通过.
+
+## Next Steps
+
+- 提交 `TASK.md` / `LOG.md` 清理结果.
+- 推送:
+  - `origin/custom`
+  - `origin/future`
+- 检查 GitHub Actions 最新 run.
+- 如果 Docker workflow 成功, 复核 GHCR:
+  - `ghcr.io/zhizhishu/halowebui:custom`
+  - `ghcr.io/zhizhishu/halowebui:future`
+
+## Risks
+
+- 本轮主要冲突点是 `Chat.svelte`; 已经用 targeted tests 和生产构建覆盖.
+- 作者新增多模型讨论会多次调用 `generate_chat_completion`; 已确认路径继续带 `user` 和当前 request, 继承模型/MCP 相关测试通过.
+- 当前未启动 dev server, 未占用端口, 未打开浏览器.
+
+## Last Updated
+
+2026-05-26 12:30 -07:00
