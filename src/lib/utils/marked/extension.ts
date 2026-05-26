@@ -1,44 +1,46 @@
 // Helper function to find matching closing tag
-function findMatchingClosingTag(src: string, openTag: string, closeTag: string): number {
-	let depth = 1;
-	let index = openTag.length;
-	while (depth > 0 && index < src.length) {
-		if (src.startsWith(openTag, index)) {
-			depth++;
-		} else if (src.startsWith(closeTag, index)) {
+function findMatchingClosingTag(src: string): number {
+	const tagRegex = /<\/?details\b[^>]*>/gi;
+	let depth = 0;
+	let match: RegExpExecArray | null;
+
+	while ((match = tagRegex.exec(src)) !== null) {
+		if (match[0].startsWith('</')) {
 			depth--;
-		}
-		if (depth > 0) {
-			index++;
+			if (depth === 0) {
+				return tagRegex.lastIndex;
+			}
+		} else {
+			depth++;
 		}
 	}
-	return depth === 0 ? index + closeTag.length : -1;
+
+	return -1;
 }
 
 // Function to parse attributes from tag
 function parseAttributes(tag: string): { [key: string]: string } {
 	const attributes: { [key: string]: string } = {};
-	const attrRegex = /(\w+)="(.*?)"/g;
+	const attrRegex = /([\w:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 	let match;
 	while ((match = attrRegex.exec(tag)) !== null) {
-		attributes[match[1]] = match[2];
+		attributes[match[1]] = match[2] ?? match[3] ?? match[4] ?? 'true';
 	}
 	return attributes;
 }
 
 function detailsTokenizer(src: string) {
-	// Updated regex to capture attributes inside <details>
-	const detailsRegex = /^<details(\s+[^>]*)?>\n/;
-	const summaryRegex = /^<summary>(.*?)<\/summary>\n/;
+	const detailsRegex = /^<details\b([^>]*)>/i;
+	const summaryRegex = /^<summary\b[^>]*>([\s\S]*?)<\/summary>\s*/i;
 
 	const detailsMatch = detailsRegex.exec(src);
 	if (detailsMatch) {
-		const endIndex = findMatchingClosingTag(src, '<details', '</details>');
+		const endIndex = findMatchingClosingTag(src);
 		if (endIndex === -1) return;
 
 		const fullMatch = src.slice(0, endIndex);
 		const detailsTag = detailsMatch[0];
-		const attributes = parseAttributes(detailsTag); // Parse attributes from <details>
+		const attributes = parseAttributes(detailsMatch[1] ?? '');
 
 		let content = fullMatch.slice(detailsTag.length, -10).trim(); // Remove <details> and </details>
 		let summary = '';
@@ -61,7 +63,7 @@ function detailsTokenizer(src: string) {
 
 function detailsStart(src: string) {
 	// Support `<details>` and `<details ...>`; this is a "fast path" for marked.
-	return src.match(/^<details(\s|>)/) ? 0 : -1;
+	return src.match(/^<details\b/i) ? 0 : -1;
 }
 
 function detailsRenderer(token: any) {
@@ -71,7 +73,7 @@ function detailsRenderer(token: any) {
 				.join(' ')
 		: '';
 
-	return `<details ${attributesString}>
+	return `<details${attributesString ? ` ${attributesString}` : ''}>
   ${token.summary ? `<summary>${token.summary}</summary>` : ''}
   ${token.text}
   </details>`;
