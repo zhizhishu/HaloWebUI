@@ -11,6 +11,7 @@
 	import AddConnectionModal from '$lib/components/AddConnectionModal.svelte';
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
 	import { getApiKeyPoolSummary } from '$lib/utils/api-key-pool';
+	import { submitProviderConnectionEdit } from '$lib/utils/provider-connections';
 
 	type ConnectionConfig = {
 		enable?: boolean;
@@ -41,10 +42,16 @@
 	$: keyPoolSummary = getApiKeyPoolSummary(config, key);
 
 	const handleSubmit = async (connection: Connection) => {
-		url = connection.url;
-		key = connection.key;
-		config = connection.config;
-		await onSubmit(connection);
+		await submitProviderConnectionEdit(
+			{ url, key, config },
+			connection,
+			(nextConnection) => {
+				url = nextConnection.url;
+				key = nextConnection.key;
+				config = nextConnection.config;
+			},
+			onSubmit
+		);
 	};
 </script>
 

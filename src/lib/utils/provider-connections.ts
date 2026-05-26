@@ -8,6 +8,22 @@ export type RemoveIndexedProviderConnectionResult<TConfig = any> = IndexedProvid
 	removed: boolean;
 };
 
+export const submitProviderConnectionEdit = async <TConnection>(
+	previous: TConnection,
+	next: TConnection,
+	apply: (connection: TConnection) => void,
+	save: (connection: TConnection) => void | Promise<void>
+) => {
+	apply(next);
+
+	try {
+		await save(next);
+	} catch (error) {
+		apply(previous);
+		throw error;
+	}
+};
+
 export const cloneIndexedProviderConnections = <TConfig = any>(
 	connections: IndexedProviderConnections<TConfig>
 ): IndexedProviderConnections<TConfig> => ({

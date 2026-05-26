@@ -1,10 +1,68 @@
 import { describe, expect, it } from 'vitest';
 import {
 	cloneIndexedProviderConnections,
-	removeIndexedProviderConnection
+	removeIndexedProviderConnection,
+	submitProviderConnectionEdit
 } from './provider-connections';
 
 describe('provider connection helpers', () => {
+	it('keeps an edited provider connection when saving succeeds', async () => {
+		let state = {
+			url: 'https://old.example/v1',
+			key: 'old-key',
+			config: { name: 'old' }
+		};
+		const next = {
+			url: 'https://new.example/v1',
+			key: 'new-key',
+			config: { name: 'new' }
+		};
+
+		await submitProviderConnectionEdit(
+			state,
+			next,
+			(connection) => {
+				state = connection;
+			},
+			async () => {}
+		);
+
+		expect(state).toEqual(next);
+	});
+
+	it('rolls back an edited provider connection when saving fails', async () => {
+		const previous = {
+			url: 'https://old.example/v1',
+			key: 'old-key',
+			config: { name: 'old' }
+		};
+		const next = {
+			url: 'https://new.example/v1',
+			key: 'new-key',
+			config: { name: 'new' }
+		};
+		const error = new Error('save failed');
+		let state = previous;
+		const appliedUrls: string[] = [];
+
+		await expect(
+			submitProviderConnectionEdit(
+				previous,
+				next,
+				(connection) => {
+					state = connection;
+					appliedUrls.push(connection.url);
+				},
+				async () => {
+					throw error;
+				}
+			)
+		).rejects.toBe(error);
+
+		expect(state).toEqual(previous);
+		expect(appliedUrls).toEqual(['https://new.example/v1', 'https://old.example/v1']);
+	});
+
 	it('removes one keyed provider connection and reindexes configs', () => {
 		const result = removeIndexedProviderConnection(
 			{
@@ -79,7 +137,7 @@ describe('provider connection helpers', () => {
 	});
 
 	it('clones arrays and configs for rollback snapshots', () => {
-		const state = {
+		const state: { urls: string[]; keys: string[]; configs: Record<number, { name: string }> } = {
 			urls: ['https://a.example/v1'],
 			keys: ['key-a'],
 			configs: {

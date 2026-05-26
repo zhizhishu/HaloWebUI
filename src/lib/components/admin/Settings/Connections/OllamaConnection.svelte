@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	const i18n = getContext('i18n');
+	import type { Writable } from 'svelte/store';
+	import type { i18n as i18nType } from 'i18next';
+
+	const i18n = getContext('i18n') as Writable<i18nType>;
 
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import LetterAvatar from '$lib/components/common/LetterAvatar.svelte';
@@ -11,13 +14,27 @@
 	import Cog6 from '$lib/components/icons/Cog6.svelte';
 	import ManageOllamaModal from './ManageOllamaModal.svelte';
 	import Download from '$lib/components/icons/Download.svelte';
+	import { submitProviderConnectionEdit } from '$lib/utils/provider-connections';
 
-	export let onDelete = () => {};
-	export let onSubmit = () => {};
+	type ConnectionConfig = {
+		enable?: boolean;
+		remark?: string;
+		tags?: Array<{ name: string }>;
+		icon?: string;
+		key?: string;
+	};
+	type Connection = {
+		url: string;
+		key: string;
+		config: ConnectionConfig;
+	};
+
+	export let onDelete: () => void | Promise<void> = () => {};
+	export let onSubmit: (connection: Connection) => void | Promise<void> = async () => {};
 
 	export let url = '';
 	export let idx = 0;
-	export let config = {};
+	export let config: ConnectionConfig = {};
 
 	let showManageModal = false;
 	let showConfigModal = false;
@@ -26,6 +43,18 @@
 	$: isEnabled = config?.enable ?? true;
 	$: displayName = config?.remark || url;
 	$: tags = config?.tags ?? [];
+
+	const handleSubmit = async (connection: Connection) => {
+		await submitProviderConnectionEdit(
+			{ url, key: config?.key ?? '', config },
+			connection,
+			(nextConnection) => {
+				url = nextConnection.url;
+				config = { ...nextConnection.config, key: nextConnection.key };
+			},
+			onSubmit
+		);
+	};
 </script>
 
 <AddConnectionModal
@@ -40,11 +69,7 @@
 	onDelete={() => {
 		showDeleteConfirmDialog = true;
 	}}
-	onSubmit={async (connection) => {
-		url = connection.url;
-		config = { ...connection.config, key: connection.key };
-		await onSubmit(connection);
-	}}
+	onSubmit={handleSubmit}
 />
 
 <ConfirmDialog
