@@ -1,5 +1,6 @@
 import inspect
 import contextlib
+import json
 import logging
 import re
 import aiohttp
@@ -64,6 +65,65 @@ LOCAL_OPENAPI_TOOL_PREFIX = "server:"
 LOCAL_MCP_TOOL_PREFIX = "mcp:"
 STABLE_OPENAPI_TOOL_PREFIX = "server_id:"
 STABLE_MCP_TOOL_PREFIX = "mcp_id:"
+
+
+def _parse_json_text(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    stripped = value.strip()
+    if not stripped:
+        return value
+
+    try:
+        return json.loads(stripped)
+    except Exception:
+        return value
+
+
+def normalize_mcp_tool_result_for_llm(result: Any) -> Any:
+    if not isinstance(result, dict):
+        return result
+
+    content = result.get("content")
+    if not isinstance(content, list):
+        structured_content = result.get("structuredContent")
+        return structured_content if structured_content is not None else result
+
+    normalized: list[Any] = []
+    for item in content:
+        if not isinstance(item, dict):
+            normalized.append(item)
+            continue
+
+        item_type = item.get("type")
+        if item_type == "text":
+            normalized.append(_parse_json_text(item.get("text", "")))
+            continue
+
+        if item_type == "resource":
+            resource = item.get("resource")
+            if isinstance(resource, dict):
+                if "text" in resource:
+                    normalized.append(_parse_json_text(resource.get("text", "")))
+                elif "blob" in resource:
+                    normalized.append(resource.get("blob"))
+                else:
+                    normalized.append(resource)
+            else:
+                normalized.append(item)
+            continue
+
+        normalized.append(item)
+
+    if not normalized:
+        structured_content = result.get("structuredContent")
+        return structured_content if structured_content is not None else result
+
+    if len(normalized) == 1:
+        return normalized[0]
+
+    return normalized
 
 
 def _normalize_tool_ids(tool_ids: list[Any] | None) -> list[str]:
@@ -628,7 +688,7 @@ def _make_mcp_tool_runtime(
                         user_id=getattr(user, "id", None),
                         on_notification=notif_cb,
                     )
-                    return result
+                    return normalize_mcp_tool_result_for_llm(result)
                 finally:
                     if keepalive_task is not None:
                         keepalive_task.cancel()

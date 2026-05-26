@@ -291,6 +291,75 @@ def test_get_tools_exposes_mcp_tool_and_routes_call(monkeypatch):
     assert called["session_token"] == "tok_abc"
 
 
+def test_mcp_resource_tool_result_is_normalized_for_model(monkeypatch):
+    import open_webui.utils.tools as tools_mod
+
+    monkeypatch.setattr(tools_mod.Tools, "get_tool_by_id", lambda _id: None)
+
+    async def fake_execute_mcp_tool(*_args, **_kwargs):
+        return {
+            "content": [
+                {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "openproject://statuses",
+                        "mimeType": "application/json",
+                        "text": json.dumps(
+                            {"statuses": ["new", "in progress", "closed"]}
+                        ),
+                    },
+                }
+            ]
+        }
+
+    monkeypatch.setattr(tools_mod, "execute_mcp_tool", fake_execute_mcp_tool)
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                config=SimpleNamespace(
+                    MCP_SERVER_CONNECTIONS=[
+                        {"url": "http://mcp.local", "auth_type": "none"}
+                    ],
+                    TOOL_SERVER_CONNECTIONS=[],
+                ),
+                MCP_SERVERS=[
+                    {
+                        "idx": 0,
+                        "url": "http://mcp.local",
+                        "tools": [
+                            {
+                                "name": "list_statuses",
+                                "description": "List statuses",
+                                "inputSchema": {"type": "object", "properties": {}},
+                            }
+                        ],
+                    }
+                ],
+                TOOL_SERVERS=[],
+            )
+        ),
+        state=SimpleNamespace(token=SimpleNamespace(credentials="tok_abc")),
+    )
+    user = SimpleNamespace(id="u1", role="admin")
+
+    tools = tools_mod.get_tools(request, ["mcp:0"], user, extra_params={})
+    out = asyncio.run(tools["mcp_tool_0__list_statuses"]["callable"]())
+
+    assert out == {"statuses": ["new", "in progress", "closed"]}
+
+
+def test_mcp_text_tool_result_is_unwrapped_for_model():
+    import open_webui.utils.tools as tools_mod
+
+    assert (
+        tools_mod.normalize_mcp_tool_result_for_llm(
+            {"content": [{"type": "text", "text": "plain result"}]}
+        )
+        == "plain result"
+    )
+
+
 def test_get_tools_emits_mcp_keepalive_status_for_slow_call(monkeypatch):
     import open_webui.utils.tools as tools_mod
 
