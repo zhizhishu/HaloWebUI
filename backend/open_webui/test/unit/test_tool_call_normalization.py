@@ -131,13 +131,28 @@ def _map_aliases(args_dict: dict, allowed: set[str]) -> tuple[dict, list[dict]]:
         if key in allowed:
             mapped[key] = value
             continue
-        if key.endswith("s") and key[:-1] in allowed:
-            target = key[:-1]
+        singular_candidates = []
+        if key.endswith("ies") and len(key) > 3:
+            singular_candidates.append(f"{key[:-3]}y")
+        if key.endswith("s") and len(key) > 1:
+            singular_candidates.append(key[:-1])
+
+        target = next(
+            (candidate for candidate in singular_candidates if candidate in allowed), None
+        )
+        if target:
             mapped[target] = value[0] if isinstance(value, list) and len(value) == 1 else value
             repairs.append({"action": "param_alias_mapping", "from": key, "to": target})
             continue
-        plural = f"{key}s"
-        if plural in allowed:
+
+        plural_candidates = [f"{key}s"]
+        if key.endswith("y") and len(key) > 1:
+            plural_candidates.insert(0, f"{key[:-1]}ies")
+
+        plural = next(
+            (candidate for candidate in plural_candidates if candidate in allowed), None
+        )
+        if plural:
             mapped[plural] = value if isinstance(value, list) else [value]
             repairs.append({"action": "param_alias_mapping", "from": key, "to": plural})
     return mapped, repairs
@@ -398,4 +413,3 @@ def test_invalid_for_ambiguous_or_unknown_tool_keeps_arg_keys():
     assert invalid
     assert invalid[0]["name"] == "(empty)"
     assert invalid[0]["arg_keys"] == ["count", "query"]
-
