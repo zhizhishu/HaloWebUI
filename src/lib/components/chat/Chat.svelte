@@ -105,6 +105,7 @@
 	} from '$lib/utils/native-web-search';
 	import { filterAvailableSkillIds } from '$lib/utils/skill-selection';
 	import { filterAvailableToolIds } from '$lib/utils/tool-selection';
+	import { hasEffectivePersistedSelectionState } from '$lib/utils/composer-selection-state';
 	import { hasVisibleMessageFiles as messageHasVisibleFiles } from '$lib/utils/chat-message-errors';
 	import { hasActiveChatResponse } from '$lib/utils/chat-response-state';
 
@@ -446,6 +447,8 @@
 	let pendingChatSave: Promise<void> = Promise.resolve();
 	let pendingComposerStateSave: Promise<void> = Promise.resolve();
 	let hasPersistedComposerState = false;
+	let hasPersistedToolSelectionState = false;
+	let hasPersistedSkillSelectionState = false;
 	let composerStateSyncReady = false;
 	let lastRequestedChatIdProp = '';
 	let activeChatLoadToken = 0;
@@ -1535,6 +1538,12 @@
 				state.tool_selection_touched ?? state.toolSelectionTouched
 			);
 		}
+		if (options.markPersisted === true) {
+			hasPersistedToolSelectionState = hasEffectivePersistedSelectionState(
+				selectedToolIds,
+				toolSelectionTouched
+			);
+		}
 
 		const restoredSkillIds = state.selected_skill_ids ?? state.selectedSkillIds;
 		if (Array.isArray(restoredSkillIds)) {
@@ -1546,6 +1555,12 @@
 		) {
 			skillSelectionTouched = Boolean(
 				state.skill_selection_touched ?? state.skillSelectionTouched
+			);
+		}
+		if (options.markPersisted === true) {
+			hasPersistedSkillSelectionState = hasEffectivePersistedSelectionState(
+				selectedSkillIds,
+				skillSelectionTouched
 			);
 		}
 
@@ -2082,8 +2097,10 @@
 			files = [];
 			selectedToolIds = [];
 			toolSelectionTouched = false;
+			hasPersistedToolSelectionState = false;
 			selectedSkillIds = [];
 			skillSelectionTouched = false;
+			hasPersistedSkillSelectionState = false;
 			hasPersistedComposerState = false;
 			webSearchMode = getPreferredDefaultWebSearchMode();
 			webSearchModeSource = 'default';
@@ -2209,7 +2226,7 @@
 			tools.set(await getTools(localStorage.token));
 		}
 
-		if (hasPersistedComposerState || toolSelectionTouched) {
+		if (hasPersistedToolSelectionState || toolSelectionTouched) {
 			return;
 		}
 
@@ -2254,7 +2271,7 @@
 			}
 		}
 
-		if (hasPersistedComposerState || skillSelectionTouched) {
+		if (hasPersistedSkillSelectionState || skillSelectionTouched) {
 			return;
 		}
 
@@ -2546,8 +2563,10 @@
 						files = [];
 						selectedToolIds = [];
 						toolSelectionTouched = false;
+						hasPersistedToolSelectionState = false;
 						selectedSkillIds = [];
 						skillSelectionTouched = false;
+						hasPersistedSkillSelectionState = false;
 						webSearchMode = getPreferredDefaultWebSearchMode();
 						webSearchModeSource = 'default';
 						imageGenerationEnabled = false;
@@ -3050,8 +3069,10 @@
 			files = [];
 			selectedToolIds = [];
 			toolSelectionTouched = false;
+			hasPersistedToolSelectionState = false;
 			selectedSkillIds = [];
 			skillSelectionTouched = false;
+			hasPersistedSkillSelectionState = false;
 			hasPersistedComposerState = false;
 			imageGenerationEnabled = false;
 			imageGenerationOptions = {};
@@ -3063,8 +3084,10 @@
 		hasPersistedComposerState = false;
 		selectedToolIds = [];
 		toolSelectionTouched = false;
+		hasPersistedToolSelectionState = false;
 		selectedSkillIds = [];
 		skillSelectionTouched = false;
+		hasPersistedSkillSelectionState = false;
 
 		if (fresh || !inheritNewChatState) {
 			clearNewChatStateCache();
@@ -3268,6 +3291,8 @@
 				activeAssistant = toChatAssistantSnapshot(chatContent?.assistant ?? null);
 				chatFiles = chatContent?.files ?? [];
 				hasPersistedComposerState = false;
+				hasPersistedToolSelectionState = false;
+				hasPersistedSkillSelectionState = false;
 				applyComposerState(chatContent?.composer_state, { markPersisted: true });
 				setRuntimeSelectionThreadsState(normalizeSelectionThreads(chatContent?.selectionThreads));
 				expandedSelectionThreadId.set(null);
