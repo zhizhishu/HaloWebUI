@@ -2852,6 +2852,31 @@ async def process_web_search(
                     "loader_runtime_notice": loader_runtime_notice,
                 }
 
+        if not docs:
+            direct_docs = _build_direct_docs_from_web_results(
+                form_data.query,
+                web_results,
+                engine,
+            )
+            if direct_docs is not None:
+                log.warning(
+                    "Web loader returned no documents; passing raw search content "
+                    "directly (query=%s, urls=%d)",
+                    form_data.query,
+                    len(urls),
+                )
+                return direct_docs
+
+            return {
+                "status": True,
+                "collection_name": None,
+                "filenames": urls,
+                "docs": [],
+                "loaded_count": 0,
+                "failed_count": len(urls),
+                "direct_content_only": True,
+            }
+
         urls = [
             doc.metadata["source"] for doc in docs
         ]  # only keep URLs which could be retrieved

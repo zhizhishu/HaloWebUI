@@ -57,22 +57,24 @@ def _maybe_repair_mojibake(text: str) -> str:
     if not isinstance(text, str) or not text:
         return text
 
+    original_cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
+
+    for encoding in ("cp1252", "latin-1"):
+        try:
+            repaired = text.encode(encoding).decode("utf-8")
+        except Exception:
+            continue
+
+        if repaired == text:
+            continue
+
+        repaired_cjk = len(re.findall(r"[\u4e00-\u9fff]", repaired))
+        if repaired_cjk > original_cjk:
+            return repaired
+
     suspicious = len(_MOJIBAKE_RE.findall(text))
     if suspicious < 3:
         return text
-
-    try:
-        repaired = text.encode("latin-1").decode("utf-8")
-    except Exception:
-        return text
-
-    if repaired == text:
-        return text
-
-    original_cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
-    repaired_cjk = len(re.findall(r"[\u4e00-\u9fff]", repaired))
-    if repaired_cjk > original_cjk or suspicious >= max(6, len(text) // 12):
-        return repaired
 
     return text
 

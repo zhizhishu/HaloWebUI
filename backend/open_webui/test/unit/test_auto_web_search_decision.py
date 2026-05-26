@@ -3,6 +3,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from fastapi.responses import JSONResponse
 
 
 _BACKEND_DIR = pathlib.Path(__file__).resolve().parents[3]
@@ -73,6 +74,23 @@ def test_extract_json_object_from_text_accepts_wrapped_model_output():
 
     assert parsed["should_search"] is True
     assert parsed["queries"] == ["latest"]
+
+
+def test_generation_response_content_accepts_json_response():
+    response = JSONResponse(
+        content={"choices": [{"message": {"content": '{"queries":["latest"]}'}}]}
+    )
+
+    assert middleware_module._get_generation_response_content(response) == (
+        '{"queries":["latest"]}'
+    )
+
+
+def test_generation_response_content_raises_json_response_error_detail():
+    response = JSONResponse(status_code=400, content={"detail": "task model failed"})
+
+    with pytest.raises(ValueError, match="task model failed"):
+        middleware_module._get_generation_response_content(response)
 
 
 def test_build_auto_web_search_history_uses_recent_text_messages():
