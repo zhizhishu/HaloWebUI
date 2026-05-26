@@ -618,6 +618,12 @@ project_root: C:\Users\echo\Downloads\claude\github\HaloWebUI
 - 重新读取全局 `AGENTS.md` 后, 修正 `PROJECT_ID.md` 的 `forbidden_paths` 写法: 不再把父级存放目录写成路径级禁止项, 避免和当前项目 allowed path 产生包含关系冲突; 改为 notes 中声明不得写父级或兄弟项目。
 - 复核远端同步状态: 当前 `custom` 与 `origin/custom` 同步在 `32c4d11`; 本地 `future` 落后 `origin/future` 12 个提交; 本地 `main` 落后 `origin/main` 3 个提交, 落后 `upstream/main` 4 个提交; `origin/main` 落后 `upstream/main` 1 个提交。
 - 当前结论: 业务代码无本地未推送提交; 但有未提交的项目接力文件, 且作者上游已有新提交尚未同步进 `main/custom/future`。
+
+### 追加（2026-05-26 04:30:00 -07:00）
+- 已提交项目接力文件 `45f1584 docs: add project handoff files`。
+- 已将 `origin/main` 同步到作者最新 `upstream/main=785a055`。
+- 已将作者更新合入 `custom`; 冲突只在 `openai.py` 和 `test_model_reasoning_priority.py`, 已保留双方 import 与二创逻辑。
+- 本地验证: 后端目标回归 `80 passed`; 上游新增/二创补充回归 `67 passed`; 前端关键 vitest `45 passed`; 生产构建成功。
 - [x] ~~**目标:** 修复工具/Filter 输出中的标准 details 折叠块解析过窄问题~~ (创建于: 2026-05-26 01:32:24 -07:00 | **完成于: 2026-05-26 01:46:00 -07:00**)
   - 范围: 六条线中的工具技能状态与新旧聊天发送状态；对照上游 `open-webui#24854` / `#24634` / `#24635`。
   - 复现依据: 当前 `src/lib/utils/marked/extension.ts` 只识别 `<details...>\n` 与 `<summary>...</summary>\n`；新增回归测试确认一行式 `<details><summary>...</summary>...</details>` 会被 marked 当成普通 `html`，带属性 summary 也无法抽出 summary，导致折叠 UI 不出现。

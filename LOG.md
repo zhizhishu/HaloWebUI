@@ -25,3 +25,11 @@
 - 发现：本地 `future` 分支落后 `origin/future` 12 个提交, 但 `origin/future` 与 `origin/custom` 已在 `32c4d11`。
 - 发现：本地 `main=a0ba442` 落后 `origin/main` 3 个提交, 落后 `upstream/main` 4 个提交; `origin/main=8fb18db` 落后 `upstream/main=785a055` 1 个提交。
 - 后续：是否同步作者最新 `upstream/main` 到 `main/custom/future`, 需要用户决定。
+
+### 同步作者最新 main 到 custom
+
+- 完成：提交项目接力文件 `45f1584 docs: add project handoff files`; 快进本地 `future` 到 `origin/future`; 将 `origin/main` 推到作者最新 `upstream/main=785a055`。
+- 完成：把作者最新提交合入 `custom`, 冲突只在 `backend/open_webui/routers/openai.py` 和 `backend/open_webui/test/unit/test_model_reasoning_priority.py`; 已同时保留 custom 的 `sanitize_incomplete_tool_call_messages` / Ollama 显式参数测试和 upstream 的 `normalize_openai_compatible_reasoning_controls`。
+- 验证：后端目标回归 `80 passed`; 上游新增数据管理/TTS + 二创补充回归 `67 passed`; 前端关键工具/继承/聊天状态 vitest `45 passed`; `NODE_OPTIONS=--max-old-space-size=4096 npm run build` 成功。
+- 清理：未启动 dev server, 未打开浏览器, 未占用端口。
+- 后续：提交并推送 `custom/future`, 等 GitHub Actions 与 GHCR 镜像门禁。

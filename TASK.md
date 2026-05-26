@@ -2,18 +2,16 @@
 
 ## Handoff Summary
 
-当前目标：提交项目接力文件, 同步本地 `future`, 将作者最新 `upstream/main` 合入 `main/custom/future`, 并保留本仓库二创。
+当前目标：作者最新 `upstream/main=785a055` 已合入 `custom`; 正在提交并推送 `custom/future`。
 已完成：
 - 六条线代码工作已收口：接口配置、模型继承、MCP 继承、工具技能状态、新旧聊天发送状态、原生联网提示。
 - 当前代码基线：`custom` / `origin/custom` / `origin/future` = `32c4d11 Fix active chat model recovery`。
 - 已补项目文件：`PROJECT_ID.md`, `PROJECT_CONTEXT.md`, `PROJECT_MAP.md`, `TASK.md`, `LOG.md`。
 - `TASK_LOG.md` 保留为旧历史长记录，不再作为默认当前接力入口。
 下一步：
-- 提交项目接力文件。
-- 快进本地 `future` 到 `origin/future`。
-- 同步 `main` 到作者最新 `upstream/main=785a055`。
-- 合并作者更新到 `custom`, 再同步到 `future`。
-- 跑目标测试/构建, 推送 `origin/main`, `origin/custom`, `origin/future`。
+- 提交合并结果。
+- 推送 `origin/custom` 与 `origin/future`。
+- 检查 GitHub Actions 与 GHCR 镜像。
 - 不再主动泛扫 issue；只在用户点名、真实复现、上游同步冲突、Actions/GHCR 失败时处理。
 关键文件：
 - `PROJECT_ID.md`
@@ -23,8 +21,10 @@
 - `LOG.md`
 - `TASK_LOG.md`
 验证状态：
-- 本轮正在执行上游同步; 项目文件整理已完成。
-- 上一轮代码基线 `32c4d11` 已推送到 `origin/custom` 和 `origin/future`。
+- 项目接力文件已提交为 `45f1584 docs: add project handoff files`。
+- `origin/main` 已同步到 `upstream/main=785a055`。
+- `custom` 已合并作者更新, 解决 `openai.py` 与 `test_model_reasoning_priority.py` 两处 import 冲突。
+- 后端目标测试 `80 passed`; 上游新增/二创补充测试 `67 passed`; 前端关键 vitest `45 passed`; 生产构建成功。
 风险/待确认：
 - 服务器是否已拉取 `32c4d11` 镜像并重建容器，需要用户部署环境确认。
 - 是否提交这些项目接力文件到 Git，需要用户单独拍板。
