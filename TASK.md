@@ -12,6 +12,7 @@
 - 本地 buildx 双架构构建失败在 `npm ci` 的 `ETIMEDOUT`; 已给 `.npmrc` 添加 fetch 重试/超时配置并推送。
 - Docker workflow 已恢复触发, 但失败在 GitHub Runner 下载官方 Docker actions 的 Set up job 阶段, 不是代码构建阶段。
 - 已将 `.github/workflows/docker-build.yaml` 改为纯 `git` / `docker` CLI 流程, 移除 `docker/setup-buildx-action`, `docker/login-action`, `docker/metadata-action`, `docker/build-push-action`, artifact actions 与 `actions/checkout` 的下载面。
+- 首次去 action 化 run 已越过 Set up job, 但手写 checkout 的 `bearer` git 认证失败; 已改为 `basic x-access-token` extraheader。
 下一步：
 - 提交并推送 workflow 修复到 `custom` 与 `future`, 观察新 Docker workflow。
 - 成功后复查 GHCR `custom` / `future` manifest 是否含 `linux/amd64` 与 `linux/arm64`。
@@ -33,12 +34,13 @@
 - 本地 buildx 已登录 GHCR, 已创建 `halowebui-multi` builder 并注册 `arm64` binfmt; 首次双架构推送尝试因 npm 网络超时失败, 未推送新镜像。
 - Docker workflow run `26448300909` / `26448300968` 已触发但失败在下载 `docker/setup-buildx-action` / `docker/login-action` / `docker/metadata-action` 的 action archive。
 - 本地 `rg "uses:" .github/workflows/docker-build.yaml` 无匹配; `git diff --check` 通过; YAML 可解析。
+- 去 action 化 run `26449592497` / `26449592535` 进入自定义 shell 步骤后失败在 `git fetch`, 原因为 GitHub git 不接受当前 `bearer` header; 已改为 `basic x-access-token`。
 风险/待确认：
 - GHCR `custom` 当前仍是旧成功镜像 digest; 服务器现在拉取不会得到本轮 workflow 修复后的新镜像。
 - 新 workflow 会留下 `build-<branch>-<sha>-main/slim-<platform>` 临时平台标签, 用来替代 artifact/digest 传递并规避 action 下载失败。
 资源清理：
 - 本轮未启动 dev server、未打开浏览器、未占用端口; 临时 buildx builder 待清理。
-最后更新：2026-05-26 06:01:28 -07:00
+最后更新：2026-05-26 06:05:04 -07:00
 
 ## Active Tasks
 

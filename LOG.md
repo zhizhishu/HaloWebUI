@@ -54,6 +54,7 @@
 
 - 完成：确认 `26448300909` 与 `26448300968` 红点都死在 Set up job 下载 `docker/setup-buildx-action`, `docker/login-action`, `docker/metadata-action` 的 codeload archive, 不是代码、测试或 Dockerfile 构建失败。
 - 修改：将 `.github/workflows/docker-build.yaml` 改为纯 `git` / `docker` CLI 流程, 去掉 Docker 官方 actions、artifact actions 与 `actions/checkout` 的下载依赖。
-- 验证：`rg "uses:" .github/workflows/docker-build.yaml` 无匹配; `git diff --check` 通过; YAML 可解析。
+- 验证：`rg "uses:" .github/workflows/docker-build.yaml` 无匹配; `git diff --check` 通过; YAML 可解析; 首次 run 已越过 Set up job, 但手写 checkout 的 `bearer` header 被 GitHub git 拒绝。
+- 修改：checkout 改为 `basic x-access-token` extraheader, 并让 builder 清理步骤只在 builder 已创建时执行。
 - 清理：未启动 dev server, 未打开浏览器, 未占用端口。
 - 后续：提交并推送到 `custom` / `future`, 观察新 Docker workflow, 成功后复查 GHCR `custom` / `future` 双架构 manifest。

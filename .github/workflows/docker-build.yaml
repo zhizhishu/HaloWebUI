@@ -60,11 +60,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git init "$GITHUB_WORKSPACE"
+          auth_header="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
+          git init -b ci "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
-          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" fetch --no-tags --prune --depth=1 origin "$GITHUB_SHA"
-          git checkout --force --detach FETCH_HEAD
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" fetch --no-tags --prune --depth=1 origin "$GITHUB_REF"
+          git checkout --force --detach "$GITHUB_SHA"
 
       - name: Log in to the Container registry
         run: |
@@ -95,7 +96,9 @@ jobs:
       - name: Clean up builder
         if: always()
         run: |
-          docker buildx rm "$BUILDER_NAME" || true
+          if docker buildx inspect "$BUILDER_NAME" >/dev/null 2>&1; then
+            docker buildx rm "$BUILDER_NAME"
+          fi
 
   merge-main-images:
     runs-on: ubuntu-latest
@@ -198,11 +201,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git init "$GITHUB_WORKSPACE"
+          auth_header="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
+          git init -b ci "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
-          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" fetch --no-tags --prune --depth=1 origin "$GITHUB_SHA"
-          git checkout --force --detach FETCH_HEAD
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" fetch --no-tags --prune --depth=1 origin "$GITHUB_REF"
+          git checkout --force --detach "$GITHUB_SHA"
 
       - name: Log in to the Container registry
         run: |
@@ -254,11 +258,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          git init "$GITHUB_WORKSPACE"
+          auth_header="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
+          git init -b ci "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
           git remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
-          git -c http.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" fetch --no-tags --prune --depth=1 origin "$GITHUB_SHA"
-          git checkout --force --detach FETCH_HEAD
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" fetch --no-tags --prune --depth=1 origin "$GITHUB_REF"
+          git checkout --force --detach "$GITHUB_SHA"
 
       - name: Log in to the Container registry
         run: |
@@ -289,7 +294,9 @@ jobs:
       - name: Clean up builder
         if: always()
         run: |
-          docker buildx rm "$BUILDER_NAME" || true
+          if docker buildx inspect "$BUILDER_NAME" >/dev/null 2>&1; then
+            docker buildx rm "$BUILDER_NAME"
+          fi
 
   merge-slim-images:
     runs-on: ubuntu-latest
