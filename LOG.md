@@ -33,3 +33,10 @@
 - 验证：后端目标回归 `80 passed`; 上游新增数据管理/TTS + 二创补充回归 `67 passed`; 前端关键工具/继承/聊天状态 vitest `45 passed`; `NODE_OPTIONS=--max-old-space-size=4096 npm run build` 成功。
 - 清理：未启动 dev server, 未打开浏览器, 未占用端口。
 - 后续：提交并推送 `custom/future`, 等 GitHub Actions 与 GHCR 镜像门禁。
+
+### 最终门禁触发
+
+- 完成：`origin/custom` 与 `origin/future` 已在 `619e11e`; `origin/main` 已在作者最新 `785a055`。
+- 发现：GitHub 自动 Actions 仍只显示旧 SHA `32c4d11`; 直接 `workflow_dispatch` 对回归和镜像 workflow 连续返回 HTTP 500。
+- 修改：修复 `.github/workflows/custom-regression-guard.yaml` 中一行调度注释, 用非文档提交触发 `custom/future` push workflows。
+- 验证：提交后等待 `Custom Regression Guard` 与 `Create and publish Docker images with specific build args`; GHCR 需复查 `custom` / `slim` 双架构 manifest。

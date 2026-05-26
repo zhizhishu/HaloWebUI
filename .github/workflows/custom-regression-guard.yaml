@@ -3,7 +3,7 @@ name: Custom Regression Guard
 on:
   workflow_dispatch:
   schedule:
-    # 每天 03:40 UTC 巡检（默认分支）
+    # Daily 03:40 UTC guard scan on the default branch.
     - cron: "40 3 * * *"
   push:
     branches:
