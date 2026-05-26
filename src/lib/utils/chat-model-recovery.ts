@@ -33,6 +33,11 @@ export type ChatModelResolution = {
 	model?: AnyModel;
 };
 
+export type ChatModelResolutionEntry = {
+	resolution: ChatModelResolution;
+	timestamp: number;
+};
+
 const normalize = (value: unknown) =>
 	typeof value === 'string' || typeof value === 'number' ? `${value}`.trim() : '';
 
@@ -279,6 +284,78 @@ export const resolveChatModelSelections = (
 			...(hints[index] ?? {})
 		})
 	);
+
+const getMessageModelIndex = (message: any, fallback = 0) =>
+	typeof message?.modelIdx === 'number'
+		? message.modelIdx
+		: Number.isInteger(Number(message?.modelIdx))
+			? Number(message.modelIdx)
+			: fallback;
+
+export const getActiveAssistantMessagesByModelIndex = (
+	history: any
+): Map<number, any> => {
+	const messages = history?.messages ?? {};
+	const activeMessages = new Map<number, any>();
+	const visited = new Set<string>();
+	let currentId = normalize(history?.currentId);
+	const path: any[] = [];
+
+	while (currentId) {
+		if (visited.has(currentId)) break;
+		visited.add(currentId);
+
+		const message = messages[currentId];
+		if (!message || typeof message !== 'object') break;
+
+		path.unshift(message);
+		currentId = normalize(message.parentId);
+	}
+
+	for (const message of path) {
+		if (message?.role !== 'assistant') continue;
+		activeMessages.set(getMessageModelIndex(message), message);
+	}
+
+	return activeMessages;
+};
+
+const getResolvedValue = (entry?: ChatModelResolutionEntry | null) =>
+	entry?.resolution?.status === 'resolved' ? entry.resolution.value : '';
+
+export const mergeRecoveredChatModelSelections = (
+	selectedResolutions: ChatModelResolution[] = [],
+	latestResolvedByIndex: Map<number, ChatModelResolutionEntry> = new Map(),
+	activeResolvedByIndex: Map<number, ChatModelResolutionEntry> = new Map()
+) => {
+	const allIndexes = [
+		...selectedResolutions.map((_, index) => index),
+		...Array.from(latestResolvedByIndex.keys()),
+		...Array.from(activeResolvedByIndex.keys())
+	].filter((index) => Number.isInteger(index) && index >= 0);
+	const maxIndex = allIndexes.length > 0 ? Math.max(...allIndexes) : -1;
+	const nextSelectedModels: string[] = [];
+
+	for (let index = 0; index <= maxIndex; index += 1) {
+		const activeValue = getResolvedValue(activeResolvedByIndex.get(index));
+		if (activeValue) {
+			nextSelectedModels[index] = activeValue;
+			continue;
+		}
+
+		const selectedResolution = selectedResolutions[index];
+		if (selectedResolution?.status === 'resolved') {
+			nextSelectedModels[index] = selectedResolution.value;
+			continue;
+		}
+
+		const latestValue = getResolvedValue(latestResolvedByIndex.get(index));
+		nextSelectedModels[index] = latestValue || selectedResolution?.value || '';
+	}
+
+	const hasAnyRecoveredModel = nextSelectedModels.some((modelId) => normalize(modelId));
+	return hasAnyRecoveredModel ? nextSelectedModels : [''];
+};
 
 export const resolveAvailableChatModelSelectionValues = (
 	models: AnyModel[] = [],

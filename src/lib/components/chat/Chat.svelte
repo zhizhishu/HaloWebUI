@@ -73,6 +73,8 @@
 	} from '$lib/utils/model-identity';
 	import {
 		buildModelSelectionHint,
+		getActiveAssistantMessagesByModelIndex,
+		mergeRecoveredChatModelSelections,
 		resolveAvailableChatModelSelectionValues,
 		resolveChatModelSelection,
 		resolveChatModelSelections,
@@ -629,6 +631,7 @@
 		const hints = getChatModelSelectionHints(chatContent);
 		const selectedResolutions = resolveChatModelSelections($models, rawModels, hints);
 		const latestResolvedByIndex = new Map<number, { resolution: ChatModelResolution; timestamp: number }>();
+		const activeResolvedByIndex = new Map<number, { resolution: ChatModelResolution; timestamp: number }>();
 
 		for (const message of Object.values(loadedHistory?.messages ?? {}) as any[]) {
 			if (!message || typeof message !== 'object') continue;
@@ -659,28 +662,22 @@
 			}
 		}
 
-		const nextSelectedModels = selectedResolutions.map((resolution, index) => {
-			if (resolution.status === 'resolved') return resolution.value;
-			const inferred = latestResolvedByIndex.get(index)?.resolution;
-			if (inferred?.status === 'resolved') return inferred.value;
-			return resolution.value;
-		});
-		for (const [index, item] of latestResolvedByIndex.entries()) {
-			if (index >= nextSelectedModels.length && item.resolution.status === 'resolved') {
-				while (nextSelectedModels.length < index) {
-					nextSelectedModels.push('');
-				}
-				nextSelectedModels[index] = item.resolution.value;
+		for (const [modelIdx, message] of getActiveAssistantMessagesByModelIndex(loadedHistory).entries()) {
+			const resolution = resolveMessageModel(message);
+			if (resolution.status === 'resolved') {
+				applyResolvedMessageModel(message, resolution);
+				activeResolvedByIndex.set(modelIdx, {
+					resolution,
+					timestamp: Number(message.timestamp ?? 0)
+				});
 			}
 		}
 
-		if (nextSelectedModels.length === 0 && latestResolvedByIndex.size > 0) {
-			return Array.from(latestResolvedByIndex.entries())
-				.sort(([left], [right]) => left - right)
-				.map(([, item]) => item.resolution.value);
-		}
-
-		return nextSelectedModels.length > 0 ? nextSelectedModels : [''];
+		return mergeRecoveredChatModelSelections(
+			selectedResolutions,
+			latestResolvedByIndex,
+			activeResolvedByIndex
+		);
 	};
 	const getAvailableSelectedToolIds = (ids: unknown = selectedToolIds) =>
 		filterAvailableToolIds(ids, $tools);
