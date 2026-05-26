@@ -89,6 +89,106 @@ def merge_additive_payload_fields(
     return merged
 
 
+def _message_has_visible_content(message: dict) -> bool:
+    content = message.get("content")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return len(content) > 0
+    return content is not None
+
+
+def _get_tool_call_ids(tool_calls: Any) -> list[str]:
+    if not isinstance(tool_calls, list):
+        return []
+
+    ids = []
+    seen = set()
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        tool_call_id = str(tool_call.get("id") or "").strip()
+        if tool_call_id and tool_call_id not in seen:
+            ids.append(tool_call_id)
+            seen.add(tool_call_id)
+    return ids
+
+
+def sanitize_incomplete_tool_call_messages(payload: dict) -> dict:
+    """Drop half-finished OpenAI tool-call message groups from outbound payloads.
+
+    OpenAI-compatible providers reject histories where an assistant message contains
+    tool_calls that are not immediately followed by matching tool result messages.
+    That can happen when a generation is stopped while a tool call is still running.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return payload
+
+    sanitized: list[Any] = []
+    changed = False
+    index = 0
+
+    while index < len(messages):
+        message = messages[index]
+        if not isinstance(message, dict):
+            sanitized.append(message)
+            index += 1
+            continue
+
+        role = message.get("role")
+        tool_calls = message.get("tool_calls")
+
+        if role == "assistant" and isinstance(tool_calls, list) and tool_calls:
+            required_ids = _get_tool_call_ids(tool_calls)
+            tool_messages: list[dict] = []
+            seen_result_ids: set[str] = set()
+
+            lookahead = index + 1
+            while lookahead < len(messages):
+                candidate = messages[lookahead]
+                if not isinstance(candidate, dict) or candidate.get("role") != "tool":
+                    break
+
+                result_id = str(candidate.get("tool_call_id") or "").strip()
+                if result_id in required_ids and result_id not in seen_result_ids:
+                    tool_messages.append(candidate)
+                    seen_result_ids.add(result_id)
+                else:
+                    changed = True
+                lookahead += 1
+
+            if required_ids and all(tool_call_id in seen_result_ids for tool_call_id in required_ids):
+                sanitized.append(message)
+                sanitized.extend(tool_messages)
+            else:
+                changed = True
+                stripped_message = {key: value for key, value in message.items() if key != "tool_calls"}
+                if _message_has_visible_content(stripped_message):
+                    sanitized.append(stripped_message)
+
+            index = lookahead
+            continue
+
+        if role == "tool":
+            changed = True
+            index += 1
+            continue
+
+        sanitized.append(message)
+        index += 1
+
+    if not changed:
+        return payload
+
+    sanitized_payload = dict(payload)
+    sanitized_payload["messages"] = sanitized
+    return sanitized_payload
+
+
 # inplace function: form_data is modified
 def apply_model_params_to_body_openai(params: dict, form_data: dict) -> dict:
     mappings = {

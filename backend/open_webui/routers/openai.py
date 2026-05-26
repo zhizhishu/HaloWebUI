@@ -49,6 +49,7 @@ from open_webui.utils.payload import (
     apply_model_params_to_body_openai,
     apply_model_system_prompt_to_body,
     merge_additive_payload_fields,
+    sanitize_incomplete_tool_call_messages,
 )
 from open_webui.utils.misc import (
     convert_logit_bias_input_to_json,
@@ -2949,6 +2950,7 @@ async def generate_chat_completion(
     native_web_search = payload.pop("native_web_search", False) is True
     native_web_search_required = payload.pop("native_web_search_required", False) is True
     native_file_inputs = payload.pop("native_file_inputs", False) is True
+    payload = sanitize_incomplete_tool_call_messages(payload)
 
     # Responses API routing is strict: if enabled, we only call /responses and surface real errors.
     use_responses_api = _should_use_responses_api(
