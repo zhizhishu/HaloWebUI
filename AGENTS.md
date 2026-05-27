@@ -1,6 +1,7 @@
 ﻿# Local AGENTS Instructions
 
 ## Priority
+
 - This file overrides global agent guidance for this project.
 - Follow this fork workflow first:
   1. `main` is reserved for syncing upstream.
@@ -8,6 +9,7 @@
   3. Upstream contributions should come from a clean `feature/*` branch based on `main`.
 
 ## Repository Workflow
+
 - `origin` = this fork repository.
 - `upstream` = original repository: `ztx888/HaloWebUI`.
 - Keep `main` as close as possible to upstream `main`.
@@ -17,6 +19,7 @@
 - If a change may be contributed upstream, keep it minimal and separate from fork-only customization.
 
 ## Task Log
+
 - Do not read from or write to parent-folder log directories; parent folders are storage containers, not this project's log center.
 - Follow project-local `TASK.md` for current handoff and `LOG.md` for concise history.
 - Keep `TASK_LOG.md` as the legacy long-form history file; read it only when older detail is needed.
@@ -28,16 +31,19 @@
   - any sync/merge risk with upstream
 
 ## MCP Usage
+
 - Prefer local MCP tools first.
 - External MCP / external services may be used when helpful for verification or coverage.
 - Keep external calls minimal in scope.
 - Record the reason and outcome in responses.
 
 ## External Tool Log Format
+
 - Format:
   - `服务: <name> | 触发: <reason> | 参数: <key args> | 结果: <summary> | 状态: <success|fail>`
 
 ## Issue Screening Scope
+
 - Do not browse or triage broad upstream issues by default.
 - Only inspect issues when the user explicitly asks, or when a failing local test/bug points to a matching upstream issue.
 - When issue review is needed, keep it limited to this fork's six active lines:
@@ -51,13 +57,16 @@
 - Prefer local reproduction and tests before treating any upstream issue as actionable.
 
 ## Change Strategy
+
 - Prefer **minimal diff** changes.
 - Prefer **additive / wrapper / extension** changes over rewriting upstream core files.
 - Avoid broad refactors unless explicitly requested.
+- 项目无需刻意重复打磨; 没有永远完美的项目。完成目标、通过必要验证、风险可解释后就应收口, 不为追求完美反复扩大范围。
 - When changing shared/core files, clearly note possible future merge conflicts.
 - Preserve existing license, attribution, and upstream identity.
 
 ## Codex Working Rules
+
 - Codex should work only in the current checked-out branch.
 - Prefer working in:
   - `custom` for long-term fork features
@@ -74,6 +83,7 @@
   - suggested commit message
 
 ## Upstream Sync Rules
+
 - Sync flow:
   1. sync `upstream/main` -> `main`
   2. merge `main` -> `custom`
@@ -82,6 +92,7 @@
 - If conflicts appear after syncing, prefer preserving upstream compatibility first, then reapply fork customization with minimal diff.
 
 ## Validation Rules
+
 - Prefer quick local verification first.
 - If available, validate:
   - install/build success
@@ -89,6 +100,7 @@
   - local page rendering for changed UI
 
 ## Safety
+
 - Do not remove upstream license or attribution.
 - Do not modify secrets, tokens, `.env`, deployment credentials, or runtime artifacts unless explicitly requested.
 - Do not rewrite Git history or force-push protected/shared branches unless explicitly requested.

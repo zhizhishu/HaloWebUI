@@ -61,6 +61,7 @@
 	};
 	let inheritanceOptionsLoading = false;
 	let inheritanceOptionsLoaded = false;
+	let inheritanceOptionsLoadPromise: Promise<boolean> | null = null;
 	const pendingSelectCurrentOnLoad = new Set<ResourceInheritanceSelectionKey>();
 
 	const getOptionsForKey = (
@@ -87,36 +88,47 @@
 		});
 	};
 
-	const loadInheritanceOptions = async () => {
-		if (selectedUser?.role === 'admin' || inheritanceOptionsLoading) {
-			return;
+	const loadInheritanceOptions = async (): Promise<boolean> => {
+		if (selectedUser?.role === 'admin' || inheritanceOptionsLoaded) {
+			return true;
+		}
+		if (inheritanceOptionsLoadPromise) {
+			return inheritanceOptionsLoadPromise;
 		}
 
 		inheritanceOptionsLoading = true;
-		const res = await getResourceInheritanceOptions(localStorage.token).catch((error) => {
-			toast.error(`${error}`);
-			return null;
-		});
-		if (res) {
-			const nextOptions = {
-				admin_models: res.admin_models ?? [],
-				admin_mcp_servers: res.admin_mcp_servers ?? []
-			};
-			inheritanceOptions = nextOptions;
-			inheritanceOptionsLoaded = true;
+		inheritanceOptionsLoadPromise = (async () => {
+			const res = await getResourceInheritanceOptions(localStorage.token).catch((error) => {
+				toast.error(`${error}`);
+				return null;
+			});
+			if (res) {
+				const nextOptions = {
+					admin_models: res.admin_models ?? [],
+					admin_mcp_servers: res.admin_mcp_servers ?? []
+				};
+				inheritanceOptions = nextOptions;
+				inheritanceOptionsLoaded = true;
 
-			for (const key of Array.from(pendingSelectCurrentOnLoad)) {
-				const selectedValue = _user.settings.resource_inheritance[key];
-				if (Array.isArray(selectedValue) && selectedValue.length === 0) {
-					const ids = getOptionsForKey(key, nextOptions).map((option) => option.id);
-					if (ids.length > 0) {
-						setResourceInheritanceValue(key, ids);
+				for (const key of Array.from(pendingSelectCurrentOnLoad)) {
+					const selectedValue = _user.settings.resource_inheritance[key];
+					if (Array.isArray(selectedValue) && selectedValue.length === 0) {
+						const ids = getOptionsForKey(key, nextOptions).map((option) => option.id);
+						if (ids.length > 0) {
+							setResourceInheritanceValue(key, ids);
+						}
 					}
+					pendingSelectCurrentOnLoad.delete(key);
 				}
-				pendingSelectCurrentOnLoad.delete(key);
+				return true;
 			}
-		}
+			return false;
+		})();
+
+		const loaded = await inheritanceOptionsLoadPromise;
 		inheritanceOptionsLoading = false;
+		inheritanceOptionsLoadPromise = null;
+		return loaded;
 	};
 
 	const getModeFromEvent = (event: Event): ResourceInheritanceMode => {
@@ -180,6 +192,15 @@
 		options: ResourceInheritanceOption[]
 	) => countSelectedResourceIds(_user.settings.resource_inheritance, key, getOptionIds(options));
 
+	const selectedUserNeedsInheritanceOptions = () =>
+		selectedUser?.role !== 'admin' &&
+		(isSpecifiedMode('admin_model_ids') || isSpecifiedMode('admin_mcp_server_ids'));
+
+	const canSaveUser = () =>
+		!inheritanceOptionsLoading ||
+		!selectedUserNeedsInheritanceOptions() ||
+		inheritanceOptionsLoaded;
+
 	const createEditableUser = (user: any) => ({
 		id: user?.id ?? '',
 		profile_image_url: user?.profile_image_url ?? '',
@@ -210,6 +231,14 @@
 	};
 
 	const submitHandler = async () => {
+		if (selectedUserNeedsInheritanceOptions() && !inheritanceOptionsLoaded) {
+			const loaded = await loadInheritanceOptions();
+			if (!loaded) {
+				toast.error($i18n.t('Load resource inheritance options before saving.'));
+				return;
+			}
+		}
+
 		const payload = selectedUser?.role === 'admin' ? { ..._user, settings: undefined } : _user;
 
 		const res = await updateUserById(localStorage.token, selectedUser.id, payload).catch(
@@ -451,7 +480,9 @@
 													<span
 														class="block truncate text-[11px] leading-4 text-gray-400 dark:text-gray-500"
 													>
-														{option.owner_name ? `${option.owner_name} - ` : ''}{option.display_id ?? option.id}
+														{option.owner_name
+															? `${option.owner_name} - `
+															: ''}{option.display_id ?? option.id}
 													</span>
 												</span>
 											</label>
@@ -565,8 +596,9 @@
 
 			<div class="flex justify-end mt-5">
 				<button
-					class="inline-flex items-center gap-2 rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
+					class="inline-flex items-center gap-2 rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
 					type="submit"
+					disabled={!canSaveUser()}
 				>
 					{$i18n.t('Save')}
 				</button>

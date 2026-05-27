@@ -1,5 +1,31 @@
 # LOG.md
 
+## 2026-05-27
+
+### User Resource Inheritance Fix
+
+- 完成: 在 `custom` 修复用户资源继承指定模型/MCP 的回归风险; `main` 继续保持作者同步线, 不写入二创修复.
+- 完成: 使用 2 个 subagent 做只读复测:
+  - 后端审计定位继承 normalize 放大、MCP tool id 校验偏松、模型 alias 语义风险.
+  - 前端审计定位指定模式 options 未加载时可能误保存空数组.
+- 修改:
+  - `backend/open_webui/utils/user_resource_inheritance.py`: 字符串布尔值正确解析; 畸形指定 ids 不再回退为全量继承.
+  - `backend/open_webui/utils/tools.py`: `validate_tool_ids_access` 对本地 OpenAPI/MCP tool id 按过滤后的连接表做存在性和启用状态校验.
+  - `src/lib/components/admin/Users/UserList/EditUserModal.svelte`: 指定模式保存前确保 options 已加载; 加载中禁用保存; 加载失败阻止保存.
+  - `src/lib/i18n/locales/en-US/translation.json` / `zh-CN/translation.json`: 补齐资源继承文案.
+  - `AGENTS.md`: 增加“项目无需刻意重复打磨, 没有永远完美的项目”收口规则.
+  - `backend/open_webui/test/unit/test_user_resource_inheritance.py` / `test_user_tools_mcp_inherit.py`: 新增 normalize、stale MCP tool id、sanitize 覆盖.
+- 验证:
+  - `uv run pytest backend/open_webui/test/unit/test_user_resource_inheritance.py backend/open_webui/test/unit/test_user_tools_mcp_inherit.py backend/open_webui/test/unit/test_resource_inheritance_options.py backend/open_webui/test/unit/test_models_sharing.py -q`: 35 passed.
+  - `npx vitest run src/lib/utils/resource-inheritance.test.ts`: 9 passed.
+  - i18n JSON 解析: passed.
+  - `git diff --check`: passed, 仅 Git line-ending 提示.
+  - `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: passed, 仅既有 Svelte warnings.
+  - `npm run check`: failed, 原因是全仓既有 5639 个类型诊断, 非本轮改动引入.
+- 后续:
+  - 可提交并推送 `custom`, 再同步 `future`.
+  - 部署后建议用普通用户实测指定一个模型、指定一个 MCP、旧聊天 stale `mcp:*` 三条路径.
+
 ## 2026-05-26
 
 ### Upstream Sync: `f48d77a`

@@ -39,7 +39,10 @@ from open_webui.models.users import UserModel
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.utils.access_control import can_read_resource
 from open_webui.utils.plugin import load_tool_module_by_id
-from open_webui.env import AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER_DATA, MCP_TOOL_CALL_TIMEOUT
+from open_webui.env import (
+    AIOHTTP_CLIENT_TIMEOUT_TOOL_SERVER_DATA,
+    MCP_TOOL_CALL_TIMEOUT,
+)
 from open_webui.utils.mcp import execute_mcp_tool
 from open_webui.utils.shared_tool_servers import (
     MCP_SHARED_TOOL_PREFIX,
@@ -167,7 +170,9 @@ def build_local_connection_tool_id_map(
     stable_prefix = (
         STABLE_OPENAPI_TOOL_PREFIX if kind == "openapi" else STABLE_MCP_TOOL_PREFIX
     )
-    legacy_prefix = LOCAL_OPENAPI_TOOL_PREFIX if kind == "openapi" else LOCAL_MCP_TOOL_PREFIX
+    legacy_prefix = (
+        LOCAL_OPENAPI_TOOL_PREFIX if kind == "openapi" else LOCAL_MCP_TOOL_PREFIX
+    )
 
     stable_ids = [
         _get_connection_stable_id(kind, connection) for connection in connections or []
@@ -195,7 +200,9 @@ def _resolve_local_connection_tool_index(
     stable_prefix = (
         STABLE_OPENAPI_TOOL_PREFIX if kind == "openapi" else STABLE_MCP_TOOL_PREFIX
     )
-    legacy_prefix = LOCAL_OPENAPI_TOOL_PREFIX if kind == "openapi" else LOCAL_MCP_TOOL_PREFIX
+    legacy_prefix = (
+        LOCAL_OPENAPI_TOOL_PREFIX if kind == "openapi" else LOCAL_MCP_TOOL_PREFIX
+    )
 
     legacy_idx = _parse_indexed_tool_id(tool_id, legacy_prefix)
     if legacy_idx is not None:
@@ -232,7 +239,9 @@ def _to_runtime_local_tool_id(
     )
     if idx is None:
         return None
-    legacy_prefix = LOCAL_OPENAPI_TOOL_PREFIX if kind == "openapi" else LOCAL_MCP_TOOL_PREFIX
+    legacy_prefix = (
+        LOCAL_OPENAPI_TOOL_PREFIX if kind == "openapi" else LOCAL_MCP_TOOL_PREFIX
+    )
     return f"{legacy_prefix}{idx}"
 
 
@@ -354,9 +363,7 @@ def sanitize_tool_ids_for_request(
                 continue
 
             if mcp_server_connections is None:
-                mcp_server_connections = get_user_mcp_server_connections(
-                    request, user
-                )
+                mcp_server_connections = get_user_mcp_server_connections(request, user)
 
             runtime_tool_id = _to_runtime_local_tool_id(
                 tool_id,
@@ -413,6 +420,8 @@ def validate_tool_ids_access(
 
     missing_tool_ids: list[str] = []
     denied_tool_ids: list[str] = []
+    tool_server_connections: Optional[list[dict]] = None
+    mcp_server_connections: Optional[list[dict]] = None
 
     if request is not None:
         validate_requested_shared_tool_ids_access(request, tool_ids, user)
@@ -435,12 +444,61 @@ def validate_tool_ids_access(
 
     for tool_id in tool_ids:
         tool_id = str(tool_id or "").strip()
-        if (
-            not tool_id
-            or _is_openapi_connection_tool_id(tool_id)
-            or _is_mcp_connection_tool_id(tool_id)
-            or tool_id.startswith((OPENAPI_SHARED_TOOL_PREFIX, MCP_SHARED_TOOL_PREFIX))
+        if not tool_id or tool_id.startswith(
+            (OPENAPI_SHARED_TOOL_PREFIX, MCP_SHARED_TOOL_PREFIX)
         ):
+            continue
+
+        if _is_openapi_connection_tool_id(tool_id):
+            if request is None:
+                continue
+            if tool_server_connections is None:
+                tool_server_connections = get_user_tool_server_connections(
+                    request, user
+                )
+            runtime_tool_id = _to_runtime_local_tool_id(
+                tool_id,
+                kind="openapi",
+                connections=tool_server_connections,
+            )
+            server_idx = (
+                _parse_indexed_tool_id(runtime_tool_id, LOCAL_OPENAPI_TOOL_PREFIX)
+                if runtime_tool_id
+                else None
+            )
+            if (
+                server_idx is None
+                or server_idx < 0
+                or server_idx >= len(tool_server_connections)
+                or not _is_server_connection_enabled(
+                    tool_server_connections[server_idx]
+                )
+            ):
+                missing_tool_ids.append(tool_id)
+            continue
+
+        if _is_mcp_connection_tool_id(tool_id):
+            if request is None:
+                continue
+            if mcp_server_connections is None:
+                mcp_server_connections = get_user_mcp_server_connections(request, user)
+            runtime_tool_id = _to_runtime_local_tool_id(
+                tool_id,
+                kind="mcp",
+                connections=mcp_server_connections,
+            )
+            mcp_idx = (
+                _parse_indexed_tool_id(runtime_tool_id, LOCAL_MCP_TOOL_PREFIX)
+                if runtime_tool_id
+                else None
+            )
+            if (
+                mcp_idx is None
+                or mcp_idx < 0
+                or mcp_idx >= len(mcp_server_connections)
+                or not _is_server_connection_enabled(mcp_server_connections[mcp_idx])
+            ):
+                missing_tool_ids.append(tool_id)
             continue
 
         tool = Tools.get_tool_by_id(tool_id)
@@ -678,13 +736,15 @@ def _make_mcp_tool_runtime(
                         mcp_server_connection,
                         name=original_tool_name,
                         arguments=kwargs,
-                        session_token=getattr(
-                            getattr(request, "state", None),
-                            "token",
-                            None,
-                        ).credentials
-                        if getattr(getattr(request, "state", None), "token", None)
-                        else None,
+                        session_token=(
+                            getattr(
+                                getattr(request, "state", None),
+                                "token",
+                                None,
+                            ).credentials
+                            if getattr(getattr(request, "state", None), "token", None)
+                            else None
+                        ),
                         user_id=getattr(user, "id", None),
                         on_notification=notif_cb,
                     )
@@ -764,8 +824,14 @@ def get_tools(
                     continue
 
                 tool_server_connections = (
-                    getattr(getattr(request, "state", None), "TOOL_SERVER_CONNECTIONS", None)
-                    or getattr(getattr(request.app.state, "config", None), "TOOL_SERVER_CONNECTIONS", None)
+                    getattr(
+                        getattr(request, "state", None), "TOOL_SERVER_CONNECTIONS", None
+                    )
+                    or getattr(
+                        getattr(request.app.state, "config", None),
+                        "TOOL_SERVER_CONNECTIONS",
+                        None,
+                    )
                     or []
                 )
                 if server_idx < 0 or server_idx >= len(tool_server_connections):
@@ -803,8 +869,8 @@ def get_tools(
                 )
             elif tool_id.startswith(OPENAPI_SHARED_TOOL_PREFIX):
                 shared_id = tool_id[len(OPENAPI_SHARED_TOOL_PREFIX) :].strip()
-                tool_server_connection, tool_server_data = _get_shared_tool_server_runtime_entry(
-                    request, shared_id
+                tool_server_connection, tool_server_data = (
+                    _get_shared_tool_server_runtime_entry(request, shared_id)
                 )
                 if tool_server_connection is None or tool_server_data is None:
                     log.warning(
@@ -830,8 +896,14 @@ def get_tools(
                     continue
 
                 mcp_connections = (
-                    getattr(getattr(request, "state", None), "MCP_SERVER_CONNECTIONS", None)
-                    or getattr(getattr(request.app.state, "config", None), "MCP_SERVER_CONNECTIONS", None)
+                    getattr(
+                        getattr(request, "state", None), "MCP_SERVER_CONNECTIONS", None
+                    )
+                    or getattr(
+                        getattr(request.app.state, "config", None),
+                        "MCP_SERVER_CONNECTIONS",
+                        None,
+                    )
                     or []
                 )
                 if server_idx < 0 or server_idx >= len(mcp_connections):

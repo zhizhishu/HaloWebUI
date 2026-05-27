@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-已完成: 拉取作者最新 `upstream/main`, 同步到本 fork 的 `main/custom/future`, 保留二创能力, 完成 subagent 审计, 推送 GitHub, 并确认 GitHub Actions / GHCR 镜像门禁。
+已完成: 修复 `custom` 分支用户资源继承指定模型/MCP 的回归风险, 收紧旧聊天 stale MCP 工具校验, 并补充项目收口规则。
 
 ## Completed
 
@@ -22,6 +22,22 @@
 - 已补写干净 UTF-8 的 `TASK.md` / `LOG.md`, 替换原乱码接力内容.
 - 已推送 `origin/custom` 和 `origin/future` 到 `d502e13`.
 - 已确认 GitHub `Custom Regression Guard` 和 Docker 镜像 workflow 在 `custom` / `future` 全部成功.
+- 已按用户要求确认: `main` 只作为作者同步线, 二创修复不写入 `main`.
+- 已在 `AGENTS.md` 增加规则: 项目无需刻意重复打磨, 没有永远完美的项目; 完成目标、通过必要验证、风险可解释后应收口.
+- 已用 2 个 subagent 复测继承链路:
+  - 后端指出 normalize 会把畸形指定值放大成全部允许, MCP tool id 校验过松.
+  - 前端指出指定模式在 options 未加载时可误保存空数组.
+- 已修复后端继承 normalize:
+  - `admin_models` / `admin_mcp_servers` 支持字符串布尔解析, `"false"` / `"0"` 不再被当作 true.
+  - `admin_model_ids` / `admin_mcp_server_ids` 的畸形非 list 输入不再回退到 `None` 全量允许, 而是按空指定列表处理.
+- 已修复本地 OpenAPI/MCP tool id 权限校验:
+  - `validate_tool_ids_access` 现在会按当前用户过滤后的连接表解析 `server:` / `server_id:` / `mcp:` / `mcp_id:`.
+  - 旧聊天里已删除、被继承指定列表排除、或被重新映射后不存在的 MCP 工具会被拒绝或在 sanitize 阶段清掉.
+- 已修复用户编辑前端:
+  - 指定模型/MCP 时复用同一次 options 加载 promise.
+  - 指定模式保存前会确保资源继承选项已加载; 加载失败会阻止保存并提示.
+  - options 正在加载时保存按钮禁用, 避免把“未加载”误保存成空指定.
+  - 补齐英文/中文资源继承提示文案.
 
 ## Validation
 
@@ -32,6 +48,12 @@
 - `npx vitest run src/lib/apis/streaming/index.test.ts src/lib/utils/chat-response-state.test.ts src/lib/utils/chat-model-recovery.test.ts src/lib/utils/tool-selection.test.ts src/lib/utils/skill-selection.test.ts`: 33 passed.
 - `npx vitest run src/lib/utils/chat-event-state.test.ts`: 2 passed.
 - `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: 通过.
+- `uv run pytest backend/open_webui/test/unit/test_user_resource_inheritance.py backend/open_webui/test/unit/test_user_tools_mcp_inherit.py backend/open_webui/test/unit/test_resource_inheritance_options.py backend/open_webui/test/unit/test_models_sharing.py -q`: 35 passed.
+- `npx vitest run src/lib/utils/resource-inheritance.test.ts`: 9 passed.
+- `node -e "...JSON.parse..."`: en-US / zh-CN i18n JSON 均通过解析.
+- `git diff --check`: 通过, 仅有 Git line-ending 提示.
+- `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: 通过, 仅有既有 Svelte a11y/unused warnings.
+- `npm run check`: 未通过; 失败来自全仓既有 5639 个类型诊断, 主要是旧 implicit any / i18n store 类型问题, 非本轮改动文件的单点回归.
 - GitHub Actions:
   - `custom` Custom Regression Guard: success, run `26470361170`.
   - `future` Custom Regression Guard: success, run `26470363875`.
@@ -43,8 +65,8 @@
 
 ## Next Steps
 
-- 当前同步任务已收口.
-- 仍可单独处理 `main` 上作者基线触发的 `Python CI` / `Frontend Build` 红点; 该红点不阻断 `custom/future` 二创分支和 GHCR 镜像.
+- 当前用户继承指定模型/MCP 修复已在本地通过 targeted tests 和生产构建.
+- 下一步如需发布, 在 `custom` 提交并推送, 再同步到 `future`; 不把二创修复写入 `main`.
 
 ## Risks
 
@@ -52,7 +74,8 @@
 - 作者新增多模型讨论会多次调用 `generate_chat_completion`; 已确认路径继续带 `user` 和当前 request, 继承模型/MCP 相关测试通过.
 - 当前未启动 dev server, 未占用端口, 未打开浏览器.
 - `main` 保持作者基线; `main` 的 CI 红点来自格式检查和少量全量测试预期, 本轮未在 `main` 写入二创修复.
+- 本轮改动涉及共享工具校验路径, 已用 stale MCP 和继承指定测试覆盖; 仍建议部署后用一个普通用户实测“指定一个 MCP / 指定一个模型 / 旧聊天带旧 mcp id”三条路径.
 
 ## Last Updated
 
-2026-05-26 12:43 -07:00
+2026-05-27 04:10 -07:00

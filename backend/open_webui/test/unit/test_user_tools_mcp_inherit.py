@@ -69,7 +69,9 @@ def test_regular_user_inherits_admin_mcp_connections_and_filters_stdio(monkeypat
     assert result[0]["url"] == "https://mcp.example.com"
     assert result[0]["key"] == "admin-secret-key"
     assert result[0]["headers"]["X-Api-Key"] == "shared-header-key"
-    assert all((item.get("transport_type") or "http").lower() != "stdio" for item in result)
+    assert all(
+        (item.get("transport_type") or "http").lower() != "stdio" for item in result
+    )
 
 
 def test_regular_user_does_not_inherit_when_disabled(monkeypatch):
@@ -176,14 +178,19 @@ def test_regular_user_own_connections_override_admin_inheritance(monkeypatch):
             {
                 "tools": {
                     "mcp_server_connections": [
-                        {"transport_type": "http", "url": "https://admin-mcp.example.com"}
+                        {
+                            "transport_type": "http",
+                            "url": "https://admin-mcp.example.com",
+                        }
                     ]
                 }
             }
         ),
     )
     monkeypatch.setattr(user_tools_mod.Users, "get_users", lambda: [admin_user])
-    monkeypatch.setattr(user_tools_mod, "has_permission", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        user_tools_mod, "has_permission", lambda *_args, **_kwargs: True
+    )
 
     request = _build_request(inherit_enabled=True)
     regular_user = SimpleNamespace(
@@ -193,7 +200,10 @@ def test_regular_user_own_connections_override_admin_inheritance(monkeypatch):
             {
                 "tools": {
                     "mcp_server_connections": [
-                        {"transport_type": "http", "url": "https://user-mcp.example.com"}
+                        {
+                            "transport_type": "http",
+                            "url": "https://user-mcp.example.com",
+                        }
                     ]
                 }
             }
@@ -206,7 +216,9 @@ def test_regular_user_own_connections_override_admin_inheritance(monkeypatch):
     assert result[0]["url"] == "https://user-mcp.example.com"
 
 
-def test_regular_user_without_direct_tool_permission_uses_inherited_admin_mcp(monkeypatch):
+def test_regular_user_without_direct_tool_permission_uses_inherited_admin_mcp(
+    monkeypatch,
+):
     from open_webui.utils import user_tools as user_tools_mod
 
     admin_user = SimpleNamespace(
@@ -216,14 +228,19 @@ def test_regular_user_without_direct_tool_permission_uses_inherited_admin_mcp(mo
             {
                 "tools": {
                     "mcp_server_connections": [
-                        {"transport_type": "http", "url": "https://admin-mcp.example.com"}
+                        {
+                            "transport_type": "http",
+                            "url": "https://admin-mcp.example.com",
+                        }
                     ]
                 }
             }
         ),
     )
     monkeypatch.setattr(user_tools_mod.Users, "get_users", lambda: [admin_user])
-    monkeypatch.setattr(user_tools_mod, "has_permission", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        user_tools_mod, "has_permission", lambda *_args, **_kwargs: False
+    )
 
     request = _build_request(inherit_enabled=True)
     regular_user = SimpleNamespace(
@@ -233,7 +250,10 @@ def test_regular_user_without_direct_tool_permission_uses_inherited_admin_mcp(mo
             {
                 "tools": {
                     "mcp_server_connections": [
-                        {"transport_type": "http", "url": "https://user-mcp.example.com"}
+                        {
+                            "transport_type": "http",
+                            "url": "https://user-mcp.example.com",
+                        }
                     ]
                 },
                 "resource_inheritance": {
@@ -468,13 +488,22 @@ def test_admin_mcp_inheritance_connections_mark_stable_ids(monkeypatch):
     assert result[0]["_inherited_from_user_id"] == "admin-1"
 
 
-def test_mcp_tool_ids_are_allowed_for_inherited_mcp_without_direct_permission(monkeypatch):
+def test_mcp_tool_ids_are_allowed_for_inherited_mcp_without_direct_permission(
+    monkeypatch,
+):
     from open_webui.utils import tools as tools_mod
 
     monkeypatch.setattr(
         tools_mod,
         "validate_requested_shared_tool_ids_access",
         lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        tools_mod,
+        "get_user_mcp_server_connections",
+        lambda *_args, **_kwargs: [
+            {"transport_type": "http", "url": "https://admin-mcp.example.com"}
+        ],
     )
 
     request = _build_request(inherit_enabled=True)
@@ -494,3 +523,57 @@ def test_mcp_tool_ids_are_allowed_for_inherited_mcp_without_direct_permission(mo
 
     with pytest.raises(HTTPException):
         tools_mod.validate_tool_ids_access(["server:0"], user, request)
+
+
+def test_validate_mcp_tool_ids_rejects_filtered_out_inherited_mcp(monkeypatch):
+    from open_webui.utils import tools as tools_mod
+
+    monkeypatch.setattr(
+        tools_mod,
+        "validate_requested_shared_tool_ids_access",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        tools_mod,
+        "can_user_use_mcp_server_tools",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        tools_mod,
+        "get_user_mcp_server_connections",
+        lambda *_args, **_kwargs: [
+            {"transport_type": "http", "url": "https://second.example.com"}
+        ],
+    )
+
+    request = _build_request(inherit_enabled=True)
+    user = SimpleNamespace(id="user-1", role="user", settings=_Settings({}))
+
+    tools_mod.validate_tool_ids_access(["mcp:0"], user, request)
+
+    with pytest.raises(HTTPException):
+        tools_mod.validate_tool_ids_access(["mcp:1"], user, request)
+
+
+def test_sanitize_mcp_tool_ids_drops_stale_filtered_inherited_mcp(monkeypatch):
+    from open_webui.utils import tools as tools_mod
+
+    monkeypatch.setattr(
+        tools_mod,
+        "can_user_use_mcp_server_tools",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        tools_mod,
+        "get_user_mcp_server_connections",
+        lambda *_args, **_kwargs: [
+            {"transport_type": "http", "url": "https://second.example.com"}
+        ],
+    )
+
+    request = _build_request(inherit_enabled=True)
+    user = SimpleNamespace(id="user-1", role="user", settings=_Settings({}))
+
+    assert tools_mod.sanitize_tool_ids_for_request(
+        ["mcp:1", "mcp:0"], user, request
+    ) == ["mcp:0"]

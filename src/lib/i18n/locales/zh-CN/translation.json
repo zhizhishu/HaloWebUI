@@ -1427,6 +1427,7 @@
 	"Only selected admin MCP servers are available to this user.": "仅允许该用户使用所选管理员 MCP 服务器。",
 	"Available admin MCP servers": "可用管理员 MCP 服务器",
 	"No admin MCP servers available.": "没有可用的管理员 MCP 服务器。",
+	"Load resource inheritance options before saving.": "请先加载资源继承选项再保存。",
 	"No notes found matching your search": "未找到匹配的笔记",
 	"No notes yet. Create your first note to get started.": "暂无笔记，创建第一条笔记以开始使用。",
 	"No prompts found matching your search": "没有找到匹配的提示词",

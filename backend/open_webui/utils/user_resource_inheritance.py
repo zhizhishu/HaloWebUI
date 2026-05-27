@@ -37,7 +37,7 @@ def _normalize_optional_ids(value: Any) -> Optional[list[str]]:
     if value is None:
         return None
     if not isinstance(value, list):
-        return None
+        return []
 
     normalized: list[str] = []
     seen: set[str] = set()
@@ -50,20 +50,39 @@ def _normalize_optional_ids(value: Any) -> Optional[list[str]]:
     return normalized
 
 
+def _normalize_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
 def normalize_resource_inheritance(value: Any) -> dict:
     raw = _as_dict(value)
     return {
-        INHERIT_ADMIN_MODELS_KEY: bool(
+        INHERIT_ADMIN_MODELS_KEY: _normalize_bool(
             raw.get(
                 INHERIT_ADMIN_MODELS_KEY,
                 DEFAULT_RESOURCE_INHERITANCE[INHERIT_ADMIN_MODELS_KEY],
-            )
+            ),
+            DEFAULT_RESOURCE_INHERITANCE[INHERIT_ADMIN_MODELS_KEY],
         ),
-        INHERIT_ADMIN_MCP_SERVERS_KEY: bool(
+        INHERIT_ADMIN_MCP_SERVERS_KEY: _normalize_bool(
             raw.get(
                 INHERIT_ADMIN_MCP_SERVERS_KEY,
                 DEFAULT_RESOURCE_INHERITANCE[INHERIT_ADMIN_MCP_SERVERS_KEY],
-            )
+            ),
+            DEFAULT_RESOURCE_INHERITANCE[INHERIT_ADMIN_MCP_SERVERS_KEY],
         ),
         ADMIN_MODEL_IDS_KEY: _normalize_optional_ids(raw.get(ADMIN_MODEL_IDS_KEY)),
         ADMIN_MCP_SERVER_IDS_KEY: _normalize_optional_ids(
