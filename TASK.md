@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-已完成: 修复 `custom` 分支用户资源继承指定模型/MCP 的回归风险, 收紧旧聊天 stale MCP 工具校验, 并补充项目收口规则。
+已完成: 将作者最新 `upstream/main` (`9652510`) 合入二创分支, 保持 `custom` / `future` 跟上作者线, 并确认用户继承模型/MCP 等二创能力仍可用。
 
 ## Completed
 
@@ -38,6 +38,21 @@
   - 指定模式保存前会确保资源继承选项已加载; 加载失败会阻止保存并提示.
   - options 正在加载时保存按钮禁用, 避免把“未加载”误保存成空指定.
   - 补齐英文/中文资源继承提示文案.
+- 已确认 `.github/workflows/sync-upstream-main.yaml` 已存在:
+  - 支持手动触发和每日定时.
+  - 会把 `main` 重置到 `upstream/main`.
+  - 如 `main` 与 `future` 有差异会创建同步 PR.
+- 已拉取作者最新 `upstream/main`:
+  - `ff7ca31`: MiMo/reasoning control handling and tests.
+  - `2e46882`: streaming text block content append.
+  - `5019c53`: MarkdownTokens/Collapsible/reasoning type styling.
+  - `9652510`: `_get_tool_call_result` tool-call result handling and streaming tests.
+- 已同步本地 `main` 到作者最新 `9652510`; `main` 保持作者纯净线, 未写入二创修复.
+- 已将 `main` 合入 `custom`, merge commit: `6fe2050 Merge branch 'main' into custom`, 无冲突.
+- 已确认二创能力仍在:
+  - 用户继承管理员模型/MCP, 全部/指定/禁用.
+  - stale MCP tool id 清理和权限校验.
+  - 旧聊天发送状态、事件去重、模型恢复等运行时修复.
 
 ## Validation
 
@@ -54,6 +69,11 @@
 - `git diff --check`: 通过, 仅有 Git line-ending 提示.
 - `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: 通过, 仅有既有 Svelte a11y/unused warnings.
 - `npm run check`: 未通过; 失败来自全仓既有 5639 个类型诊断, 主要是旧 implicit any / i18n store 类型问题, 非本轮改动文件的单点回归.
+- `uv run pytest backend/open_webui/test/unit/test_user_resource_inheritance.py backend/open_webui/test/unit/test_user_tools_mcp_inherit.py backend/open_webui/test/unit/test_resource_inheritance_options.py backend/open_webui/test/unit/test_models_sharing.py backend/open_webui/test/unit/test_model_reasoning_priority.py backend/open_webui/test/unit/test_multi_model_discussion.py backend/open_webui/test/unit/test_stream_image_files.py -q`: 87 passed, 6 warnings.
+- `npx vitest run src/lib/utils/resource-inheritance.test.ts src/lib/apis/streaming/index.test.ts src/lib/utils/chat-response-state.test.ts src/lib/utils/chat-event-state.test.ts src/lib/utils/tool-selection.test.ts src/lib/utils/skill-selection.test.ts`: 40 passed across 6 files.
+- `rg -n "^(<<<<<<<|=======|>>>>>>>)" .`: 无冲突标记.
+- `git diff --check`: 通过, 仅有 Windows line-ending 提示.
+- `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: 通过, 生产包写入 `build`, 仅有既有 Svelte a11y/unused warnings.
 - GitHub Actions:
   - `custom` Custom Regression Guard: success, run `26470361170`.
   - `future` Custom Regression Guard: success, run `26470363875`.
@@ -65,12 +85,13 @@
 
 ## Next Steps
 
-- 当前用户继承指定模型/MCP 修复已在本地通过 targeted tests 和生产构建.
-- 下一步如需发布, 在 `custom` 提交并推送, 再同步到 `future`; 不把二创修复写入 `main`.
+- 等待 GitHub Actions / GHCR 完成最新 `custom` / `future` 镜像构建.
+- 不把二创修复写入 `main`; `main` 继续由 upstream sync workflow 维护.
 
 ## Risks
 
-- 本轮主要冲突点是 `Chat.svelte`; 已经用 targeted tests 和生产构建覆盖.
+- 本轮合并作者 `9652510` 无冲突; 仍重点验证继承/MCP/streaming/多模型讨论相关路径.
+- 之前主要冲突点是 `Chat.svelte`; 已经用 targeted tests 和生产构建覆盖.
 - 作者新增多模型讨论会多次调用 `generate_chat_completion`; 已确认路径继续带 `user` 和当前 request, 继承模型/MCP 相关测试通过.
 - 当前未启动 dev server, 未占用端口, 未打开浏览器.
 - `main` 保持作者基线; `main` 的 CI 红点来自格式检查和少量全量测试预期, 本轮未在 `main` 写入二创修复.
@@ -78,4 +99,4 @@
 
 ## Last Updated
 
-2026-05-27 04:10 -07:00
+2026-05-28 00:55 -07:00

@@ -1,5 +1,36 @@
 # LOG.md
 
+## 2026-05-28
+
+### Upstream Sync: `9652510`
+
+- 完成: 拉取作者最新 `upstream/main` 到 `9652510`.
+- 作者更新:
+  - `ff7ca31`: 增强 reasoning control, 添加 MiMo 模型处理和测试.
+  - `2e46882`: 增强 streaming content handling, 支持文本块内容追加.
+  - `5019c53`: 优化 MarkdownTokens / Collapsible 样式, 增加 reasoning type 样式.
+  - `9652510`: 添加 `_get_tool_call_result`, 增强工具调用结果和 streaming 处理测试.
+- 完成: 确认 `main` 自动同步 workflow 已存在, 无需新增:
+  - `.github/workflows/sync-upstream-main.yaml`
+  - 支持 `workflow_dispatch` 和每日定时.
+  - 将 `main` 重置到 `upstream/main`, 并在需要时创建 `main -> future` PR.
+- 完成: 本地 `main` 已同步作者 `9652510`; 二创未写入 `main`.
+- 完成: 将最新 `main` 合入 `custom`, merge commit: `6fe2050 Merge branch 'main' into custom`, 无冲突.
+- 保留二创:
+  - 用户继承管理员模型/MCP 的全部/指定/禁用.
+  - 指定继承 options 加载保护和文案.
+  - stale MCP tool id 拒绝/清理.
+  - 旧聊天发送状态、事件去重、模型恢复、工具/技能过滤.
+- 验证:
+  - 后端 targeted pytest: 87 passed, 6 warnings.
+  - 前端 targeted vitest: 6 files passed, 40 tests passed.
+  - 冲突标记扫描: passed.
+  - `git diff --check`: passed, 仅 Windows line-ending 提示.
+  - `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: passed, 仅既有 Svelte a11y/unused warnings.
+- 后续:
+  - 等待 GitHub Actions / GHCR 完成最新 `custom` / `future` 镜像构建.
+  - 不推送 `main`, 因为 GitHub workflow 已负责作者同步线.
+
 ## 2026-05-27
 
 ### User Resource Inheritance Fix
