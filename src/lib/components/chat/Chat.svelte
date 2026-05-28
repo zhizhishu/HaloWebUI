@@ -1146,6 +1146,7 @@
 		const imageGenerationActive = canUseChatImageGeneration()
 			? isImageGenerationActiveForRequest()
 			: false;
+		const requestReasoningEffort = maxThinkingTokens === 0 ? 'none' : reasoningEffort;
 
 		return {
 			stream,
@@ -1154,7 +1155,7 @@
 			params: {
 				...$settings?.params,
 				...params,
-				...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+				...(requestReasoningEffort ? { reasoning_effort: requestReasoningEffort } : {}),
 				...(maxThinkingTokens != null && maxThinkingTokens > 0
 					? { thinking: { type: 'enabled', budget_tokens: maxThinkingTokens } }
 					: {}),
@@ -2444,17 +2445,6 @@
 		message.discussion = discussion;
 	};
 
-	const sendChatDiag = (event: string, fields: Record<string, unknown> = {}) => {
-		try {
-			$socket?.emit('chat-diag', {
-				event,
-				...fields
-			});
-		} catch (diagError) {
-			console.warn('[CHAT_DIAG frontend_emit_failed]', diagError);
-		}
-	};
-
 	const notifyHistoryUpdated = () => {
 		// Socket handlers mutate nested message objects; invalidate the top-level binding
 		// so child message components re-render immediately.
@@ -2472,31 +2462,6 @@
 	};
 
 	const chatEventHandler = async (event, cb) => {
-		const eventType = event?.data?.type ?? null;
-		const eventData = event?.data?.data ?? null;
-		if (eventType === 'chat:completion' && eventData?.done === true) {
-			console.warn('[CHAT_DIAG frontend_event_seen]', {
-				eventChatId: event?.chat_id,
-				currentChatId: $chatId,
-				messageId: event?.message_id,
-				hasMessage: Boolean(history.messages?.[event?.message_id]),
-				messageDoneBefore: history.messages?.[event?.message_id]?.done,
-				dataKeys: Object.keys(eventData ?? {}),
-				contentLength: `${eventData?.content ?? ''}`.length,
-				activeTaskIds: taskIds
-			});
-			sendChatDiag('frontend_event_seen', {
-				eventChatId: event?.chat_id,
-				currentChatId: $chatId,
-				messageId: event?.message_id,
-				hasMessage: Boolean(history.messages?.[event?.message_id]),
-				messageDoneBefore: history.messages?.[event?.message_id]?.done,
-				dataKeys: Object.keys(eventData ?? {}),
-				contentLength: `${eventData?.content ?? ''}`.length,
-				activeTaskIds: taskIds
-			});
-		}
-
 		if (event.chat_id === $chatId) {
 			await tick();
 			let message = history.messages[event.message_id];
@@ -3968,7 +3933,6 @@
 		}
 
 		taskIds = null;
-		notifyHistoryUpdated();
 		await tick();
 
 		const parentId = history.messages[responseMessageId]?.parentId;
@@ -4461,45 +4425,8 @@
 
 	const chatCompletionEventHandler = async (data, message, chatId) => {
 		const { id, done, choices, content, sources, error, usage, files, discussion } = data;
-		const isFinalCompletion = done === true;
-		if (isFinalCompletion) {
-			console.warn('[CHAT_DIAG frontend_completion_handler_start]', {
-				chatId,
-				messageId: message?.id,
-				messageDoneBefore: message?.done,
-				isStopped: isResponseStopped(message),
-				isInStoppedSet: stoppedResponseMessageIds.has(message?.id),
-				contentLength: `${content ?? ''}`.length,
-				hasError: Boolean(error),
-				activeTaskIds: taskIds
-			});
-			sendChatDiag('frontend_completion_handler_start', {
-				chatId,
-				messageId: message?.id,
-				messageDoneBefore: message?.done,
-				isStopped: isResponseStopped(message),
-				isInStoppedSet: stoppedResponseMessageIds.has(message?.id),
-				contentLength: `${content ?? ''}`.length,
-				hasError: Boolean(error),
-				activeTaskIds: taskIds
-			});
-		}
 		if (isResponseStopped(message) || stoppedResponseMessageIds.has(message?.id)) {
 			if (done) {
-				console.warn('[CHAT_DIAG frontend_completion_ignored_stopped]', {
-					chatId,
-					messageId: message?.id,
-					messageDoneBefore: message?.done,
-					isStopped: isResponseStopped(message),
-					activeTaskIds: taskIds
-				});
-				sendChatDiag('frontend_completion_ignored_stopped', {
-					chatId,
-					messageId: message?.id,
-					messageDoneBefore: message?.done,
-					isStopped: isResponseStopped(message),
-					activeTaskIds: taskIds
-				});
 				stoppedResponseMessageIds.delete(message.id);
 				stoppedResponseMessageIds = new Set(stoppedResponseMessageIds);
 			}
@@ -4578,20 +4505,6 @@
 			message.completedAt = Date.now() / 1000;
 			commitHistoryMessage(message);
 			await tick();
-			console.warn('[CHAT_DIAG frontend_completion_mark_done]', {
-				chatId,
-				messageId: message.id,
-				contentLength: `${message.content ?? ''}`.length,
-				completedAt: message.completedAt,
-				activeTaskIdsBeforeCompletedHandler: taskIds
-			});
-			sendChatDiag('frontend_completion_mark_done', {
-				chatId,
-				messageId: message.id,
-				contentLength: `${message.content ?? ''}`.length,
-				completedAt: message.completedAt,
-				activeTaskIdsBeforeCompletedHandler: taskIds
-			});
 
 			if ($settings.responseAutoCopy) {
 				copyToClipboard(message.content);
@@ -4631,42 +4544,12 @@
 				return new Set(ids);
 			});
 
-			try {
-				await chatCompletedHandler(
-					chatId,
-					message.model,
-					message.id,
-					createMessagesList(history, message.id)
-				);
-				console.warn('[CHAT_DIAG frontend_completed_handler_ok]', {
-					chatId,
-					messageId: message.id,
-					messageDoneAfter: history.messages?.[message.id]?.done,
-					activeTaskIdsAfterCompletedHandler: taskIds
-				});
-				sendChatDiag('frontend_completed_handler_ok', {
-					chatId,
-					messageId: message.id,
-					messageDoneAfter: history.messages?.[message.id]?.done,
-					activeTaskIdsAfterCompletedHandler: taskIds
-				});
-			} catch (completedHandlerError) {
-				console.error('[CHAT_DIAG frontend_completed_handler_failed]', {
-					chatId,
-					messageId: message.id,
-					messageDoneAfter: history.messages?.[message.id]?.done,
-					activeTaskIdsAfterFailure: taskIds,
-					error: completedHandlerError
-				});
-				sendChatDiag('frontend_completed_handler_failed', {
-					chatId,
-					messageId: message.id,
-					messageDoneAfter: history.messages?.[message.id]?.done,
-					activeTaskIdsAfterFailure: taskIds,
-					error: String(completedHandlerError)
-				});
-				throw completedHandlerError;
-			}
+			await chatCompletedHandler(
+				chatId,
+				message.model,
+				message.id,
+				createMessagesList(history, message.id)
+			);
 		}
 
 		if (shouldAutoScrollOnStreaming()) {
