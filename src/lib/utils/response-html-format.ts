@@ -62,6 +62,74 @@ const looksLikeTableRow = (line: string) => line.includes('|') && !isFence(line)
 const stripTableEdges = (line: string) => line.trim().replace(/^\|/, '').replace(/\|$/, '');
 const parseTableRow = (line: string) => stripTableEdges(line).split('|').map((cell) => cell.trim());
 
+const reasoningDetailsBlockPattern =
+	/<details\b(?=[^>]*\btype\s*=\s*(?:"reasoning"|'reasoning'|reasoning)(?=[\s>]))[^>]*>[\s\S]*?<\/details>/gi;
+const reasoningDetailsOpenPattern =
+	/<details\b(?=[^>]*\btype\s*=\s*(?:"reasoning"|'reasoning'|reasoning)(?=[\s>]))[^>]*>/i;
+
+const stripReasoningDetailsFromSegment = (segment: string) => {
+	const withoutClosedBlocks = segment.replace(reasoningDetailsBlockPattern, '');
+	const lines = withoutClosedBlocks.split('\n');
+	const keptLines: string[] = [];
+	let skippingReasoningBlock = false;
+
+	for (const line of lines) {
+		if (!skippingReasoningBlock && reasoningDetailsOpenPattern.test(line)) {
+			skippingReasoningBlock = !/<\/details>/i.test(line);
+			continue;
+		}
+
+		if (skippingReasoningBlock) {
+			if (/<\/details>/i.test(line)) {
+				skippingReasoningBlock = false;
+			}
+			continue;
+		}
+
+		keptLines.push(line);
+	}
+
+	return keptLines.join('\n');
+};
+
+const stripInternalReasoningDetails = (content: string) => {
+	const lines = normalizeText(content).split('\n');
+	const output: string[] = [];
+	let plainSegment: string[] = [];
+	let insideFence = false;
+
+	const flushPlainSegment = () => {
+		if (plainSegment.length === 0) {
+			return;
+		}
+
+		output.push(stripReasoningDetailsFromSegment(plainSegment.join('\n')));
+		plainSegment = [];
+	};
+
+	for (const line of lines) {
+		if (isFence(line)) {
+			if (!insideFence) {
+				flushPlainSegment();
+			}
+
+			insideFence = !insideFence;
+			output.push(line);
+			continue;
+		}
+
+		if (insideFence) {
+			output.push(line);
+		} else {
+			plainSegment.push(line);
+		}
+	}
+
+	flushPlainSegment();
+
+	return normalizeText(output.join('\n'));
+};
+
 const renderInlineWithoutLinks = (value: string): string => {
 	const input = normalizeText(value);
 	let html = '';
@@ -333,7 +401,7 @@ export const isKnownInlineHtmlFormatFragment = (content: unknown): content is st
 	);
 
 export const renderResponseHtmlFormat = (content: string): string => {
-	const normalized = normalizeText(content);
+	const normalized = stripInternalReasoningDetails(content);
 	if (!normalized) {
 		return '';
 	}
