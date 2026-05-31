@@ -8,23 +8,27 @@
 	import { getUserPosition } from '$lib/utils';
 	import { translateWithDefault } from '$lib/i18n';
 	import { resolveCopyFormattedPreference } from '$lib/utils/copy-format';
+	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import QuestionMarkCircle from '$lib/components/icons/QuestionMarkCircle.svelte';
+	import type { Writable } from 'svelte/store';
 	const dispatch = createEventDispatcher();
 
-	const i18n = getContext('i18n');
+	const i18n: Writable<any> = getContext('i18n');
 	const tr = (key: string, defaultValue: string, options: Record<string, any> = {}) =>
 		translateWithDefault($i18n, key, defaultValue, options);
 
 	export let saveSettings: Function;
 
-	let backgroundImageUrl = null;
-	let inputFiles = null;
-	let filesInputElement;
+	let backgroundImageUrl: string | null = null;
+	let inputFiles: FileList | null = null;
+	let filesInputElement: HTMLInputElement | null = null;
 
 	// Addons
 	let titleAutoGenerate = true;
 	let autoTags = true;
 
 	let responseAutoCopy = false;
+	let responseHtmlFormat = false;
 	let widescreenMode = false;
 	let splitLargeChunks = false;
 	let scrollOnBranchChange = true;
@@ -246,6 +250,11 @@
 		}
 	};
 
+	const toggleResponseHtmlFormat = async () => {
+		responseHtmlFormat = !responseHtmlFormat;
+		saveSettings({ responseHtmlFormat });
+	};
+
 	const toggleCopyFormatted = async () => {
 		copyFormatted = !copyFormatted;
 		saveSettings({ copyFormatted, copyFormattedUserSet: true });
@@ -306,6 +315,7 @@
 
 		collapseCodeBlocks = $settings.collapseCodeBlocks ?? false;
 		collapseHistoricalLongResponses = $settings.collapseHistoricalLongResponses ?? true;
+		responseHtmlFormat = $settings.responseHtmlFormat ?? false;
 		showInlineCitations = $settings.showInlineCitations ?? true;
 		showMessageOutline = $settings.showMessageOutline ?? true;
 		expandDetails = $settings.expandDetails ?? false;
@@ -347,20 +357,21 @@
 		on:change={() => {
 			let reader = new FileReader();
 			reader.onload = (event) => {
-				let originalImageUrl = `${event.target.result}`;
+				let originalImageUrl = `${event.target?.result ?? ''}`;
 
 				backgroundImageUrl = originalImageUrl;
 				saveSettings({ backgroundImageUrl });
 			};
 
+			const selectedFile = inputFiles?.[0];
+
 			if (
-				inputFiles &&
-				inputFiles.length > 0 &&
-				['image/gif', 'image/webp', 'image/jpeg', 'image/png'].includes(inputFiles[0]['type'])
+				selectedFile &&
+				['image/gif', 'image/webp', 'image/jpeg', 'image/png'].includes(selectedFile.type)
 			) {
-				reader.readAsDataURL(inputFiles[0]);
+				reader.readAsDataURL(selectedFile);
 			} else {
-				console.log(`Unsupported File Type '${inputFiles[0]['type']}'.`);
+				console.log(`Unsupported File Type '${selectedFile?.type ?? 'unknown'}'.`);
 				inputFiles = null;
 			}
 		}}
@@ -783,6 +794,38 @@
 			</div>
 
 			<div>
+				<div class=" py-0.5 flex w-full justify-between gap-3">
+					<div class="self-center flex items-center gap-1.5 text-xs">
+						<span>{tr('HTML 格式输出', 'HTML format output')}</span>
+						<Tooltip
+							content={tr(
+								'开启后，模型回复会以 HTML 格式展示；关闭后使用 Markdown。',
+								'Render model replies as HTML when enabled; use Markdown when disabled.'
+							)}
+						>
+							<QuestionMarkCircle
+								className="w-3.5 h-3.5 cursor-help text-gray-400 dark:text-gray-500"
+							/>
+						</Tooltip>
+					</div>
+
+					<button
+						class="p-1 px-3 text-xs flex rounded-sm transition"
+						on:click={() => {
+							toggleResponseHtmlFormat();
+						}}
+						type="button"
+					>
+						{#if responseHtmlFormat === true}
+							<span class="ml-2 self-center">{$i18n.t('On')}</span>
+						{:else}
+							<span class="ml-2 self-center">{$i18n.t('Off')}</span>
+						{/if}
+					</button>
+				</div>
+			</div>
+
+			<div>
 				<div class=" py-0.5 flex w-full justify-between">
 					<div class=" self-center text-xs">{$i18n.t('Show Message Outline')}</div>
 
@@ -857,7 +900,7 @@
 								backgroundImageUrl = null;
 								saveSettings({ backgroundImageUrl });
 							} else {
-								filesInputElement.click();
+								filesInputElement?.click();
 							}
 						}}
 						type="button"

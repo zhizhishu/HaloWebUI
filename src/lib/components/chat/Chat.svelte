@@ -5741,7 +5741,21 @@
 			if (options.instruction) _pendingInstruction = options.instruction;
 
 			try {
-				if ((userMessage?.models ?? [...selectedModels]).length == 1) {
+				if (message?.discussion?.enabled === true) {
+					const currentModelIds =
+						atSelectedModel !== undefined
+							? [getModelSelectionId(atSelectedModel)].filter(Boolean)
+							: (selectedModels ?? []).map((modelId) => `${modelId ?? ''}`.trim()).filter(Boolean);
+
+					if (currentModelIds.length === 1) {
+						await sendPrompt(history, userPrompt, userMessage.id, {
+							modelId: currentModelIds[0],
+							modelIdx: 0
+						});
+					} else {
+						await sendPrompt(history, userPrompt, userMessage.id);
+					}
+				} else if ((userMessage?.models ?? [...selectedModels]).length == 1) {
 					await sendPrompt(history, userPrompt, userMessage.id);
 				} else {
 					await sendPrompt(history, userPrompt, userMessage.id, {
@@ -5818,9 +5832,18 @@
 			if (res && res.ok && res.body) {
 				const textStream = await createOpenAITextStream(res.body, $settings.splitLargeChunks);
 				for await (const update of textStream) {
-					const { value, image, done, sources, error, usage } = update;
+					const { value, image, done, sources, error, usage, status } = update;
 					if (error || done) {
 						break;
+					}
+
+					if (status) {
+						message.statusHistory = [...(message.statusHistory ?? []), status];
+						history.messages[messageId] = message;
+						if (shouldAutoScrollOnStreaming()) {
+							scrollToBottom();
+						}
+						continue;
 					}
 
 					const appendValue = image?.markdown ?? value;

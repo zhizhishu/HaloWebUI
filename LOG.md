@@ -1,5 +1,38 @@
 # LOG.md
 
+## 2026-05-31
+
+### Upstream Sync: `fd961f9`
+
+- 完成: 拉取作者最新 `upstream/main` 到 `fd961f9`.
+- 作者更新重点:
+  - 用户工具配置覆盖和 MiMo reasoning control.
+  - 图像生成与 streaming response 解析增强.
+  - DuckDuckGo 限流错误处理和 web search 状态更新.
+  - 安全 HTML / data download markdown link 处理.
+  - 聊天标题更新 API.
+  - DiscussionPanel / ResponseMessage / ModelSelector 多模型讨论展示优化.
+- 完成: 本地 `main` 已同步作者 `fd961f9`; 二创未写入 `main`.
+- 完成: 将最新 `main` 合入 `custom`; 冲突仅 `src/lib/components/chat/MessageInput.svelte`.
+- 处理: 同时保留 fork 的 `hasActiveChatResponse` 响应状态保护和作者新增的 `saveUserSettingsPatch` / HTML 渲染设置保存.
+- 审计: 启动 1 个只读 subagent 检查六条二创线。subagent 的 raw diff 提醒“继承/MCP 文件在 upstream 不存在”; 主线程已用最终合并状态确认这些 fork 文件仍存在, 并用 targeted tests 覆盖。
+- 保留二创:
+  - 用户继承管理员模型/MCP 的全部/指定/禁用.
+  - 指定继承 options 加载保护和文案.
+  - stale MCP tool id 拒绝/清理.
+  - 旧聊天响应状态、事件去重、模型恢复、工具/技能过滤.
+  - custom/future 回归守卫、Docker 镜像 workflow、upstream main sync workflow.
+- 验证:
+  - 后端 targeted pytest: 99 passed, 6 warnings.
+  - 前端 targeted vitest: 9 files passed, 62 tests passed.
+  - 冲突标记扫描: passed.
+  - `git diff --check`: passed, 仅 Windows line-ending 提示.
+  - `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: passed, 仅既有 Svelte a11y/unused warnings.
+- 后续:
+  - 推送 `custom`.
+  - 同步并推送 `future`.
+  - 等待 GitHub Actions / GHCR 完成最新 `custom` / `future` 镜像构建.
+
 ## 2026-05-28
 
 ### Upstream Sync: `9652510`

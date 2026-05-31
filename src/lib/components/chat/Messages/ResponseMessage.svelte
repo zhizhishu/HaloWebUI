@@ -100,6 +100,7 @@
 	interface MessageType {
 		id: string;
 		model: string;
+		modelName?: string;
 		content: string;
 		files?: {
 			type?: string;
@@ -185,6 +186,11 @@
 		};
 	}
 	type MessageFile = NonNullable<MessageType['files']>[number];
+	type MessageModel = {
+		info?: { meta?: { capabilities?: { reasoning?: boolean } } };
+		actions?: { id: string; [key: string]: unknown }[];
+		[key: string]: unknown;
+	};
 
 	export let chatId = '';
 	export let history;
@@ -533,9 +539,15 @@
 	// 	}
 	// };
 
-	let model = null;
-	$: model = findModelByIdentity($models, message.model);
+	let model: MessageModel | null = null;
+	$: model = findModelByIdentity($models, message.model) as unknown as MessageModel | null;
 	$: stats = getStatsDisplay(message);
+	const toDiscussionArray = (value: unknown) => (Array.isArray(value) ? value : []);
+	const getDiscussionParticipantName = (participant: any): string =>
+		`${participant?.name ?? participant?.id ?? ''}`.trim();
+	$: discussionParticipants = toDiscussionArray(message?.discussion?.participants).filter(
+		(participant) => getDiscussionParticipantName(participant)
+	);
 
 	const doRegenerate = () => {
 		regenerateResponse(message);
@@ -1077,11 +1089,26 @@
 
 		<div class="flex-auto w-0 sm:pl-1 relative z-10">
 			<Name>
-				<Tooltip content={getModelChatDisplayName(model) || message.modelName || message.model} placement="top-start">
-					<span class="line-clamp-1 text-black dark:text-white font-semibold">
-						{getModelChatDisplayName(model) || message.modelName || message.model}
-					</span>
-				</Tooltip>
+				{#if hasVisibleDiscussion}
+					<div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
+						<span class="line-clamp-1 text-black dark:text-white font-semibold">
+							{tr('多模型讨论', 'Multi-model discussion')}
+						</span>
+						{#if discussionParticipants.length > 0}
+							<span class="text-xs font-medium text-gray-400 dark:text-gray-500">
+								{tr('共 {{count}} 个模型', '{{count}} models', {
+									count: discussionParticipants.length
+								})}
+							</span>
+						{/if}
+					</div>
+				{:else}
+					<Tooltip content={getModelChatDisplayName(model) || message.modelName || message.model} placement="top-start">
+						<span class="line-clamp-1 text-black dark:text-white font-semibold">
+							{getModelChatDisplayName(model) || message.modelName || message.model}
+						</span>
+					</Tooltip>
+				{/if}
 
 				{#if message.timestamp}
 					<div
@@ -1130,7 +1157,7 @@
 			<div class="mt-1.5 -ml-4 w-[calc(100%+1rem)] sm:ml-0 sm:w-auto">
 				<div class="chat-{message.role} w-full min-w-full markdown-prose">
 					<div>
-						{#if message.content !== '' || renderableMessageError || hasVisibleMessageFiles}
+						{#if message.content !== '' || renderableMessageError || hasVisibleMessageFiles || displayStatusHistory.length > 0}
 							<!-- Only show status section when content is streaming (not during initial loading) -->
 							{#if displayStatusHistory.length > 0}
 								{@const status = displayStatusHistory.at(-1)}
@@ -1142,7 +1169,7 @@
 											</div>
 										{/if}
 
-										{#if status?.action === 'web_search' && status?.urls}
+										{#if status?.action === 'web_search'}
 											<WebSearchResults {status}>
 												<div class="flex flex-col justify-center -space-y-0.5">
 													<div
@@ -1154,7 +1181,7 @@
 														<!-- $i18n.t("No search query generated") -->
 
 														<!-- $i18n.t('Searched {{count}} sites') -->
-														{#if status?.description.includes('{{count}}')}
+																{#if status?.description?.includes('{{count}}')}
 															{$i18n.t(status?.description, {
 																count: status?.count ?? status?.urls?.length ?? 0,
 																failed: status?.failed ?? 0,
@@ -1216,7 +1243,7 @@
 														: ''} text-gray-500 dark:text-gray-500 text-base line-clamp-1 text-wrap"
 												>
 													<!-- $i18n.t(`Searching "{{searchQuery}}"`) -->
-													{#if status?.description.includes('{{searchQuery}}')}
+											{#if status?.description?.includes('{{searchQuery}}')}
 														{$i18n.t(status?.description, {
 															searchQuery: status?.query
 														})}
