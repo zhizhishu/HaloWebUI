@@ -176,3 +176,18 @@
   - 生产构建: `NODE_OPTIONS=--max-old-space-size=4096 npm run build` passed，仅既有 warnings。
   - `git diff --check` passed，仅 Windows line-ending 提示。
 - 后续: 推送 `future` 后等待 GitHub Actions / GHCR；部署后做管理员继承选择与 `gpt-image-2` 兼容站实际请求冒烟。
+
+
+### Post-push CI / GHCR Confirmation
+
+- 完成: 将修复提交 `8e958f0` 推送到 `origin/future`，并将 `origin/custom` 快进同步到同一提交；`main` 仍保持作者纯净线 `37269bb`。
+- GitHub Actions:
+  - `future` Custom Regression Guard `27123061077`: success。
+  - `future` Docker / GHCR workflow `27123061117`: success。
+  - `custom` Custom Regression Guard `27123644304`: success。
+  - `custom` Docker / GHCR workflow `27123644271`: success。
+- GHCR:
+  - `ghcr.io/zhizhishu/halowebui:future`: `sha256:00dafb3099b60e7ae0471e5533a21e2baf3387d80e2368978620cea98072afee`。
+  - `ghcr.io/zhizhishu/halowebui:custom`: `sha256:37c7c472e954826c0f96d2d1065444cdd1ea61b7bb062b47fcc242e9261fe176`。
+  - `ghcr.io/zhizhishu/halowebui:git-8e958f0-slim`: `sha256:a86cbd9d65535bfea4f269b45ccdc8bd46ab4723c5983575d094e415d11b2b29`。
+- 备注: GitHub Actions 出现 Node.js 20 deprecation annotation，非本轮回归；可后续单独处理。
