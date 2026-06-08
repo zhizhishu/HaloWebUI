@@ -203,3 +203,32 @@
   - 后端继承相关 pytest: 35 passed, 3 warnings。
   - 生产构建: passed，仅既有 Svelte a11y/unused 与 chunk/pyodide warnings。
 - 后续: 推送后等待 CI/GHCR，线上更新镜像并重建容器后再次实测 radio 切换。
+
+
+### Post Radio Fix CI / Deployment Check
+
+- 完成: 修复提交 `3d3dd82 fix resource inheritance mode selector interaction` 已推送到 `future`，并同步到 `custom`。
+- GitHub Actions:
+  - `future` Custom Regression Guard `27128391071`: success。
+  - `future` Docker / GHCR workflow `27128391025`: success。
+  - `custom` Custom Regression Guard `27128393562`: success。
+  - `custom` Docker / GHCR workflow `27128393259`: success。
+- GHCR:
+  - `ghcr.io/zhizhishu/halowebui:custom`: `sha256:48cf391d8a50273b750b9fc78ca3740bc8ee29c99c319975d47623e2c3873996`。
+  - `ghcr.io/zhizhishu/halowebui:future`: `sha256:dfe6d2fb5ce359131727c1c357870ee8e96acf7f27adc034e0461ab7a84a072d`。
+  - `ghcr.io/zhizhishu/halowebui:git-3d3dd82-slim`: `sha256:ee9720fd247d34323b6cd0935df91df73d8e0637a39652ea42523d64bf475edd`。
+- 线上复测: `https://chat.agent-ai.vip/settings/account` 仍加载旧前端资产 `11.aKEI9WGW.js`，该资产包含旧 `Specified / Disabled` 文案，未包含新 `Choose resources / Disable inheritance`。点击 `Specified` 后 DOM 无变化。
+- 结论: 代码与镜像已修复并发布；线上容器尚未重建到新镜像。服务器需重新创建 `halowebui` 容器，不能只 `docker pull`。
+
+
+### Resource Inheritance Explicit Click Handler Fix
+
+- 触发: 用户反馈部署最新后 `https://chat.agent-ai.vip/settings/account` 资源继承仍直接无法点击。
+- 修复: `src/lib/components/admin/Users/UserList/EditUserModal.svelte` 将继承模式控件从隐藏 radio + label 默认行为改为真正 `<button type="button" role="radio">`，同时在 `pointerdown` 与 `click` 上显式调用 `setResourceMode`。
+- 目的: 不再依赖 `sr-only` radio / label 的浏览器默认切换链，避免真实弹窗环境中点击 label 或隐藏 input 时状态更新事件不触发。
+- 验证:
+  - 前端 util vitest: 12 passed。
+  - 后端继承相关 pytest: 35 passed, 3 warnings。
+  - `svelte/compiler` + `svelte-preprocess` 单文件编译 `EditUserModal.svelte`: ok, no warnings。
+  - `git diff --check`: passed，仅 Windows line-ending 提示。
+- 备注: 本机 `npm run build` / `npm run check` 本轮超时无输出，未产生可定位编译错误；后续以 GitHub Actions / Docker build 继续做完整生产验证。

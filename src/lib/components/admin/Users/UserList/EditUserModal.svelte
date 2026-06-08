@@ -455,24 +455,27 @@
 									aria-label={$i18n.t('Model Inheritance Scope')}
 								>
 									{#each inheritanceModeOptions as mode}
-										<label
+										<button
+											type="button"
+											role="radio"
+											aria-checked={getCurrentResourceMode('admin_model_ids') === mode}
+											data-resource-inheritance-mode={mode}
 											class={getModeButtonClass(getCurrentResourceMode('admin_model_ids') === mode)}
+											on:pointerdown|preventDefault={() =>
+												setResourceMode(
+													'admin_model_ids',
+													mode,
+													inheritanceOptions.admin_models
+												)}
+											on:click|preventDefault={() =>
+												setResourceMode(
+													'admin_model_ids',
+													mode,
+													inheritanceOptions.admin_models
+												)}
 										>
-											<input
-												class="sr-only"
-												type="radio"
-												name={`admin-model-inheritance-${_user.id}`}
-												value={mode}
-												checked={getCurrentResourceMode('admin_model_ids') === mode}
-												on:change={() =>
-													setResourceMode(
-														'admin_model_ids',
-														mode,
-														inheritanceOptions.admin_models
-													)}
-											/>
 											{getModeLabel(mode)}
-										</label>
+										</button>
 									{/each}
 								</div>
 							</div>
@@ -570,24 +573,27 @@
 									aria-label={$i18n.t('MCP Inheritance Scope')}
 								>
 									{#each inheritanceModeOptions as mode}
-										<label
+										<button
+											type="button"
+											role="radio"
+											aria-checked={getCurrentResourceMode('admin_mcp_server_ids') === mode}
+											data-resource-inheritance-mode={mode}
 											class={getModeButtonClass(getCurrentResourceMode('admin_mcp_server_ids') === mode)}
+											on:pointerdown|preventDefault={() =>
+												setResourceMode(
+													'admin_mcp_server_ids',
+													mode,
+													inheritanceOptions.admin_mcp_servers
+												)}
+											on:click|preventDefault={() =>
+												setResourceMode(
+													'admin_mcp_server_ids',
+													mode,
+													inheritanceOptions.admin_mcp_servers
+												)}
 										>
-											<input
-												class="sr-only"
-												type="radio"
-												name={`admin-mcp-inheritance-${_user.id}`}
-												value={mode}
-												checked={getCurrentResourceMode('admin_mcp_server_ids') === mode}
-												on:change={() =>
-													setResourceMode(
-														'admin_mcp_server_ids',
-														mode,
-														inheritanceOptions.admin_mcp_servers
-													)}
-											/>
 											{getModeLabel(mode)}
-										</label>
+										</button>
 									{/each}
 								</div>
 							</div>

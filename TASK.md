@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-本轮用户管理“模型继承 / MCP 继承”可选范围 UI 修复，以及 `gpt-image-2` / OpenAI Images 兼容站 stream 参数回退修复已完成；`custom` 与 `future` 已同步到同一提交并推送，CI / GHCR 已通过。
+本轮用户管理“模型继承 / MCP 继承”可选范围 UI 修复，以及 `gpt-image-2` / OpenAI Images 兼容站 stream 参数回退修复已完成；当前追加修复继承模式控件无法点击/点击不生效问题，改为显式按钮事件链，待推送并等 CI/GHCR 后线上复测。
 
 ## Completed
 
@@ -54,20 +54,31 @@
 
 ## Last Updated
 
-2026-06-08 02:22 -07:00
+2026-06-08 04:05 -07:00
 
 
 ## Active Follow-up
 
-用户在线上 `https://chat.agent-ai.vip/settings/account` 反馈资源继承仍像锁定/不可选。已用 Browser Relay 验证线上真实行为：编辑普通用户 `Duduen` 时，`All / Specified / Disabled` 按钮 DOM 为可点且 `pointer-events: auto`，但点击 `Specified` 后继承区域文本和状态不变，确认前端交互仍有回归。
+用户在线上 `https://chat.agent-ai.vip/settings/account` 反馈资源继承仍像锁定/不可选。已用真实浏览器复测当前线上页面：编辑普通用户 `Duduen` 时，按钮 DOM 可点，但点击 `Specified` 后页面无 DOM 变化；当前加载的前端资产 `11.aKEI9WGW.js` 仍只有旧 `Specified / Disabled` 文案，未包含新 `Choose resources / Disable inheritance`，判断服务器仍跑旧前端包或未重建容器。
 
-本地修复：
-- `EditUserModal.svelte` 将继承范围控件从纯按钮改为原生 radio group + label，避免按钮事件链不触发时状态无法切换。
-- 文案从 `All / Specified / Disabled` 改为更明确的 `Inherit all / Choose resources / Disable inheritance`，中文为 `全部继承 / 指定资源 / 不继承`，避免“已禁用”被误解成控件锁定。
+已完成：
+- 修复提交 `3d3dd82 fix resource inheritance mode selector interaction` 已在 `future` / `custom`。
+- GitHub Actions 已确认：
+  - `future` Custom Regression Guard `27128391071`: success。
+  - `future` Docker / GHCR workflow `27128391025`: success。
+  - `custom` Custom Regression Guard `27128393562`: success。
+  - `custom` Docker / GHCR workflow `27128393259`: success。
+- GHCR 最新 manifest：
+  - `ghcr.io/zhizhishu/halowebui:custom`: `sha256:48cf391d8a50273b750b9fc78ca3740bc8ee29c99c319975d47623e2c3873996`。
+  - `ghcr.io/zhizhishu/halowebui:future`: `sha256:dfe6d2fb5ce359131727c1c357870ee8e96acf7f27adc034e0461ab7a84a072d`。
+  - `ghcr.io/zhizhishu/halowebui:git-3d3dd82-slim`: `sha256:ee9720fd247d34323b6cd0935df91df73d8e0637a39652ea42523d64bf475edd`。
 
-验证：
-- `npx vitest run src/lib/utils/resource-inheritance.test.ts src/lib/utils/api-key-pool.test.ts`: 12 passed。
-- `uv run pytest backend/open_webui/test/unit/test_user_resource_inheritance.py backend/open_webui/test/unit/test_user_tools_mcp_inherit.py backend/open_webui/test/unit/test_resource_inheritance_options.py backend/open_webui/test/unit/test_models_sharing.py -q`: 35 passed, 3 warnings。
-- `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: passed，仅既有 warnings。
-
-下一步：提交并推送 `future/custom`，等待 CI/GHCR 后让服务器重新 `docker pull ghcr.io/zhizhishu/halowebui:custom` 并重建容器。
+下一步：
+- 当前追加修复：`EditUserModal.svelte` 将继承模式 radio/label 改为真正 `<button type="button" role="radio">`，同时绑定 `pointerdown` 和 `click` 显式调用 `setResourceMode`，避免隐藏 radio/label 默认行为在真实弹窗里不触发。
+- 本地验证：
+  - `npx --yes vitest run src/lib/utils/resource-inheritance.test.ts src/lib/utils/api-key-pool.test.ts --reporter=dot`: 12 passed。
+  - `uv run pytest backend/open_webui/test/unit/test_user_resource_inheritance.py backend/open_webui/test/unit/test_user_tools_mcp_inherit.py backend/open_webui/test/unit/test_resource_inheritance_options.py backend/open_webui/test/unit/test_models_sharing.py -q`: 35 passed, 3 warnings。
+  - `svelte/compiler` + `svelte-preprocess` 单文件编译 `EditUserModal.svelte`: ok, no warnings。
+  - `git diff --check`: passed，仅 Windows line-ending 提示。
+- `npm run build` / `npm run check` 在本机 Windows 环境超时无输出，未得到功能错误；以单文件 Svelte 编译和 targeted tests 先兜底。
+- 下一步：提交推送 `future/custom`，等待 CI/GHCR 后服务器重建 `halowebui` 容器并复测：点击 `指定资源` 应展示可选资源列表。
