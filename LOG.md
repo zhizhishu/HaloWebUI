@@ -191,3 +191,15 @@
   - `ghcr.io/zhizhishu/halowebui:custom`: `sha256:37c7c472e954826c0f96d2d1065444cdd1ea61b7bb062b47fcc242e9261fe176`。
   - `ghcr.io/zhizhishu/halowebui:git-8e958f0-slim`: `sha256:a86cbd9d65535bfea4f269b45ccdc8bd46ab4723c5983575d094e415d11b2b29`。
 - 备注: GitHub Actions 出现 Node.js 20 deprecation annotation，非本轮回归；可后续单独处理。
+
+
+### Resource Inheritance Online Interaction Follow-up
+
+- 线上验证: 使用 Browser Relay 打开 `https://chat.agent-ai.vip/settings/account`，在 User Management 编辑普通用户 `Duduen`。按钮 DOM 显示可点且 `pointer-events: auto`，但点击 `Specified` 后资源继承区域仍停留在 `All current and future`，确认线上交互未切换状态。
+- 修复: `src/lib/components/admin/Users/UserList/EditUserModal.svelte` 将继承模式控件从纯按钮改为原生 radio group + label，并保留原有模式状态更新函数。
+- 文案: `All / Specified / Disabled` 改为 `Inherit all / Choose resources / Disable inheritance`；中文为 `全部继承 / 指定资源 / 不继承`，降低“已禁用”像控件锁定的歧义。
+- 验证:
+  - 前端 util vitest: 12 passed。
+  - 后端继承相关 pytest: 35 passed, 3 warnings。
+  - 生产构建: passed，仅既有 Svelte a11y/unused 与 chunk/pyodide warnings。
+- 后续: 推送后等待 CI/GHCR，线上更新镜像并重建容器后再次实测 radio 切换。

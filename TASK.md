@@ -54,4 +54,20 @@
 
 ## Last Updated
 
-2026-06-08 01:01 -07:00
+2026-06-08 02:22 -07:00
+
+
+## Active Follow-up
+
+用户在线上 `https://chat.agent-ai.vip/settings/account` 反馈资源继承仍像锁定/不可选。已用 Browser Relay 验证线上真实行为：编辑普通用户 `Duduen` 时，`All / Specified / Disabled` 按钮 DOM 为可点且 `pointer-events: auto`，但点击 `Specified` 后继承区域文本和状态不变，确认前端交互仍有回归。
+
+本地修复：
+- `EditUserModal.svelte` 将继承范围控件从纯按钮改为原生 radio group + label，避免按钮事件链不触发时状态无法切换。
+- 文案从 `All / Specified / Disabled` 改为更明确的 `Inherit all / Choose resources / Disable inheritance`，中文为 `全部继承 / 指定资源 / 不继承`，避免“已禁用”被误解成控件锁定。
+
+验证：
+- `npx vitest run src/lib/utils/resource-inheritance.test.ts src/lib/utils/api-key-pool.test.ts`: 12 passed。
+- `uv run pytest backend/open_webui/test/unit/test_user_resource_inheritance.py backend/open_webui/test/unit/test_user_tools_mcp_inherit.py backend/open_webui/test/unit/test_resource_inheritance_options.py backend/open_webui/test/unit/test_models_sharing.py -q`: 35 passed, 3 warnings。
+- `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: passed，仅既有 warnings。
+
+下一步：提交并推送 `future/custom`，等待 CI/GHCR 后让服务器重新 `docker pull ghcr.io/zhizhishu/halowebui:custom` 并重建容器。

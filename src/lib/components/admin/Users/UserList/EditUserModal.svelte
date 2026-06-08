@@ -200,8 +200,17 @@
 		setResourceInheritanceValue(key, []);
 	};
 
+	const getModeLabel = (mode: ResourceInheritanceMode) =>
+		$i18n.t(
+			mode === 'all'
+				? 'Inherit all'
+				: mode === 'specified'
+					? 'Choose resources'
+					: 'Disable inheritance'
+		);
+
 	const getModeButtonClass = (active: boolean) =>
-		`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+		`inline-flex cursor-pointer select-none items-center justify-center rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
 			active
 				? 'border-gray-900 bg-gray-900 text-white dark:border-white dark:bg-white dark:text-gray-900'
 				: 'border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:border-gray-600'
@@ -440,20 +449,30 @@
 												: $i18n.t('Only selected admin models are available to this user.')}
 									</div>
 								</div>
-								<div class="flex w-full shrink-0 flex-wrap gap-1.5 sm:w-auto sm:justify-end" aria-label={$i18n.t('Model Inheritance Scope')}>
+								<div
+									class="flex w-full shrink-0 flex-wrap gap-1.5 sm:w-auto sm:justify-end"
+									role="radiogroup"
+									aria-label={$i18n.t('Model Inheritance Scope')}
+								>
 									{#each inheritanceModeOptions as mode}
-										<button
-											type="button"
+										<label
 											class={getModeButtonClass(getCurrentResourceMode('admin_model_ids') === mode)}
-											on:click={() =>
-												setResourceMode(
-													'admin_model_ids',
-													mode,
-													inheritanceOptions.admin_models
-												)}
 										>
-											{$i18n.t(mode === 'all' ? 'All' : mode === 'specified' ? 'Specified' : 'Disabled')}
-										</button>
+											<input
+												class="sr-only"
+												type="radio"
+												name={`admin-model-inheritance-${_user.id}`}
+												value={mode}
+												checked={getCurrentResourceMode('admin_model_ids') === mode}
+												on:change={() =>
+													setResourceMode(
+														'admin_model_ids',
+														mode,
+														inheritanceOptions.admin_models
+													)}
+											/>
+											{getModeLabel(mode)}
+										</label>
 									{/each}
 								</div>
 							</div>
@@ -545,20 +564,30 @@
 												: $i18n.t('Only selected admin MCP servers are available to this user.')}
 									</div>
 								</div>
-								<div class="flex w-full shrink-0 flex-wrap gap-1.5 sm:w-auto sm:justify-end" aria-label={$i18n.t('MCP Inheritance Scope')}>
+								<div
+									class="flex w-full shrink-0 flex-wrap gap-1.5 sm:w-auto sm:justify-end"
+									role="radiogroup"
+									aria-label={$i18n.t('MCP Inheritance Scope')}
+								>
 									{#each inheritanceModeOptions as mode}
-										<button
-											type="button"
+										<label
 											class={getModeButtonClass(getCurrentResourceMode('admin_mcp_server_ids') === mode)}
-											on:click={() =>
-												setResourceMode(
-													'admin_mcp_server_ids',
-													mode,
-													inheritanceOptions.admin_mcp_servers
-												)}
 										>
-											{$i18n.t(mode === 'all' ? 'All' : mode === 'specified' ? 'Specified' : 'Disabled')}
-										</button>
+											<input
+												class="sr-only"
+												type="radio"
+												name={`admin-mcp-inheritance-${_user.id}`}
+												value={mode}
+												checked={getCurrentResourceMode('admin_mcp_server_ids') === mode}
+												on:change={() =>
+													setResourceMode(
+														'admin_mcp_server_ids',
+														mode,
+														inheritanceOptions.admin_mcp_servers
+													)}
+											/>
+											{getModeLabel(mode)}
+										</label>
 									{/each}
 								</div>
 							</div>
