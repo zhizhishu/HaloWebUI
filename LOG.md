@@ -1,5 +1,31 @@
 # LOG.md
 
+## 2026-06-07
+
+### Upstream Sync: `37269bb`
+
+- 完成: 拉取作者最新 `upstream/main` 到 `37269bb`, 本地 `main` 已快进, `origin/main` 已与作者线一致.
+- 完成: 将 `main` 合入 `custom`; 冲突文件为 `backend/open_webui/main.py` 和 `src/lib/components/chat/Chat.svelte`.
+- 处理:
+  - `main.py` 同时保留上游 `invalidate_base_model_cache` 和 fork 的 `get_inherited_model_owner_id`.
+  - `Chat.svelte` 同时保留上游 `restoreChatInputDraft` 与 fork 的旧聊天/工具/技能状态保护回退.
+  - `images.py` 调整 settings 场景: 不把单个显式图片 key 合成 `api_key_pool` 暴露到 settings payload; runtime key-pool 尝试逻辑保留.
+  - 修正图片测试合并伪影: 错误重复 monkeypatch 与缺失 `elapsed_ms` 的 mock response.
+- 保留二创:
+  - 用户继承管理员模型/MCP 的全部/指定/禁用.
+  - stale MCP tool id 拒绝/清理.
+  - 旧聊天发送状态、事件去重、模型恢复、工具/技能过滤.
+  - API key pool、图片生成连接选择、custom/future 发布线.
+- 验证:
+  - 失败子集复测: 5 passed.
+  - 后端 targeted pytest: 234 passed, 6 warnings.
+  - 前端 targeted vitest: 10 files passed, 65 tests passed.
+  - `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: passed, `✓ built in 12m 28s`, 仅既有 Svelte a11y/unused warnings.
+  - `git diff --cached --check`: passed, 仅 Windows line-ending 提示.
+- 后续:
+  - 推送 `custom`, 快进 `future` 到 `custom`, 推送 `future`.
+  - 等待 GitHub Actions / GHCR 完成最新镜像构建.
+
 ## 2026-05-31
 
 ### Upstream Sync: `fd961f9`

@@ -2,122 +2,48 @@
 
 ## Current Goal
 
-进行中: 将作者最新 `upstream/main` (`fd961f9`) 合入二创分支, 保持 `custom` / `future` 跟上作者线, 并确认用户继承模型/MCP、旧聊天工具状态、原生联网等二创能力仍可用。
+已完成本地合并与验证: 将作者最新 `upstream/main` (`37269bb`) 同步到 `main`, 合入二创分支 `custom`, 并准备同步到 `future` / 推送后等待 CI 与 GHCR。
 
 ## Completed
 
 - 已确认项目根目录: `C:\Users\echo\Downloads\claude\github\HaloWebUI`.
-- 已读取全局和项目规则: 父级 `C:\Users\echo\Downloads\claude` 只作为存放根目录, 本项目长期二创在 `custom`, `main` 保持贴近 upstream.
-- 已拉取作者最新代码:
-  - `upstream/main` 更新到 `f48d77a`.
-  - 新增作者提交: API key 批量添加, 多模型讨论功能.
-- 已同步 `origin/main` 到作者最新 `upstream/main`.
-- 已把 `upstream/main` 合入 `custom`, merge commit: `eb8f4c5 Merge upstream main into custom`.
-- 已人工解决 `src/lib/components/chat/Chat.svelte` 冲突:
-  - 保留作者多模型讨论功能.
-  - 保留 fork 的工具/技能选择过滤.
-  - 保留 MCP stable id / 旧聊天发送状态修复.
-  - 保留 chat completion 事件去重提交逻辑.
-- 已完成 subagent 只读审计并关闭 subagent.
-- 已补写干净 UTF-8 的 `TASK.md` / `LOG.md`, 替换原乱码接力内容.
-- 已推送 `origin/custom` 和 `origin/future` 到 `d502e13`.
-- 已确认 GitHub `Custom Regression Guard` 和 Docker 镜像 workflow 在 `custom` / `future` 全部成功.
-- 已按用户要求确认: `main` 只作为作者同步线, 二创修复不写入 `main`.
-- 已在 `AGENTS.md` 增加规则: 项目无需刻意重复打磨, 没有永远完美的项目; 完成目标、通过必要验证、风险可解释后应收口.
-- 已用 2 个 subagent 复测继承链路:
-  - 后端指出 normalize 会把畸形指定值放大成全部允许, MCP tool id 校验过松.
-  - 前端指出指定模式在 options 未加载时可误保存空数组.
-- 已修复后端继承 normalize:
-  - `admin_models` / `admin_mcp_servers` 支持字符串布尔解析, `"false"` / `"0"` 不再被当作 true.
-  - `admin_model_ids` / `admin_mcp_server_ids` 的畸形非 list 输入不再回退到 `None` 全量允许, 而是按空指定列表处理.
-- 已修复本地 OpenAPI/MCP tool id 权限校验:
-  - `validate_tool_ids_access` 现在会按当前用户过滤后的连接表解析 `server:` / `server_id:` / `mcp:` / `mcp_id:`.
-  - 旧聊天里已删除、被继承指定列表排除、或被重新映射后不存在的 MCP 工具会被拒绝或在 sanitize 阶段清掉.
-- 已修复用户编辑前端:
-  - 指定模型/MCP 时复用同一次 options 加载 promise.
-  - 指定模式保存前会确保资源继承选项已加载; 加载失败会阻止保存并提示.
-  - options 正在加载时保存按钮禁用, 避免把“未加载”误保存成空指定.
-  - 补齐英文/中文资源继承提示文案.
-- 已确认 `.github/workflows/sync-upstream-main.yaml` 已存在:
-  - 支持手动触发和每日定时.
-  - 会把 `main` 重置到 `upstream/main`.
-  - 如 `main` 与 `future` 有差异会创建同步 PR.
-- 已拉取作者最新 `upstream/main`:
-  - `ff7ca31`: MiMo/reasoning control handling and tests.
-  - `2e46882`: streaming text block content append.
-  - `5019c53`: MarkdownTokens/Collapsible/reasoning type styling.
-  - `9652510`: `_get_tool_call_result` tool-call result handling and streaming tests.
-- 已同步本地 `main` 到作者最新 `9652510`; `main` 保持作者纯净线, 未写入二创修复.
-- 已将 `main` 合入 `custom`, merge commit: `6fe2050 Merge branch 'main' into custom`, 无冲突.
-- 已确认二创能力仍在:
-  - 用户继承管理员模型/MCP, 全部/指定/禁用.
-  - stale MCP tool id 清理和权限校验.
-  - 旧聊天发送状态、事件去重、模型恢复等运行时修复.
-- 已拉取作者最新 `upstream/main` 到 `fd961f9`.
-- 已同步本地 `main` 到作者最新 `fd961f9`; `main` 保持作者纯净线, 未写入二创修复.
-- 已将 `main` 合入 `custom`; 冲突仅出现在 `src/lib/components/chat/MessageInput.svelte`.
-- 已解决 `MessageInput.svelte` 冲突:
-  - 保留 fork 的 `hasActiveChatResponse` 旧聊天/响应状态保护.
-  - 保留作者新增的 `saveUserSettingsPatch` / HTML 渲染设置保存.
-- 已确认合并后关键二创文件仍存在:
-  - `backend/open_webui/utils/user_resource_inheritance.py`.
-  - `backend/open_webui/test/unit/test_user_tools_mcp_inherit.py`.
-  - `src/lib/utils/chat-response-state.ts`.
-  - `src/lib/utils/tool-selection.ts`.
-  - `.github/workflows/custom-regression-guard.yaml`.
-  - `.github/workflows/docker-build.yaml`.
-  - `.github/workflows/sync-upstream-main.yaml`.
+- 已拉取作者最新 `upstream/main` 到 `37269bb`.
+- 已将本地 `main` 快进到作者最新 `37269bb`; `origin/main` 已与作者线一致, 未写入二创改动.
+- 已将 `main` 合入 `custom`, 本轮冲突文件:
+  - `backend/open_webui/main.py`: 同时保留上游模型缓存失效 `invalidate_base_model_cache` 和 fork 的 `get_inherited_model_owner_id`.
+  - `src/lib/components/chat/Chat.svelte`: 使用上游 `restoreChatInputDraft`, 同时保留 fork 的异常回退清理、工具/技能状态保护、旧聊天状态恢复链路.
+- 已处理上游图片生成逻辑与 fork key-pool 兼容层的回归:
+  - `backend/open_webui/routers/images.py`: settings 读取不再把单个显式图片 key 扩展成合成 `api_key_pool`; runtime 仍通过 key-pool 尝试逻辑使用单 key / 多 key.
+  - `backend/open_webui/test/unit/test_image_settings_url_normalization.py`: 修正自动合并出的重复/错误 monkeypatch, 并让 mock response 显式提供 `elapsed_ms` 以覆盖 usage.
+- 已确认关键二创能力仍在:
+  - 用户继承管理员模型/MCP: 全部/指定/禁用.
+  - stale MCP tool id 拒绝/清理.
+  - 旧聊天发送状态、事件去重、模型恢复、工具/技能过滤.
+  - API key pool 与图片生成连接选择.
 
 ## Validation
 
-- `rg -n "^(<<<<<<<|=======|>>>>>>>)" .`: 无冲突标记.
-- `git diff --check`: 通过, 仅有 Git line-ending 提示.
-- `uv run pytest backend/open_webui/test/unit/test_multi_model_discussion.py backend/open_webui/test/unit/test_model_reasoning_priority.py backend/open_webui/test/unit/test_user_tools_mcp_inherit.py -q`: 37 passed.
-- `uv run pytest backend/open_webui/test/unit/test_user_tools_mcp_inherit.py backend/open_webui/test/unit/test_resource_inheritance_options.py backend/open_webui/test/unit/test_model_reasoning_priority.py backend/open_webui/test/unit/test_multi_model_discussion.py -q`: 40 passed.
-- `npx vitest run src/lib/apis/streaming/index.test.ts src/lib/utils/chat-response-state.test.ts src/lib/utils/chat-model-recovery.test.ts src/lib/utils/tool-selection.test.ts src/lib/utils/skill-selection.test.ts`: 33 passed.
-- `npx vitest run src/lib/utils/chat-event-state.test.ts`: 2 passed.
-- `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: 通过.
-- `uv run pytest backend/open_webui/test/unit/test_user_resource_inheritance.py backend/open_webui/test/unit/test_user_tools_mcp_inherit.py backend/open_webui/test/unit/test_resource_inheritance_options.py backend/open_webui/test/unit/test_models_sharing.py -q`: 35 passed.
-- `npx vitest run src/lib/utils/resource-inheritance.test.ts`: 9 passed.
-- `node -e "...JSON.parse..."`: en-US / zh-CN i18n JSON 均通过解析.
-- `git diff --check`: 通过, 仅有 Git line-ending 提示.
-- `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: 通过, 仅有既有 Svelte a11y/unused warnings.
-- `npm run check`: 未通过; 失败来自全仓既有 5639 个类型诊断, 主要是旧 implicit any / i18n store 类型问题, 非本轮改动文件的单点回归.
-- `uv run pytest backend/open_webui/test/unit/test_user_resource_inheritance.py backend/open_webui/test/unit/test_user_tools_mcp_inherit.py backend/open_webui/test/unit/test_resource_inheritance_options.py backend/open_webui/test/unit/test_models_sharing.py backend/open_webui/test/unit/test_model_reasoning_priority.py backend/open_webui/test/unit/test_multi_model_discussion.py backend/open_webui/test/unit/test_stream_image_files.py -q`: 87 passed, 6 warnings.
-- `npx vitest run src/lib/utils/resource-inheritance.test.ts src/lib/apis/streaming/index.test.ts src/lib/utils/chat-response-state.test.ts src/lib/utils/chat-event-state.test.ts src/lib/utils/tool-selection.test.ts src/lib/utils/skill-selection.test.ts`: 40 passed across 6 files.
-- `rg -n "^(<<<<<<<|=======|>>>>>>>)" .`: 无冲突标记.
-- `git diff --check`: 通过, 仅有 Windows line-ending 提示.
-- `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: 通过, 生产包写入 `build`, 仅有既有 Svelte a11y/unused warnings.
-- `uv run pytest backend/open_webui/test/unit/test_user_resource_inheritance.py backend/open_webui/test/unit/test_user_tools_mcp_inherit.py backend/open_webui/test/unit/test_resource_inheritance_options.py backend/open_webui/test/unit/test_models_sharing.py backend/open_webui/test/unit/test_model_reasoning_priority.py backend/open_webui/test/unit/test_multi_model_discussion.py backend/open_webui/test/unit/test_stream_image_files.py backend/open_webui/test/unit/test_chat_message_stop_guard.py backend/open_webui/test/unit/test_chat_title_update.py backend/open_webui/test/unit/test_duckduckgo_search.py backend/open_webui/test/unit/test_retrieval_web_results.py -q`: 99 passed, 6 warnings.
-- `npx vitest run src/lib/utils/resource-inheritance.test.ts src/lib/apis/streaming/index.test.ts src/lib/utils/chat-response-state.test.ts src/lib/utils/chat-model-recovery.test.ts src/lib/utils/chat-event-state.test.ts src/lib/utils/tool-selection.test.ts src/lib/utils/skill-selection.test.ts src/lib/utils/html-safety.test.ts src/lib/utils/response-html-format.test.ts`: 62 passed across 9 files.
-- `git diff --check`: 通过, 仅有 Windows line-ending 提示.
-- `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: 通过, 生产包写入 `build`, 仅有既有 Svelte a11y/unused warnings.
-- GitHub Actions:
-  - `custom` Custom Regression Guard: success, run `26470361170`.
-  - `future` Custom Regression Guard: success, run `26470363875`.
-  - `custom` Docker workflow: success, run `26470361171`.
-  - `future` Docker workflow: success, run `26470363938`.
-- GHCR:
-  - `ghcr.io/zhizhishu/halowebui:custom`: `sha256:557eb5029bcd47e9fdcd2a404343d0baceee124237805b8d8f6fd7d2f997300b`, includes `linux/amd64` and `linux/arm64`.
-  - `ghcr.io/zhizhishu/halowebui:future`: `sha256:19742967a9259e24a10057d521b95e0d9d4e2e4eff23d3ae4465ec3326c25ab8`, includes `linux/amd64` and `linux/arm64`.
+- 失败子集复测: `5 passed, 6 warnings`.
+- `uv run pytest ... -q` 目标后端套件: `234 passed, 6 warnings`.
+- `npx vitest run ...`: `10 files passed, 65 tests passed`.
+- `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: 通过, `✓ built in 12m 28s`, 仅既有 Svelte a11y/unused warnings.
+- `git diff --cached --check`: 通过, 仅 Windows line-ending 提示.
+- 冲突标记: 已在冲突文件确认清空.
 
 ## Next Steps
 
-- 提交并推送 `custom`.
-- 将 `custom` 同步到 `future`, 再推送 `future`.
+- 推送 `custom` 到 `origin/custom`.
+- 将 `custom` 快进同步到 `future`, 推送 `origin/future`.
 - 等待 GitHub Actions / GHCR 完成最新 `custom` / `future` 镜像构建.
-- 不把二创修复写入 `main`; `main` 继续由 upstream sync workflow 维护.
+- 不把二创修复写入 `main`; `main` 继续保持作者纯净同步线.
 
 ## Risks
 
-- 本轮合并作者 `fd961f9` 仅 `MessageInput.svelte` 有 import/菜单参数冲突; 已解决.
-- 本轮重点验证继承/MCP/旧聊天状态/streaming/多模型讨论/DuckDuckGo/HTML 渲染安全相关路径.
-- 之前主要冲突点是 `Chat.svelte`; 已经用 targeted tests 和生产构建覆盖.
-- 作者新增多模型讨论会多次调用 `generate_chat_completion`; 已确认路径继续带 `user` 和当前 request, 继承模型/MCP 相关测试通过.
-- 当前未启动 dev server, 未占用端口, 未打开浏览器.
-- `main` 保持作者基线; `main` 的 CI 红点来自格式检查和少量全量测试预期, 本轮未在 `main` 写入二创修复.
-- 本轮改动涉及共享工具校验路径, 已用 stale MCP 和继承指定测试覆盖; 仍建议部署后用一个普通用户实测“指定一个 MCP / 指定一个模型 / 旧聊天带旧 mcp id”三条路径.
+- 本轮作者更新较大, 包含图片生成、模型缓存、数据管理、PDF 字体、聊天输入/展示等路径; 已用后端图片/缓存/数据管理测试和生产构建覆盖.
+- `Chat.svelte` 仍是长期高冲突文件; 本轮采用最小合并, 保留上游 draft restore 与 fork 状态保护.
+- `npm run build` 在 Windows 本地耗时约 12 分钟; 首次 10 分钟超时后确认本轮构建进程归属并等待结束, 第二次落日志成功.
+- 当前未启动 dev server, 未打开浏览器, 未占用项目端口.
 
 ## Last Updated
 
-2026-05-31 11:58 -07:00
+2026-06-07 20:03 -07:00

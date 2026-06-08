@@ -405,7 +405,13 @@ async def update_config(
             configs=request.app.state.config.GROK_API_CONFIGS,
         )
     )
+
+    from open_webui.utils.models import invalidate_base_model_cache
+
+    request.app.state.BASE_MODELS = None
     request.app.state.GROK_MODELS = {}
+    request.app.state.MODELS = {}
+    invalidate_base_model_cache(user.id)
 
     updated_user = set_user_connection_provider_config(
         user.id,
@@ -528,6 +534,10 @@ async def get_models(
         models = {"data": entries}
 
     return models
+
+
+async def get_all_models(request: Request, user=None):
+    return await get_models(request, user=user)
 
 
 class ConnectionVerificationForm(BaseModel):
