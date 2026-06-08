@@ -1061,6 +1061,8 @@
 	"No admin MCP servers available.": "No admin MCP servers available.",
 	"All current and future": "All current and future",
 	"Specified": "Specified",
+	"Select all": "Select all",
+	"Clear selection": "Clear selection",
 	"selected": "selected",
 	"Load resource inheritance options before saving.": "Load resource inheritance options before saving.",
 	"No results found": "",

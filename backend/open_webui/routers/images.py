@@ -5440,6 +5440,41 @@ def _openai_image_stream_enabled(stream: Optional[bool]) -> bool:
     return stream is not False
 
 
+def _should_retry_openai_image_without_stream(
+    status_code: Any, response_body: Any
+) -> bool:
+    try:
+        status = int(status_code)
+    except Exception:
+        status = 0
+    if status not in {400, 422}:
+        return False
+
+    text = str(response_body or "").lower()
+    if not text:
+        return False
+
+    stream_markers = (
+        "stream",
+        "partial_images",
+        "partial images",
+    )
+    unsupported_markers = (
+        "unsupported",
+        "not supported",
+        "unknown parameter",
+        "unrecognized",
+        "unexpected",
+        "extra fields",
+        "extra_forbidden",
+        "invalid parameter",
+        "invalid field",
+    )
+    return any(marker in text for marker in stream_markers) and any(
+        marker in text for marker in unsupported_markers
+    )
+
+
 def _raise_openai_image_request_error(
     result: dict[str, Any], *, default_message: str
 ) -> None:
@@ -5933,6 +5968,35 @@ async def _generate_via_openai_image_edits_endpoint(
 
     response_status = result.get("status")
     response_body_text = str(result.get("response_body") or "")
+    if (
+        stream_enabled
+        and _should_retry_openai_image_without_stream(response_status, response_body_text)
+    ):
+        retry_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"stream", "partial_images"}
+        }
+        log.warning(
+            "openai_image_stream_unsupported_retry route=edits model=%s status=%s",
+            upstream_model_id,
+            response_status,
+        )
+        result, headers = await _send_openai_image_request_with_key_pool(
+            provider="openai",
+            source=source,
+            api_config=api_config,
+            route_label="edits",
+            headers_factory=build_attempt_headers,
+            url=generation_url,
+            request_kind="multipart",
+            form_fields=retry_payload,
+            files=image_files,
+        )
+        payload = retry_payload
+        response_status = result.get("status")
+        response_body_text = str(result.get("response_body") or "")
+
     if not isinstance(response_status, int):
         _raise_openai_image_request_error(
             result,
@@ -6056,6 +6120,34 @@ async def _generate_via_openai_images_endpoint(
 
     response_status = result.get("status")
     response_body_text = str(result.get("response_body") or "")
+    if (
+        stream_enabled
+        and _should_retry_openai_image_without_stream(response_status, response_body_text)
+    ):
+        retry_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"stream", "partial_images"}
+        }
+        log.warning(
+            "openai_image_stream_unsupported_retry route=generations model=%s status=%s",
+            upstream_model_id,
+            response_status,
+        )
+        result, headers = await _send_openai_image_request_with_key_pool(
+            provider="openai",
+            source=source,
+            api_config=api_config,
+            route_label="generations",
+            headers_factory=build_attempt_headers,
+            url=generation_url,
+            request_kind="json",
+            json_body=retry_payload,
+        )
+        payload = retry_payload
+        response_status = result.get("status")
+        response_body_text = str(result.get("response_body") or "")
+
     if not isinstance(response_status, int):
         _raise_openai_image_request_error(
             result,
@@ -6083,15 +6175,15 @@ async def _generate_via_openai_images_endpoint(
         allowed_base_urls=[base_url],
     )
     if not images:
-        context = empty_image_context or _build_openai_empty_image_context(
-            route_label="responses" if use_responses_api else "chat",
-            status_code=last_response_status,
-            headers=last_response_headers,
+        context = _build_openai_empty_image_context(
+            route_label="generations",
+            status_code=response_status,
+            headers=headers,
             usage=usage,
         )
         try:
             log.warning(
-                "openai_chat_image_empty_response context=%s",
+                "openai_images_empty_response context=%s",
                 json.dumps(context, ensure_ascii=False, default=str),
             )
         except Exception:

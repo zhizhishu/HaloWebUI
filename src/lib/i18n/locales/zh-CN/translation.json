@@ -1422,6 +1422,8 @@
 	"Only selected admin models are available to this user.": "仅允许该用户使用所选管理员模型。",
 	"All": "全部",
 	"Specified": "指定",
+	"Select all": "全选",
+	"Clear selection": "清空选择",
 	"Available admin models": "可用管理员模型",
 	"selected": "已选",
 	"All current and future": "当前及未来",

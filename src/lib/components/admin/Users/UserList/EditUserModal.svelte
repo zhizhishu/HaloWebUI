@@ -63,6 +63,8 @@
 	let inheritanceOptionsLoaded = false;
 	let inheritanceOptionsLoadPromise: Promise<boolean> | null = null;
 	const pendingSelectCurrentOnLoad = new Set<ResourceInheritanceSelectionKey>();
+	const inheritanceModeOptions: ResourceInheritanceMode[] = ['all', 'specified', 'disabled'];
+	let initializedUserId = '';
 
 	const getOptionsForKey = (
 		key: ResourceInheritanceSelectionKey,
@@ -131,11 +133,6 @@
 		return loaded;
 	};
 
-	const getModeFromEvent = (event: Event): ResourceInheritanceMode => {
-		const value = (event.currentTarget as HTMLSelectElement).value;
-		return value === 'specified' || value === 'disabled' ? value : 'all';
-	};
-
 	const getCurrentResourceMode = (key: ResourceInheritanceSelectionKey) =>
 		getResourceInheritanceMode(_user.settings.resource_inheritance, key);
 
@@ -192,6 +189,24 @@
 		options: ResourceInheritanceOption[]
 	) => countSelectedResourceIds(_user.settings.resource_inheritance, key, getOptionIds(options));
 
+	const selectAllInheritedResources = (
+		key: ResourceInheritanceSelectionKey,
+		options: ResourceInheritanceOption[]
+	) => {
+		setResourceInheritanceValue(key, getOptionIds(options));
+	};
+
+	const clearInheritedResources = (key: ResourceInheritanceSelectionKey) => {
+		setResourceInheritanceValue(key, []);
+	};
+
+	const getModeButtonClass = (active: boolean) =>
+		`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+			active
+				? 'border-gray-900 bg-gray-900 text-white dark:border-white dark:bg-white dark:text-gray-900'
+				: 'border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:border-gray-600'
+		}`;
+
 	const selectedUserNeedsInheritanceOptions = () =>
 		selectedUser?.role !== 'admin' &&
 		(isSpecifiedMode('admin_model_ids') || isSpecifiedMode('admin_mcp_server_ids'));
@@ -218,6 +233,23 @@
 		(url.startsWith(WEBUI_BASE_URL) ||
 			url.startsWith('https://www.gravatar.com/avatar/') ||
 			url.startsWith('data:'));
+
+	const resetEditorState = (user: any) => {
+		_user = createEditableUser(user);
+		pendingSelectCurrentOnLoad.clear();
+		if (user?.role !== 'admin') {
+			void loadInheritanceOptions();
+		}
+	};
+
+	$: if (show && selectedUser?.id && initializedUserId !== selectedUser.id) {
+		initializedUserId = selectedUser.id;
+		resetEditorState(selectedUser);
+	}
+
+	$: if (!show && initializedUserId) {
+		initializedUserId = '';
+	}
 
 	const getRoleClasses = (role: string) => {
 		switch (role) {
@@ -254,10 +286,10 @@
 	};
 
 	onMount(() => {
-		if (selectedUser) {
-			_user = createEditableUser(selectedUser);
+		if (selectedUser?.id) {
+			initializedUserId = selectedUser.id;
+			resetEditorState(selectedUser);
 		}
-		loadInheritanceOptions();
 	});
 </script>
 
@@ -408,23 +440,22 @@
 												: $i18n.t('Only selected admin models are available to this user.')}
 									</div>
 								</div>
-								{#key getCurrentResourceMode('admin_model_ids')}
-									<select
-										class="h-9 w-full shrink-0 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium leading-5 text-gray-700 outline-none transition focus:border-gray-400 sm:w-32 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
-										value={getCurrentResourceMode('admin_model_ids')}
-										aria-label={$i18n.t('Model Inheritance Scope')}
-										on:change={(event) =>
-											setResourceMode(
-												'admin_model_ids',
-												getModeFromEvent(event),
-												inheritanceOptions.admin_models
-											)}
-									>
-										<option value="disabled">{$i18n.t('Disabled')}</option>
-										<option value="all">{$i18n.t('All')}</option>
-										<option value="specified">{$i18n.t('Specified')}</option>
-									</select>
-								{/key}
+								<div class="flex w-full shrink-0 flex-wrap gap-1.5 sm:w-auto sm:justify-end" aria-label={$i18n.t('Model Inheritance Scope')}>
+									{#each inheritanceModeOptions as mode}
+										<button
+											type="button"
+											class={getModeButtonClass(getCurrentResourceMode('admin_model_ids') === mode)}
+											on:click={() =>
+												setResourceMode(
+													'admin_model_ids',
+													mode,
+													inheritanceOptions.admin_models
+												)}
+										>
+											{$i18n.t(mode === 'all' ? 'All' : mode === 'specified' ? 'Specified' : 'Disabled')}
+										</button>
+									{/each}
+								</div>
 							</div>
 
 							<div class="mt-3 flex items-center justify-between gap-3 text-[11px] leading-5">
@@ -443,7 +474,15 @@
 							</div>
 
 							{#if isSpecifiedMode('admin_model_ids')}
-								<div class="mt-3 space-y-1 max-h-32 overflow-y-auto pr-1">
+								<div class="mt-3 flex items-center justify-end gap-2">
+									<button type="button" class="text-[11px] font-medium text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100" on:click={() => selectAllInheritedResources('admin_model_ids', inheritanceOptions.admin_models)}>
+										{$i18n.t('Select all')}
+									</button>
+									<button type="button" class="text-[11px] font-medium text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100" on:click={() => clearInheritedResources('admin_model_ids')}>
+										{$i18n.t('Clear selection')}
+									</button>
+								</div>
+								<div class="mt-2 space-y-1 max-h-32 overflow-y-auto pr-1">
 									{#if inheritanceOptionsLoading}
 										<div class="text-xs leading-5 text-gray-400 dark:text-gray-500">
 											{$i18n.t('Loading...')}
@@ -506,23 +545,22 @@
 												: $i18n.t('Only selected admin MCP servers are available to this user.')}
 									</div>
 								</div>
-								{#key getCurrentResourceMode('admin_mcp_server_ids')}
-									<select
-										class="h-9 w-full shrink-0 rounded-lg border border-gray-200 bg-white px-2.5 text-xs font-medium leading-5 text-gray-700 outline-none transition focus:border-gray-400 sm:w-32 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
-										value={getCurrentResourceMode('admin_mcp_server_ids')}
-										aria-label={$i18n.t('MCP Inheritance Scope')}
-										on:change={(event) =>
-											setResourceMode(
-												'admin_mcp_server_ids',
-												getModeFromEvent(event),
-												inheritanceOptions.admin_mcp_servers
-											)}
-									>
-										<option value="disabled">{$i18n.t('Disabled')}</option>
-										<option value="all">{$i18n.t('All')}</option>
-										<option value="specified">{$i18n.t('Specified')}</option>
-									</select>
-								{/key}
+								<div class="flex w-full shrink-0 flex-wrap gap-1.5 sm:w-auto sm:justify-end" aria-label={$i18n.t('MCP Inheritance Scope')}>
+									{#each inheritanceModeOptions as mode}
+										<button
+											type="button"
+											class={getModeButtonClass(getCurrentResourceMode('admin_mcp_server_ids') === mode)}
+											on:click={() =>
+												setResourceMode(
+													'admin_mcp_server_ids',
+													mode,
+													inheritanceOptions.admin_mcp_servers
+												)}
+										>
+											{$i18n.t(mode === 'all' ? 'All' : mode === 'specified' ? 'Specified' : 'Disabled')}
+										</button>
+									{/each}
+								</div>
 							</div>
 
 							<div class="mt-3 flex items-center justify-between gap-3 text-[11px] leading-5">
@@ -541,7 +579,15 @@
 							</div>
 
 							{#if isSpecifiedMode('admin_mcp_server_ids')}
-								<div class="mt-3 space-y-1 max-h-32 overflow-y-auto pr-1">
+								<div class="mt-3 flex items-center justify-end gap-2">
+									<button type="button" class="text-[11px] font-medium text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100" on:click={() => selectAllInheritedResources('admin_mcp_server_ids', inheritanceOptions.admin_mcp_servers)}>
+										{$i18n.t('Select all')}
+									</button>
+									<button type="button" class="text-[11px] font-medium text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100" on:click={() => clearInheritedResources('admin_mcp_server_ids')}>
+										{$i18n.t('Clear selection')}
+									</button>
+								</div>
+								<div class="mt-2 space-y-1 max-h-32 overflow-y-auto pr-1">
 									{#if inheritanceOptionsLoading}
 										<div class="text-xs leading-5 text-gray-400 dark:text-gray-500">
 											{$i18n.t('Loading...')}

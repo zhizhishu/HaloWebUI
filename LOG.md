@@ -154,3 +154,25 @@
 - 完成: 项目接力文件已改为 `PROJECT_ID.md`, `PROJECT_CONTEXT.md`, `PROJECT_MAP.md`, `TASK.md`, `LOG.md`.
 - 完成: `TASK.md` / `LOG.md` 已重写为干净 UTF-8 中文, 替换原乱码内容.
 - 约定: `TASK_LOG.md` 只保留为 legacy 长历史, 默认不再作为当前接力入口.
+
+
+## 2026-06-08
+
+### User Resource Inheritance UI and `gpt-image-2` Compatibility Fix
+
+- 完成: 检查 `upstream/main`，作者线当前仍为 `37269bb`，未包含本轮用户继承 UI 与 Images stream fallback 修复。
+- 完成: 修复用户管理编辑弹窗的模型继承 / MCP 继承选择体验：三态按钮替代下拉框，`Specified` 模式显示可选列表，提供全选/清空，并修复切换用户时编辑态复用问题。
+- 完成: 修复 `gpt-image-*` Images generation / edit 对兼容站的 stream 参数兼容性：遇到明确不支持 `stream` / `partial_images` 的 `400/422` 时去掉参数非流式重试。
+- 完成: 修复 Images generations 200 空图响应误引用 chat 路径变量导致 `NameError` 的问题，改为带上下文的 `HTTPException(400)`。
+- 修改:
+  - `src/lib/components/admin/Users/UserList/EditUserModal.svelte`
+  - `src/lib/i18n/locales/en-US/translation.json`
+  - `src/lib/i18n/locales/zh-CN/translation.json`
+  - `backend/open_webui/routers/images.py`
+  - `backend/open_webui/test/unit/test_openai_image_node_helper.py`
+- 验证:
+  - 后端目标套件: `139 passed, 6 warnings`。
+  - 前端工具测试: `2 files passed, 12 tests passed`。
+  - 生产构建: `NODE_OPTIONS=--max-old-space-size=4096 npm run build` passed，仅既有 warnings。
+  - `git diff --check` passed，仅 Windows line-ending 提示。
+- 后续: 推送 `future` 后等待 GitHub Actions / GHCR；部署后做管理员继承选择与 `gpt-image-2` 兼容站实际请求冒烟。

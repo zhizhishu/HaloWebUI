@@ -62,6 +62,117 @@ def test_send_openai_image_request_uses_httpx_json(monkeypatch):
     assert captured["post_kwargs"]["files"] is None
 
 
+
+def test_generate_via_openai_images_endpoint_retries_without_stream_when_unsupported(
+    monkeypatch,
+):
+    calls = []
+    generated_b64 = base64.b64encode(b"generated" * 32).decode("utf-8")
+
+    async def fake_send_with_key_pool(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return (
+                {
+                    "status": 400,
+                    "headers": {"content-type": "application/json"},
+                    "response_body": json.dumps(
+                        {"error": {"message": "Unknown parameter: stream"}}
+                    ),
+                    "elapsed_ms": 5,
+                },
+                {"content-type": "application/json"},
+            )
+        return (
+            {
+                "status": 200,
+                "headers": {"content-type": "application/json"},
+                "response_body": json.dumps({"data": [{"b64_json": generated_b64}]}),
+                "elapsed_ms": 10,
+            },
+            {"content-type": "application/json"},
+        )
+
+    monkeypatch.setattr(
+        images_router,
+        "_send_openai_image_request_with_key_pool",
+        fake_send_with_key_pool,
+    )
+    monkeypatch.setattr(
+        images_router,
+        "upload_image",
+        lambda request, payload, image_data, content_type, user: "/images/generated.png",
+    )
+
+    result = asyncio.run(
+        images_router._generate_via_openai_images_endpoint(
+            request=SimpleNamespace(),
+            user=_make_user(),
+            model_id="gpt-image-2",
+            prompt="cat",
+            n=1,
+            size=None,
+            background=None,
+            stream=None,
+            source={
+                "base_url": "https://relay.example.com/v1",
+                "key": "sk-test",
+                "api_config": {},
+            },
+        )
+    )
+
+    assert result == [{"url": "/images/generated.png", "usage": {"total_duration": 10000000}}]
+    assert calls[0]["json_body"]["stream"] is True
+    assert calls[0]["json_body"]["partial_images"] == 1
+    assert "stream" not in calls[1]["json_body"]
+    assert "partial_images" not in calls[1]["json_body"]
+
+
+def test_generate_via_openai_images_endpoint_empty_response_raises_http_exception(
+    monkeypatch,
+):
+    async def fake_send_with_key_pool(**kwargs):
+        return (
+            {
+                "status": 200,
+                "headers": {"content-type": "application/json"},
+                "response_body": json.dumps({"data": []}),
+                "elapsed_ms": 10,
+            },
+            {"content-type": "application/json"},
+        )
+
+    monkeypatch.setattr(
+        images_router,
+        "_send_openai_image_request_with_key_pool",
+        fake_send_with_key_pool,
+    )
+
+    try:
+        asyncio.run(
+            images_router._generate_via_openai_images_endpoint(
+                request=SimpleNamespace(),
+                user=_make_user(),
+                model_id="gpt-image-2",
+                prompt="cat",
+                n=1,
+                size=None,
+                background=None,
+                stream=False,
+                source={
+                    "base_url": "https://relay.example.com/v1",
+                    "key": "sk-test",
+                    "api_config": {},
+                },
+            )
+        )
+        assert False, "empty image responses should raise a HTTPException"
+    except images_router.HTTPException as exc:
+        assert exc.status_code == 400
+        assert "没有可识别的图片字段" in exc.detail
+
+
 def test_send_openai_image_request_explains_disconnected_response(monkeypatch):
     class FakeAsyncClient:
         def __init__(self, **_kwargs):

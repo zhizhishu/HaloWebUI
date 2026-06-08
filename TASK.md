@@ -2,48 +2,42 @@
 
 ## Current Goal
 
-已完成本地合并与验证: 将作者最新 `upstream/main` (`37269bb`) 同步到 `main`, 合入二创分支 `custom`, 并准备同步到 `future` / 推送后等待 CI 与 GHCR。
+本轮已完成用户管理“模型继承 / MCP 继承”可选范围 UI 修复，以及 `gpt-image-2` / OpenAI Images 兼容站 stream 参数回退修复；本地验证通过，代码准备提交并推送 `future`。
 
 ## Completed
 
-- 已确认项目根目录: `C:\Users\echo\Downloads\claude\github\HaloWebUI`.
-- 已拉取作者最新 `upstream/main` 到 `37269bb`.
-- 已将本地 `main` 快进到作者最新 `37269bb`; `origin/main` 已与作者线一致, 未写入二创改动.
-- 已将 `main` 合入 `custom`, 本轮冲突文件:
-  - `backend/open_webui/main.py`: 同时保留上游模型缓存失效 `invalidate_base_model_cache` 和 fork 的 `get_inherited_model_owner_id`.
-  - `src/lib/components/chat/Chat.svelte`: 使用上游 `restoreChatInputDraft`, 同时保留 fork 的异常回退清理、工具/技能状态保护、旧聊天状态恢复链路.
-- 已处理上游图片生成逻辑与 fork key-pool 兼容层的回归:
-  - `backend/open_webui/routers/images.py`: settings 读取不再把单个显式图片 key 扩展成合成 `api_key_pool`; runtime 仍通过 key-pool 尝试逻辑使用单 key / 多 key.
-  - `backend/open_webui/test/unit/test_image_settings_url_normalization.py`: 修正自动合并出的重复/错误 monkeypatch, 并让 mock response 显式提供 `elapsed_ms` 以覆盖 usage.
-- 已确认关键二创能力仍在:
-  - 用户继承管理员模型/MCP: 全部/指定/禁用.
-  - stale MCP tool id 拒绝/清理.
-  - 旧聊天发送状态、事件去重、模型恢复、工具/技能过滤.
-  - API key pool 与图片生成连接选择.
+- 已确认项目根目录: `C:\Users\echo\Downloads\claude\github\HaloWebUI`。
+- 已确认作者 `upstream/main` 当前仍为 `37269bb`，未包含本轮修复点。
+- 用户管理编辑弹窗：
+  - 将继承范围从容易误点/不可见的下拉框改为 `All / Specified / Disabled` 三态按钮。
+  - `Specified` 模式下展示可选管理员模型/MCP 列表，并提供 `Select all` / `Clear selection`。
+  - 修复弹窗复用切换用户时编辑状态可能不重置的问题。
+- 图片生成：
+  - `gpt-image-*` 默认 stream / partial images 请求遇到兼容站 `400/422` 不支持时，自动移除 `stream` 与 `partial_images` 非流式重试。
+  - `/images/edits` 同步支持同类非流式重试。
+  - 修复 Images generations 返回 200 但无可识别图片时引用 chat 专属变量导致 `NameError` 的问题，改为可读 `HTTPException(400)`。
+- i18n：补齐 `Select all` / `Clear selection` 中英文文案。
 
 ## Validation
 
-- 失败子集复测: `5 passed, 6 warnings`.
-- `uv run pytest ... -q` 目标后端套件: `234 passed, 6 warnings`.
-- `npx vitest run ...`: `10 files passed, 65 tests passed`.
-- `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: 通过, `✓ built in 12m 28s`, 仅既有 Svelte a11y/unused warnings.
-- `git diff --cached --check`: 通过, 仅 Windows line-ending 提示.
-- 冲突标记: 已在冲突文件确认清空.
+- `uv run pytest backend/open_webui/test/unit/test_user_resource_inheritance.py backend/open_webui/test/unit/test_user_tools_mcp_inherit.py backend/open_webui/test/unit/test_resource_inheritance_options.py backend/open_webui/test/unit/test_models_sharing.py backend/open_webui/test/unit/test_openai_image_node_helper.py backend/open_webui/test/unit/test_image_settings_url_normalization.py -q`: `139 passed, 6 warnings`。
+- `npx vitest run src/lib/utils/resource-inheritance.test.ts src/lib/utils/api-key-pool.test.ts`: `2 files passed, 12 tests passed`。
+- `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: 通过，仅既有 Svelte a11y/unused 与 chunk/pyodide warnings。
+- `git diff --check`: 通过，仅 Windows line-ending 提示。
 
 ## Next Steps
 
-- 推送 `custom` 到 `origin/custom`.
-- 将 `custom` 快进同步到 `future`, 推送 `origin/future`.
-- 等待 GitHub Actions / GHCR 完成最新 `custom` / `future` 镜像构建.
-- 不把二创修复写入 `main`; `main` 继续保持作者纯净同步线.
+- 提交本轮修复并推送 `future` 到 `origin/future`。
+- 推送后等待 GitHub Actions / GHCR 构建结果。
+- 部署后建议用管理员页面实测：普通用户指定 1 个模型、指定 1 个 MCP、清空指定列表、切回全部/禁用。
+- 部署后建议用兼容 OpenAI Images 的 `gpt-image-2` 供应商实测：generation 与 edit 各一次，确认 stream 不支持时可回退。
 
 ## Risks
 
-- 本轮作者更新较大, 包含图片生成、模型缓存、数据管理、PDF 字体、聊天输入/展示等路径; 已用后端图片/缓存/数据管理测试和生产构建覆盖.
-- `Chat.svelte` 仍是长期高冲突文件; 本轮采用最小合并, 保留上游 draft restore 与 fork 状态保护.
-- `npm run build` 在 Windows 本地耗时约 12 分钟; 首次 10 分钟超时后确认本轮构建进程归属并等待结束, 第二次落日志成功.
-- 当前未启动 dev server, 未打开浏览器, 未占用项目端口.
+- `EditUserModal.svelte` 是用户管理共享 UI，后续同步上游时可能有小冲突；本轮为局部 UI 和状态初始化修复。
+- 图片生成兼容逻辑只在 `400/422` 且错误文本同时命中 stream/partial_images 与 unsupported/unknown 参数时回退，避免吞掉其他真实错误。
+- 当前未启动 dev server，未打开浏览器，未占用项目端口。
 
 ## Last Updated
 
-2026-06-07 20:03 -07:00
+2026-06-08 00:38 -07:00
