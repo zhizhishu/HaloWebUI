@@ -17,7 +17,6 @@
 		countSelectedResourceIds,
 		getResourceInheritanceMode,
 		getSelectedResourceIds as getSelectedInheritedResourceIds,
-		isAllResourceInherited,
 		normalizeResourceInheritance,
 		setResourceInheritanceMode,
 		toggleSelectedResourceId,
@@ -65,6 +64,14 @@
 	const pendingSelectCurrentOnLoad = new Set<ResourceInheritanceSelectionKey>();
 	const inheritanceModeOptions: ResourceInheritanceMode[] = ['all', 'specified', 'disabled'];
 	let initializedUserId = '';
+	let adminModelInheritanceMode: ResourceInheritanceMode = 'all';
+	let adminMcpInheritanceMode: ResourceInheritanceMode = 'all';
+	let selectedAdminModelIds: string[] = [];
+	let selectedAdminMcpServerIds: string[] = [];
+	let selectedAdminModelCount = 0;
+	let selectedAdminMcpServerCount = 0;
+	let needsInheritanceOptions = false;
+	let canSaveCurrentUser = true;
 
 	const getOptionsForKey = (
 		key: ResourceInheritanceSelectionKey,
@@ -133,24 +140,39 @@
 		return loaded;
 	};
 
-	const getCurrentResourceMode = (key: ResourceInheritanceSelectionKey) =>
-		getResourceInheritanceMode(_user.settings.resource_inheritance, key);
-
-	const isSpecifiedMode = (key: ResourceInheritanceSelectionKey) =>
-		getCurrentResourceMode(key) === 'specified';
-
-	const isAllInherited = (key: ResourceInheritanceSelectionKey) =>
-		isAllResourceInherited(_user.settings.resource_inheritance, key);
-
-	const getSelectedResourceIds = (
-		key: ResourceInheritanceSelectionKey,
-		options: ResourceInheritanceOption[]
-	) =>
-		getSelectedInheritedResourceIds(
-			_user.settings.resource_inheritance,
-			key,
-			getOptionIds(options)
-		);
+	$: adminModelInheritanceMode = getResourceInheritanceMode(
+		_user.settings.resource_inheritance,
+		'admin_model_ids'
+	);
+	$: adminMcpInheritanceMode = getResourceInheritanceMode(
+		_user.settings.resource_inheritance,
+		'admin_mcp_server_ids'
+	);
+	$: selectedAdminModelIds = getSelectedInheritedResourceIds(
+		_user.settings.resource_inheritance,
+		'admin_model_ids',
+		getOptionIds(inheritanceOptions.admin_models)
+	);
+	$: selectedAdminMcpServerIds = getSelectedInheritedResourceIds(
+		_user.settings.resource_inheritance,
+		'admin_mcp_server_ids',
+		getOptionIds(inheritanceOptions.admin_mcp_servers)
+	);
+	$: selectedAdminModelCount = countSelectedResourceIds(
+		_user.settings.resource_inheritance,
+		'admin_model_ids',
+		getOptionIds(inheritanceOptions.admin_models)
+	);
+	$: selectedAdminMcpServerCount = countSelectedResourceIds(
+		_user.settings.resource_inheritance,
+		'admin_mcp_server_ids',
+		getOptionIds(inheritanceOptions.admin_mcp_servers)
+	);
+	$: needsInheritanceOptions =
+		selectedUser?.role !== 'admin' &&
+		(adminModelInheritanceMode === 'specified' || adminMcpInheritanceMode === 'specified');
+	$: canSaveCurrentUser =
+		!inheritanceOptionsLoading || !needsInheritanceOptions || inheritanceOptionsLoaded;
 
 	const setResourceMode = (
 		key: ResourceInheritanceSelectionKey,
@@ -184,11 +206,6 @@
 		);
 	};
 
-	const getSelectedResourceCount = (
-		key: ResourceInheritanceSelectionKey,
-		options: ResourceInheritanceOption[]
-	) => countSelectedResourceIds(_user.settings.resource_inheritance, key, getOptionIds(options));
-
 	const selectAllInheritedResources = (
 		key: ResourceInheritanceSelectionKey,
 		options: ResourceInheritanceOption[]
@@ -215,15 +232,6 @@
 				? 'border-gray-900 bg-gray-900 text-white dark:border-white dark:bg-white dark:text-gray-900'
 				: 'border-gray-200 bg-white text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:border-gray-600'
 		}`;
-
-	const selectedUserNeedsInheritanceOptions = () =>
-		selectedUser?.role !== 'admin' &&
-		(isSpecifiedMode('admin_model_ids') || isSpecifiedMode('admin_mcp_server_ids'));
-
-	const canSaveUser = () =>
-		!inheritanceOptionsLoading ||
-		!selectedUserNeedsInheritanceOptions() ||
-		inheritanceOptionsLoaded;
 
 	const createEditableUser = (user: any) => ({
 		id: user?.id ?? '',
@@ -272,7 +280,7 @@
 	};
 
 	const submitHandler = async () => {
-		if (selectedUserNeedsInheritanceOptions() && !inheritanceOptionsLoaded) {
+		if (needsInheritanceOptions && !inheritanceOptionsLoaded) {
 			const loaded = await loadInheritanceOptions();
 			if (!loaded) {
 				toast.error($i18n.t('Load resource inheritance options before saving.'));
@@ -442,9 +450,9 @@
 										{$i18n.t('Inherit Admin Models')}
 									</div>
 									<div class="mt-1 text-xs leading-5 text-gray-400 dark:text-gray-500">
-										{getCurrentResourceMode('admin_model_ids') === 'disabled'
+										{adminModelInheritanceMode === 'disabled'
 											? $i18n.t('Disabled')
-											: isAllInherited('admin_model_ids')
+											: adminModelInheritanceMode === 'all'
 												? $i18n.t('Automatically include current and future admin models.')
 												: $i18n.t('Only selected admin models are available to this user.')}
 									</div>
@@ -458,9 +466,9 @@
 										<button
 											type="button"
 											role="radio"
-											aria-checked={getCurrentResourceMode('admin_model_ids') === mode}
+											aria-checked={adminModelInheritanceMode === mode}
 											data-resource-inheritance-mode={mode}
-											class={getModeButtonClass(getCurrentResourceMode('admin_model_ids') === mode)}
+											class={getModeButtonClass(adminModelInheritanceMode === mode)}
 											on:pointerdown|preventDefault={() =>
 												setResourceMode(
 													'admin_model_ids',
@@ -487,15 +495,15 @@
 								<span
 									class="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-300"
 								>
-									{getCurrentResourceMode('admin_model_ids') === 'disabled'
+									{adminModelInheritanceMode === 'disabled'
 										? $i18n.t('Disabled')
-										: isAllInherited('admin_model_ids')
+										: adminModelInheritanceMode === 'all'
 											? $i18n.t('All current and future')
-											: `${getSelectedResourceCount('admin_model_ids', inheritanceOptions.admin_models)}/${inheritanceOptions.admin_models.length} ${$i18n.t('selected')}`}
+											: `${selectedAdminModelCount}/${inheritanceOptions.admin_models.length} ${$i18n.t('selected')}`}
 								</span>
 							</div>
 
-							{#if isSpecifiedMode('admin_model_ids')}
+							{#if adminModelInheritanceMode === 'specified'}
 								<div class="mt-3 flex items-center justify-end gap-2">
 									<button type="button" class="text-[11px] font-medium text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100" on:click={() => selectAllInheritedResources('admin_model_ids', inheritanceOptions.admin_models)}>
 										{$i18n.t('Select all')}
@@ -521,10 +529,7 @@
 												<input
 													type="checkbox"
 													class="mt-1"
-													checked={getSelectedResourceIds(
-														'admin_model_ids',
-														inheritanceOptions.admin_models
-													).includes(option.id)}
+													checked={selectedAdminModelIds.includes(option.id)}
 													on:change={() =>
 														toggleInheritedResource(
 															'admin_model_ids',
@@ -560,9 +565,9 @@
 										{$i18n.t('Inherit Admin MCP')}
 									</div>
 									<div class="mt-1 text-xs leading-5 text-gray-400 dark:text-gray-500">
-										{getCurrentResourceMode('admin_mcp_server_ids') === 'disabled'
+										{adminMcpInheritanceMode === 'disabled'
 											? $i18n.t('Disabled')
-											: isAllInherited('admin_mcp_server_ids')
+											: adminMcpInheritanceMode === 'all'
 												? $i18n.t('Automatically include current and future admin MCP servers.')
 												: $i18n.t('Only selected admin MCP servers are available to this user.')}
 									</div>
@@ -576,9 +581,9 @@
 										<button
 											type="button"
 											role="radio"
-											aria-checked={getCurrentResourceMode('admin_mcp_server_ids') === mode}
+											aria-checked={adminMcpInheritanceMode === mode}
 											data-resource-inheritance-mode={mode}
-											class={getModeButtonClass(getCurrentResourceMode('admin_mcp_server_ids') === mode)}
+											class={getModeButtonClass(adminMcpInheritanceMode === mode)}
 											on:pointerdown|preventDefault={() =>
 												setResourceMode(
 													'admin_mcp_server_ids',
@@ -605,15 +610,15 @@
 								<span
 									class="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-300"
 								>
-									{getCurrentResourceMode('admin_mcp_server_ids') === 'disabled'
+									{adminMcpInheritanceMode === 'disabled'
 										? $i18n.t('Disabled')
-										: isAllInherited('admin_mcp_server_ids')
+										: adminMcpInheritanceMode === 'all'
 											? $i18n.t('All current and future')
-											: `${getSelectedResourceCount('admin_mcp_server_ids', inheritanceOptions.admin_mcp_servers)}/${inheritanceOptions.admin_mcp_servers.length} ${$i18n.t('selected')}`}
+											: `${selectedAdminMcpServerCount}/${inheritanceOptions.admin_mcp_servers.length} ${$i18n.t('selected')}`}
 								</span>
 							</div>
 
-							{#if isSpecifiedMode('admin_mcp_server_ids')}
+							{#if adminMcpInheritanceMode === 'specified'}
 								<div class="mt-3 flex items-center justify-end gap-2">
 									<button type="button" class="text-[11px] font-medium text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100" on:click={() => selectAllInheritedResources('admin_mcp_server_ids', inheritanceOptions.admin_mcp_servers)}>
 										{$i18n.t('Select all')}
@@ -639,10 +644,7 @@
 												<input
 													type="checkbox"
 													class="mt-1"
-													checked={getSelectedResourceIds(
-														'admin_mcp_server_ids',
-														inheritanceOptions.admin_mcp_servers
-													).includes(option.id)}
+													checked={selectedAdminMcpServerIds.includes(option.id)}
 													on:change={() =>
 														toggleInheritedResource(
 															'admin_mcp_server_ids',
@@ -679,7 +681,7 @@
 				<button
 					class="inline-flex items-center gap-2 rounded-xl bg-gray-900 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100"
 					type="submit"
-					disabled={!canSaveUser()}
+					disabled={!canSaveCurrentUser}
 				>
 					{$i18n.t('Save')}
 				</button>

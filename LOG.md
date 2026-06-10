@@ -232,3 +232,49 @@
   - `svelte/compiler` + `svelte-preprocess` 单文件编译 `EditUserModal.svelte`: ok, no warnings。
   - `git diff --check`: passed，仅 Windows line-ending 提示。
 - 备注: 本机 `npm run build` / `npm run check` 本轮超时无输出，未产生可定位编译错误；后续以 GitHub Actions / Docker build 继续做完整生产验证。
+- GitHub Actions:
+  - `future` Custom Regression Guard `27133927264`: success。
+  - `future` Docker / GHCR workflow `27133927365`: success。
+  - `custom` Custom Regression Guard `27133930583`: success。
+  - `custom` Docker / GHCR workflow `27133930723`: success。
+- GHCR:
+  - `ghcr.io/zhizhishu/halowebui:custom`: `sha256:431dfac8dcbc77b7ab26e250966e6da64cb3336e473cdf8c8b7bc305eb892168`。
+  - `ghcr.io/zhizhishu/halowebui:future`: `sha256:1c1e7d44180742019ebc9d0753c2da71f94fe9b7e5374336e8e2a34a820a6f49`。
+  - `ghcr.io/zhizhishu/halowebui:git-b355338-slim`: `sha256:34dc156cfffa4fb299745d2b0799ef0938d5fd900f15086b086cfb6b636a2edf`。
+
+
+### Local Docker Reproduction and Svelte Reactivity Fix
+
+- 触发: 用户指出“本地拉最新镜像 Docker 测一下就知道按钮还没修好”。
+- 复现:
+  - `docker pull ghcr.io/zhizhishu/halowebui:custom` -> digest `sha256:431dfac8dcbc77b7ab26e250966e6da64cb3336e473cdf8c8b7bc305eb892168`。
+  - 本地一次性容器创建管理员和普通用户后，用 MCP headless Chrome 打开 `/settings/account`，编辑普通用户。
+  - 点击 `指定资源` 时，按钮事件到达且 `preventDefault` 触发，但 DOM 仍为 `全部继承` 的 `aria-checked=true`，指定列表不出现。
+- 根因:
+  - `EditUserModal.svelte` 模板通过 `getCurrentResourceMode(...)` / `isSpecifiedMode(...)` / `getSelectedResourceIds(...)` 等函数间接依赖 `_user.settings.resource_inheritance`。
+  - Svelte 编译器没有追踪函数体内 `_user` 依赖，发布包里 radio 子块 update 函数没有更新 `aria-checked` / class / 条件分支。
+- 修复:
+  - 将继承模式、选中 id、选中计数、保存可用状态改为显式 `$:` 响应式变量。
+  - 模板直接引用 `adminModelInheritanceMode` / `adminMcpInheritanceMode` / `selectedAdminModelIds` / `selectedAdminMcpServerIds` 等变量，强制编译器生成 DOM 更新逻辑。
+- 验证:
+  - 单文件 Svelte 编译检查: no warnings，`aria-checked` 更新存在，无 radio no-op `p()`。
+  - 前端 targeted vitest: 12 passed。
+  - 后端继承相关 pytest: 35 passed, 3 warnings。
+  - `NODE_OPTIONS=--max-old-space-size=4096 npm run build`: passed，仅既有 warnings。
+  - 本地生产静态包 + Docker 后端真实点击: 模型/MCP `指定资源` 均切为 `aria-checked=true`，出现 `0/0 已选` 和空列表提示；保存后后端 settings 写入空数组。
+  - `git diff --check`: passed，仅 Windows line-ending 提示。
+- 清理: MCP headless Chrome 已关闭；本轮 Docker 容器/volume、临时 Node 静态代理、`.codex-runtime` 文件均已删除；测试端口无 Listen。
+- 后续: 当前修复尚未提交/推送；需提交后推送 `future/custom`，等待 CI/GHCR，再用新镜像复测。
+
+
+### Non-empty Resource Inheritance Management Simulation
+
+- 触发: 用户建议继续填充假模型和假 MCP 到本地，确认资源继承不只是空列表能切换，而是真的可管理。
+- 环境: 后端使用本地 Docker `ghcr.io/zhizhishu/halowebui:custom@sha256:431dfac8dcbc77b7ab26e250966e6da64cb3336e473cdf8c8b7bc305eb892168`；前端使用当前源码 `NODE_OPTIONS=--max-old-space-size=4096 npm run build` 后的生产静态包，经临时 Node 静态代理转发 `/api` 到 Docker 后端。
+- 数据: 创建管理员/普通用户后，通过 API 注入管理员假模型 `Fake Local Model 20260610` 与假 MCP `Fake Local MCP 20260610`；`/api/v1/users/resource-inheritance/options` 返回 `admin_models=1`、`admin_mcp_servers=1`。
+- MCP 浏览器验证:
+  - 编辑普通用户，模型/MCP 两组点击 `指定资源` 后均为 `aria-checked=true`。
+  - 列表展示非空资源：`Fake Local Model 20260610`、`Fake Local MCP 20260610`，两组均显示 `1/1 已选`。
+  - 点击两组 `清空选择` 后均变为 `0/1 已选`，checkbox 取消；再次勾选假模型/假 MCP 后恢复 `1/1 已选`。
+  - 保存后后端 settings 写入 `admin_model_ids=["<admin_id>:model:fake-local-model-20260610"]`、`admin_mcp_server_ids=["<admin_id>:id:fake-mcp-local-20260610"]`；重新打开弹窗后两项仍 checked。
+- 清理: 已关闭 MCP headless Chrome；停止临时 Node 静态代理；删除 `.codex-runtime`；删除 Docker 容器/volume `halowebui-nonempty-test-20260610` / `halowebui-nonempty-test-data-20260610`；`18080/19080/5173/8080` 均无 Listen。
