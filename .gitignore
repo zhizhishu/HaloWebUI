@@ -323,3 +323,24 @@ cypress/videos
 cypress/screenshots
 .vscode/settings.json
 nul
+
+# ===== HaloWebUI fork-local (二创私货, do NOT upstream this block) =====
+# 项目管理 / 记忆文件 —— 本地保留, 永不进 git (GitHub 只放代码)
+/PROJECT_ID.md
+/AGENTS.md
+/.project/
+*handoff*
+# 密钥 / 凭据加固 (防本地生成的凭据误提交; 已跟踪的上游文件不受影响)
+*.key
+*.pem
+*.pfx
+*.p12
+*credentials*.json
+*-credentials-*.json
+secrets/
+config/openai-credentials*.json
+# 本地覆盖 / 合并冲突产物
+*.local.*
+*.orig
+*.mine
+# ===== end fork-local block =====
