@@ -328,6 +328,8 @@ nul
 # 项目管理 / 记忆文件 —— 本地保留, 永不进 git (GitHub 只放代码)
 /PROJECT_ID.md
 /AGENTS.md
+/PROJECT_CONTEXT.md
+/_archive/
 /.project/
 *handoff*
 # 密钥 / 凭据加固 (防本地生成的凭据误提交; 已跟踪的上游文件不受影响)
@@ -344,3 +346,5 @@ config/openai-credentials*.json
 *.orig
 *.mine
 # ===== end fork-local block =====
+# mindfile 记忆层桥接(与 AGENTS.md 一致, 本地保留不入库)
+CLAUDE.md
