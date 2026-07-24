@@ -1419,6 +1419,11 @@ def _list_image_provider_sources(
 
         idx, base_url, api_key = chosen
         api_config = personal_cfgs.get(str(idx), personal_cfgs.get(base_url, {})) or {}
+        # Fork fix (2026-07-24): honor the per-connection enable flag, mirroring
+        # the chat path (openai.py get_all_models_responses). Without this, a
+        # disabled connection still shows up in the image model/connection list.
+        if not api_config.get("enable", True):
+            return None
         source = {
             "provider": provider,
             "effective_source": "personal",
@@ -6174,6 +6179,56 @@ async def _generate_via_openai_images_endpoint(
         headers=headers,
         allowed_base_urls=[base_url],
     )
+    if not images and stream_enabled and payload.get("stream"):
+        # Fork fix (2026-07-24): some relays return HTTP 200 with a body that is
+        # not parseable as a stream for streamed image requests (e.g. gpt-image
+        # via an OpenAI-compatible gateway that ignores stream=true and returns a
+        # full JSON body). The 400/422-only stream fallback above misses this, so
+        # the (valid) image is dropped as "no recognizable image field". Retry
+        # once without stream when a streamed request yields an empty HTTP 200.
+        retry_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"stream", "partial_images"}
+        }
+        log.warning(
+            "openai_image_empty_200_retry_without_stream route=generations model=%s status=%s",
+            upstream_model_id,
+            response_status,
+        )
+        result, headers = await _send_openai_image_request_with_key_pool(
+            provider="openai",
+            source=source,
+            api_config=api_config,
+            route_label="generations",
+            headers_factory=build_attempt_headers,
+            url=generation_url,
+            request_kind="json",
+            json_body=retry_payload,
+        )
+        payload = retry_payload
+        response_status = result.get("status")
+        response_body_text = str(result.get("response_body") or "")
+        if isinstance(response_status, int) and response_status >= 400:
+            raise HTTPException(
+                status_code=response_status,
+                detail=_build_openai_image_upstream_error_detail(
+                    response_status,
+                    response_body_text,
+                    default="Failed to generate image via upstream /images/generations",
+                    route_label="generations",
+                ),
+            )
+        response_body = _parse_openai_image_response_json(
+            result,
+            default_message="Invalid JSON response from upstream /images/generations",
+        )
+        usage = _build_openai_image_usage(response_body, result.get("elapsed_ms"))
+        images = _extract_generated_images_from_openai_response(
+            response_body,
+            headers=headers,
+            allowed_base_urls=[base_url],
+        )
     if not images:
         context = _build_openai_empty_image_context(
             route_label="generations",
